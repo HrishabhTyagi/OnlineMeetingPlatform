@@ -28,7 +28,7 @@ public class ConversationsController : ControllerBase
             return Unauthorized();
         }
 
-        var conversations = await _meetingService.GetConversationsAsync(userId);
+        var conversations = await _meetingService.GetConversationsAsync(userId, GetCurrentUserEmail(), GetCurrentUserName());
         return Ok(conversations.Select(MapToDto).ToList());
     }
 
@@ -100,6 +100,19 @@ public class ConversationsController : ControllerBase
         return Guid.TryParse(userIdClaim, out userId);
     }
 
+    private string? GetCurrentUserEmail()
+    {
+        return User.FindFirst(ClaimTypes.Email)?.Value;
+    }
+
+    private string GetCurrentUserName()
+    {
+        var firstName = User.FindFirst(ClaimTypes.GivenName)?.Value;
+        var lastName = User.FindFirst(ClaimTypes.Surname)?.Value;
+        var fullName = $"{firstName} {lastName}".Trim();
+        return string.IsNullOrWhiteSpace(fullName) ? GetCurrentUserEmail() ?? "User" : fullName;
+    }
+
     private static ConversationDto MapToDto(Conversation conversation)
     {
         return new ConversationDto
@@ -114,6 +127,16 @@ public class ConversationsController : ControllerBase
                     UserId = member.UserId,
                     UserEmail = member.UserEmail,
                     UserName = member.UserName
+                })
+                .ToList(),
+            Invites = conversation.Invites
+                .OrderBy(invite => invite.Email)
+                .Select(invite => new ConversationInviteDto
+                {
+                    Id = invite.Id,
+                    Email = invite.Email,
+                    HasAccepted = invite.HasAccepted,
+                    CreatedAt = invite.CreatedAt
                 })
                 .ToList(),
             LastMessage = conversation.Messages

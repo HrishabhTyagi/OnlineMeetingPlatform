@@ -35,11 +35,19 @@ interface ConversationMessage {
   sentAt: string;
 }
 
+interface ConversationInvite {
+  id: string;
+  email: string;
+  hasAccepted: boolean;
+  createdAt: string;
+}
+
 interface Conversation {
   id: string;
   type: 'Direct' | 'Group';
   title?: string;
   members: ConversationMember[];
+  invites?: ConversationInvite[];
   lastMessage?: ConversationMessage;
   createdAt: string;
   updatedAt?: string;
@@ -60,6 +68,10 @@ function formatMessageTime(value?: string) {
   }).format(new Date(value));
 }
 
+function isEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
 export default function Chat() {
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
@@ -71,6 +83,7 @@ export default function Chat() {
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [userQuery, setUserQuery] = useState('');
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [inviteEmails, setInviteEmails] = useState<string[]>([]);
   const [groupTitle, setGroupTitle] = useState('');
   const [mode, setMode] = useState<'direct' | 'group'>('direct');
   const [loading, setLoading] = useState(true);
@@ -87,6 +100,11 @@ export default function Chat() {
 
   const selectedConversation = conversations.find((conversation) => conversation.id === selectedConversationId) || null;
   const selectedPeople = users.filter((item) => selectedUserIds.includes(item.id));
+  const normalizedQuery = userQuery.trim().toLowerCase();
+  const canAddEmailInvite = isEmail(userQuery)
+    && !inviteEmails.some((email) => email.toLowerCase() === normalizedQuery)
+    && !users.some((item) => item.email.toLowerCase() === normalizedQuery);
+  const recipientCount = selectedUserIds.length + inviteEmails.length;
 
   const refreshConversations = async () => {
     const response = await conversationAPI.getConversations();
@@ -103,7 +121,9 @@ export default function Chat() {
       return selectedConversation.title || 'Group chat';
     }
 
-    return selectedConversation.members.find((member) => member.userId !== user.id)?.userName || 'Direct chat';
+    return selectedConversation.members.find((member) => member.userId !== user.id)?.userName
+      || selectedConversation.invites?.find((invite) => !invite.hasAccepted)?.email
+      || 'Direct chat';
   }, [selectedConversation, user]);
 
   useEffect(() => {
@@ -221,7 +241,7 @@ export default function Chat() {
   }, [userQuery]);
 
   const createConversation = async () => {
-    if (!user || selectedUserIds.length === 0) {
+    if (!user || recipientCount === 0) {
       return;
     }
 
@@ -245,6 +265,7 @@ export default function Chat() {
         type: mode === 'group' ? 'Group' : 'Direct',
         title: mode === 'group' ? groupTitle || 'Group chat' : null,
         members,
+        inviteEmails,
       });
       setConversations((items) => {
         const exists = items.some((conversation) => conversation.id === response.data.id);
@@ -252,7 +273,9 @@ export default function Chat() {
       });
       setSelectedConversationId(response.data.id);
       setSelectedUserIds([]);
+      setInviteEmails([]);
       setGroupTitle('');
+      setUserQuery('');
       setError('');
       setRequestStatus('Request sent. Chat is ready.');
     } catch (err: any) {
@@ -293,11 +316,29 @@ export default function Chat() {
   const toggleUser = (id: string) => {
     setSelectedUserIds((items) => {
       if (mode === 'direct') {
+        setInviteEmails([]);
         return items.includes(id) ? [] : [id];
       }
 
       return items.includes(id) ? items.filter((item) => item !== id) : [...items, id];
     });
+  };
+
+  const addEmailInvite = () => {
+    if (!canAddEmailInvite) {
+      return;
+    }
+
+    setInviteEmails((items) => {
+      if (mode === 'direct') {
+        setSelectedUserIds([]);
+        return [userQuery.trim()];
+      }
+
+      return [...items, userQuery.trim()];
+    });
+    setUserQuery('');
+    setRequestStatus('');
   };
 
   return (
@@ -330,7 +371,9 @@ export default function Chat() {
               conversations.map((conversation) => {
                 const title = conversation.type === 'Group'
                   ? conversation.title || 'Group chat'
-                  : conversation.members.find((member) => member.userId !== user?.id)?.userName || 'Direct chat';
+                  : conversation.members.find((member) => member.userId !== user?.id)?.userName
+                    || conversation.invites?.find((invite) => !invite.hasAccepted)?.email
+                    || 'Direct chat';
                 return (
                   <button
                     key={conversation.id}
@@ -355,7 +398,14 @@ export default function Chat() {
           <div className="border-b border-slate-200 p-4">
             <h2 className="font-semibold">{selectedTitle}</h2>
             {selectedConversation && (
-              <p className="text-sm text-slate-500">{selectedConversation.members.map((member) => member.userName).join(', ')}</p>
+              <p className="text-sm text-slate-500">
+                {[
+                  ...selectedConversation.members.map((member) => member.userName),
+                  ...(selectedConversation.invites || [])
+                    .filter((invite) => !invite.hasAccepted)
+                    .map((invite) => `${invite.email} pending`),
+                ].join(', ')}
+              </p>
             )}
           </div>
 
@@ -417,6 +467,8 @@ export default function Chat() {
               onClick={() => {
                 setMode('direct');
                 setSelectedUserIds([]);
+                setInviteEmails([]);
+                setRequestStatus('');
               }}
               className={`rounded px-3 py-1.5 text-sm font-medium ${mode === 'direct' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
             >
@@ -426,6 +478,8 @@ export default function Chat() {
               onClick={() => {
                 setMode('group');
                 setSelectedUserIds([]);
+                setInviteEmails([]);
+                setRequestStatus('');
               }}
               className={`rounded px-3 py-1.5 text-sm font-medium ${mode === 'group' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
             >
@@ -451,7 +505,17 @@ export default function Chat() {
 
           <div className="mt-3 max-h-72 space-y-2 overflow-y-auto">
             {users.length === 0 ? (
-              <p className="text-sm text-slate-500">No users found.</p>
+              <div className="space-y-2">
+                <p className="text-sm text-slate-500">No registered users found.</p>
+                {canAddEmailInvite && (
+                  <button
+                    onClick={addEmailInvite}
+                    className="w-full rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-left text-sm font-medium text-blue-800 hover:bg-blue-100"
+                  >
+                    Add email invite: {userQuery.trim()}
+                  </button>
+                )}
+              </div>
             ) : (
               users.map((item) => {
                 const isSelected = selectedUserIds.includes(item.id);
@@ -489,9 +553,26 @@ export default function Chat() {
             </div>
           )}
 
+          {inviteEmails.length > 0 && (
+            <div className="mt-3 space-y-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <p className="font-semibold">Pending email invite{inviteEmails.length === 1 ? '' : 's'}</p>
+              {inviteEmails.map((email) => (
+                <div key={email} className="flex items-center justify-between gap-2">
+                  <span className="truncate">{email}</span>
+                  <button
+                    onClick={() => setInviteEmails((items) => items.filter((item) => item !== email))}
+                    className="font-semibold text-amber-900 hover:underline"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <button
             onClick={createConversation}
-            disabled={selectedUserIds.length === 0 || (mode === 'direct' && selectedUserIds.length !== 1)}
+            disabled={recipientCount === 0 || (mode === 'direct' && recipientCount !== 1)}
             className="mt-4 w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {requestStatus === 'Sending request...' ? 'Sending...' : 'Send chat request'}

@@ -18,6 +18,7 @@ public class MeetingDbContext : DbContext
     public DbSet<Conversation> Conversations { get; set; } = null!;
     public DbSet<ConversationMember> ConversationMembers { get; set; } = null!;
     public DbSet<ConversationMessage> ConversationMessages { get; set; } = null!;
+    public DbSet<ConversationInvite> ConversationInvites { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -92,6 +93,7 @@ public class MeetingDbContext : DbContext
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.HasMany(e => e.Members).WithOne(m => m.Conversation).HasForeignKey(m => m.ConversationId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.Messages).WithOne(m => m.Conversation).HasForeignKey(m => m.ConversationId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.Invites).WithOne(i => i.Conversation).HasForeignKey(i => i.ConversationId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<ConversationMember>(entity =>
@@ -109,6 +111,15 @@ public class MeetingDbContext : DbContext
             entity.Property(e => e.SenderName).IsRequired().HasMaxLength(255);
             entity.Property(e => e.Message).IsRequired().HasColumnType("text");
             entity.Property(e => e.SentAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<ConversationInvite>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Email).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.InvitedByName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.ConversationId, e.Email }).IsUnique();
         });
     }
 }

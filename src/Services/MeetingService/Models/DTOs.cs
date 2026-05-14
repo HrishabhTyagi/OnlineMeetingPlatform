@@ -169,12 +169,21 @@ public class ConversationMemberDto
     public string UserName { get; set; } = string.Empty;
 }
 
+public class ConversationInviteDto
+{
+    public Guid Id { get; set; }
+    public string Email { get; set; } = string.Empty;
+    public bool HasAccepted { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
 public class ConversationDto
 {
     public Guid Id { get; set; }
     public string Type { get; set; } = string.Empty;
     public string? Title { get; set; }
     public List<ConversationMemberDto> Members { get; set; } = new();
+    public List<ConversationInviteDto> Invites { get; set; } = new();
     public ConversationMessageDto? LastMessage { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
@@ -195,6 +204,7 @@ public class CreateConversationRequest
     public string Type { get; set; } = "Direct";
     public string? Title { get; set; }
     public List<ConversationMemberDto> Members { get; set; } = new();
+    public List<string> InviteEmails { get; set; } = new();
 }
 
 public class SendConversationMessageRequest

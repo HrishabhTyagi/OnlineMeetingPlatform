@@ -25,7 +25,7 @@ public interface IMeetingService
     Task<Meeting> UpdateNotesAsync(Guid meetingId, string? notes);
     Task<List<MeetingInvite>> GetInvitesAsync(Guid meetingId);
     Task<List<MeetingInvite>> SendInvitesAsync(Guid meetingId, IEnumerable<string> emails);
-    Task<List<Conversation>> GetConversationsAsync(Guid userId);
+    Task<List<Conversation>> GetConversationsAsync(Guid userId, string? userEmail, string userName);
     Task<Conversation> CreateConversationAsync(Guid creatorId, CreateConversationRequest request);
     Task<List<ConversationMessage>> GetConversationMessagesAsync(Guid conversationId, Guid userId);
     Task<ConversationMessage> AddConversationMessageAsync(Guid conversationId, SendConversationMessageRequest request);
@@ -399,10 +399,13 @@ public class MeetingServiceImpl : IMeetingService
         return existingInvites.Concat(newInvites).OrderBy(invite => invite.Email).ToList();
     }
 
-    public async Task<List<Conversation>> GetConversationsAsync(Guid userId)
+    public async Task<List<Conversation>> GetConversationsAsync(Guid userId, string? userEmail, string userName)
     {
+        await AcceptPendingConversationInvitesAsync(userId, userEmail, userName);
+
         return await _context.Conversations
             .Include(conversation => conversation.Members)
+            .Include(conversation => conversation.Invites)
             .Include(conversation => conversation.Messages.Where(message => !message.IsDeleted).OrderByDescending(message => message.SentAt).Take(1))
             .Where(conversation => conversation.Members.Any(member => member.UserId == userId))
             .OrderByDescending(conversation => conversation.UpdatedAt ?? conversation.CreatedAt)
@@ -420,30 +423,45 @@ public class MeetingServiceImpl : IMeetingService
             .GroupBy(member => member.UserId)
             .Select(group => group.First())
             .ToList();
+        var inviteEmails = NormalizeEmailList(request.InviteEmails);
 
         if (!members.Any(member => member.UserId == creatorId))
         {
             throw new InvalidOperationException("Creator must be included in the conversation");
         }
 
+        var creator = members.First(member => member.UserId == creatorId);
+        inviteEmails = inviteEmails
+            .Where(email => !members.Any(member => string.Equals(member.UserEmail, email, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        if (members.Count + inviteEmails.Count < 2)
+        {
+            throw new InvalidOperationException("Select at least one person or email invite");
+        }
+
         if (type == ConversationType.Direct)
         {
-            if (members.Count != 2)
+            if (members.Count + inviteEmails.Count != 2)
             {
-                throw new InvalidOperationException("Direct conversations must have exactly two members");
+                throw new InvalidOperationException("Direct conversations must have exactly two people or one email invite");
             }
 
-            var memberIds = members.Select(member => member.UserId).OrderBy(id => id).ToList();
-            var existing = await _context.Conversations
-                .Include(conversation => conversation.Members)
-                .Include(conversation => conversation.Messages.Where(message => !message.IsDeleted).OrderByDescending(message => message.SentAt).Take(1))
-                .Where(conversation => conversation.Type == ConversationType.Direct)
-                .Where(conversation => conversation.Members.Count == 2)
-                .FirstOrDefaultAsync(conversation => memberIds.All(id => conversation.Members.Any(member => member.UserId == id)));
-
-            if (existing != null)
+            if (members.Count == 2)
             {
-                return existing;
+                var memberIds = members.Select(member => member.UserId).OrderBy(id => id).ToList();
+                var existing = await _context.Conversations
+                    .Include(conversation => conversation.Members)
+                    .Include(conversation => conversation.Invites)
+                    .Include(conversation => conversation.Messages.Where(message => !message.IsDeleted).OrderByDescending(message => message.SentAt).Take(1))
+                    .Where(conversation => conversation.Type == ConversationType.Direct)
+                    .Where(conversation => conversation.Members.Count == 2)
+                    .FirstOrDefaultAsync(conversation => memberIds.All(id => conversation.Members.Any(member => member.UserId == id)));
+
+                if (existing != null)
+                {
+                    return existing;
+                }
             }
         }
 
@@ -464,8 +482,33 @@ public class MeetingServiceImpl : IMeetingService
             }).ToList()
         };
 
+        foreach (var email in inviteEmails)
+        {
+            conversation.Invites.Add(new ConversationInvite
+            {
+                Id = Guid.NewGuid(),
+                Email = email,
+                InvitedByUserId = creatorId,
+                InvitedByName = creator.UserName,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
         _context.Conversations.Add(conversation);
         await _context.SaveChangesAsync();
+
+        foreach (var email in inviteEmails)
+        {
+            try
+            {
+                await _emailSender.SendConversationInviteAsync(conversation, email, creator.UserName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send chat invite email. Recipient: {Email}, Conversation: {ConversationId}", email, conversation.Id);
+            }
+        }
+
         return conversation;
     }
 
@@ -511,6 +554,49 @@ public class MeetingServiceImpl : IMeetingService
         _context.Conversations.Update(conversation);
         await _context.SaveChangesAsync();
         return message;
+    }
+
+    private async Task AcceptPendingConversationInvitesAsync(Guid userId, string? userEmail, string userName)
+    {
+        if (string.IsNullOrWhiteSpace(userEmail))
+        {
+            return;
+        }
+
+        var normalizedEmail = userEmail.Trim().ToLower();
+        var pendingInvites = await _context.ConversationInvites
+            .Where(invite => !invite.HasAccepted && invite.Email.ToLower() == normalizedEmail)
+            .ToListAsync();
+
+        if (pendingInvites.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var invite in pendingInvites)
+        {
+            var isAlreadyMember = await _context.ConversationMembers
+                .AnyAsync(member => member.ConversationId == invite.ConversationId && member.UserId == userId);
+
+            if (!isAlreadyMember)
+            {
+                _context.ConversationMembers.Add(new ConversationMember
+                {
+                    Id = Guid.NewGuid(),
+                    ConversationId = invite.ConversationId,
+                    UserId = userId,
+                    UserEmail = userEmail.Trim(),
+                    UserName = userName,
+                    JoinedAt = DateTime.UtcNow
+                });
+            }
+
+            invite.HasAccepted = true;
+            invite.AcceptedAt = DateTime.UtcNow;
+            _context.ConversationInvites.Update(invite);
+        }
+
+        await _context.SaveChangesAsync();
     }
 
     private static int ResolveDurationMinutes(DateTime startTime, DateTime? endTime, int? durationMinutes)

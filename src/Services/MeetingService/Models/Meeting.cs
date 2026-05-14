@@ -159,6 +159,7 @@ public class Conversation
 
     public ICollection<ConversationMember> Members { get; set; } = new List<ConversationMember>();
     public ICollection<ConversationMessage> Messages { get; set; } = new List<ConversationMessage>();
+    public ICollection<ConversationInvite> Invites { get; set; } = new List<ConversationInvite>();
 }
 
 public class ConversationMember
@@ -183,6 +184,20 @@ public class ConversationMessage
     public string Message { get; set; } = string.Empty;
     public DateTime SentAt { get; set; } = DateTime.UtcNow;
     public bool IsDeleted { get; set; }
+
+    public Conversation Conversation { get; set; } = null!;
+}
+
+public class ConversationInvite
+{
+    public Guid Id { get; set; }
+    public Guid ConversationId { get; set; }
+    public string Email { get; set; } = string.Empty;
+    public Guid InvitedByUserId { get; set; }
+    public string InvitedByName { get; set; } = string.Empty;
+    public bool HasAccepted { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? AcceptedAt { get; set; }
 
     public Conversation Conversation { get; set; } = null!;
 }
