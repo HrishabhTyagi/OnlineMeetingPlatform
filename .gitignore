@@ -1,0 +1,44 @@
+# .gitignore for Online Meeting Platform
+
+## Backend
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+.vs/
+.vscode/
+appsettings.*.json
+!src/Services/MeetingService/appsettings.Development.json
+
+## Frontend
+node_modules/
+dist/
+build/
+.next/
+
+## Environment
+.env
+.env.local
+.env.*.local
+
+## IDE
+*.user
+*.sln.iml
+.idea/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+## Misc
+.cache/
+.nuget/
+artifacts/

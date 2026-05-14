@@ -1,0 +1,75 @@
+# Multi-stage build for each service
+
+## Build User Service
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build-user
+WORKDIR /src
+COPY ["src/Services/UserService/UserService.csproj", "UserService/"]
+RUN dotnet restore "UserService/UserService.csproj"
+COPY ["src/Services/UserService/", "UserService/"]
+WORKDIR "/src/UserService"
+RUN dotnet build "UserService.csproj" -c Release -o /app/build
+
+FROM mcr.microsoft.com/dotnet/runtime:8.0 AS user-runtime
+WORKDIR /app
+COPY --from=build-user /app/build .
+EXPOSE 5001
+ENTRYPOINT ["dotnet", "UserService.dll"]
+
+## Build Meeting Service
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build-meeting
+WORKDIR /src
+COPY ["src/Services/MeetingService/MeetingService.csproj", "MeetingService/"]
+RUN dotnet restore "MeetingService/MeetingService.csproj"
+COPY ["src/Services/MeetingService/", "MeetingService/"]
+WORKDIR "/src/MeetingService"
+RUN dotnet build "MeetingService.csproj" -c Release -o /app/build
+
+FROM mcr.microsoft.com/dotnet/runtime:8.0 AS meeting-runtime
+WORKDIR /app
+COPY --from=build-meeting /app/build .
+EXPOSE 5002
+ENTRYPOINT ["dotnet", "MeetingService.dll"]
+
+## Build Notification Service
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build-notification
+WORKDIR /src
+COPY ["src/Services/NotificationService/NotificationService.csproj", "NotificationService/"]
+RUN dotnet restore "NotificationService/NotificationService.csproj"
+COPY ["src/Services/NotificationService/", "NotificationService/"]
+WORKDIR "/src/NotificationService"
+RUN dotnet build "NotificationService.csproj" -c Release -o /app/build
+
+FROM mcr.microsoft.com/dotnet/runtime:8.0 AS notification-runtime
+WORKDIR /app
+COPY --from=build-notification /app/build .
+EXPOSE 5003
+ENTRYPOINT ["dotnet", "NotificationService.dll"]
+
+## Build API Gateway
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build-gateway
+WORKDIR /src
+COPY ["src/Gateway/ApiGateway/ApiGateway.csproj", "ApiGateway/"]
+RUN dotnet restore "ApiGateway/ApiGateway.csproj"
+COPY ["src/Gateway/ApiGateway/", "ApiGateway/"]
+WORKDIR "/src/ApiGateway"
+RUN dotnet build "ApiGateway.csproj" -c Release -o /app/build
+
+FROM mcr.microsoft.com/dotnet/runtime:8.0 AS gateway-runtime
+WORKDIR /app
+COPY --from=build-gateway /app/build .
+EXPOSE 5000
+ENTRYPOINT ["dotnet", "ApiGateway.dll"]
+
+## Build React Frontend
+FROM node:18-alpine AS build-frontend
+WORKDIR /app
+COPY src/Frontend/meeting-app/package*.json ./
+RUN npm ci
+COPY src/Frontend/meeting-app/ .
+RUN npm run build
+
+FROM nginx:alpine AS frontend-runtime
+COPY --from=build-frontend /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
