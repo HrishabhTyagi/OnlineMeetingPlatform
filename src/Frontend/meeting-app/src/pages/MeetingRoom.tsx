@@ -228,13 +228,84 @@ export default function MeetingRoom() {
 
   const replaceOutgoingVideoTrack = async (track: MediaStreamTrack | null) => {
     await Promise.all(
-      Object.values(peerConnectionsRef.current).map(async (connection) => {
+      Object.entries(peerConnectionsRef.current).map(async ([remoteUserId, connection]) => {
         const sender = connection.getSenders().find((item) => item.track?.kind === 'video');
+
         if (sender) {
           await sender.replaceTrack(track);
+          return;
         }
+
+        if (!track || !id || !currentUserId || connection.signalingState !== 'stable') {
+          return;
+        }
+
+        connection.addTrack(track, localStreamRef.current || new MediaStream([track]));
+        const offer = await connection.createOffer();
+        await connection.setLocalDescription(offer);
+        await sendWebRtcOffer(id, currentUserId, remoteUserId, JSON.stringify(offer));
       }),
     );
+  };
+
+  const getLiveVideoTrack = () => {
+    return localStreamRef.current?.getVideoTracks().find((track) => track.readyState === 'live') || null;
+  };
+
+  const attachLocalVideoTrack = async (track: MediaStreamTrack) => {
+    const existingStream = localStreamRef.current;
+    existingStream?.getVideoTracks().forEach((existingTrack) => {
+      if (existingTrack.id !== track.id) {
+        existingTrack.stop();
+      }
+    });
+
+    const nextStream = new MediaStream([
+      ...(existingStream?.getAudioTracks() || []),
+      track,
+    ]);
+
+    localStreamRef.current = nextStream;
+    setLocalStream(nextStream);
+    await replaceOutgoingVideoTrack(screenStreamRef.current?.getVideoTracks()[0] || track);
+  };
+
+  const ensureLocalVideoTrack = async () => {
+    const existingTrack = getLiveVideoTrack();
+    if (existingTrack) {
+      existingTrack.enabled = true;
+      await replaceOutgoingVideoTrack(screenStreamRef.current?.getVideoTracks()[0] || existingTrack);
+      return existingTrack;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera is not available in this browser');
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    const [track] = stream.getVideoTracks();
+    if (!track) {
+      throw new Error('No camera track was returned');
+    }
+
+    track.enabled = true;
+    track.addEventListener('ended', () => {
+      setVideoEnabled(false);
+      setLocalStream((currentStream) => {
+        if (!currentStream) {
+          localStreamRef.current = null;
+          return null;
+        }
+
+        const nextStream = new MediaStream(currentStream.getAudioTracks());
+        localStreamRef.current = nextStream;
+        return nextStream;
+      });
+      replaceOutgoingVideoTrack(null).catch(() => undefined);
+    });
+
+    await attachLocalVideoTrack(track);
+    return track;
   };
 
   const flushPendingIceCandidates = async (remoteUserId: string, connection: RTCPeerConnection) => {
@@ -658,9 +729,30 @@ export default function MeetingRoom() {
     localStream?.getAudioTracks().forEach((track) => {
       track.enabled = nextAudio;
     });
-    localStream?.getVideoTracks().forEach((track) => {
-      track.enabled = nextVideo;
-    });
+
+    if (updates.video !== undefined) {
+      if (nextVideo) {
+        try {
+          await ensureLocalVideoTrack();
+        } catch {
+          setVideoEnabled(false);
+          setActivity((items) => ['Camera could not be started. Check browser permission and camera availability.', ...items].slice(0, 5));
+          return;
+        }
+      } else {
+        localStreamRef.current?.getVideoTracks().forEach((track) => {
+          track.enabled = false;
+        });
+
+        if (!nextSharing) {
+          await replaceOutgoingVideoTrack(null);
+        }
+      }
+    } else {
+      localStream?.getVideoTracks().forEach((track) => {
+        track.enabled = nextVideo;
+      });
+    }
 
     if (updates.sharing !== undefined) {
       if (nextSharing) {
@@ -669,7 +761,7 @@ export default function MeetingRoom() {
           stream.getVideoTracks()[0]?.addEventListener('ended', () => {
             setScreenStream(null);
             setScreenSharing(false);
-            replaceOutgoingVideoTrack(localStreamRef.current?.getVideoTracks()[0] || null).catch(() => undefined);
+            replaceOutgoingVideoTrack(videoEnabled ? getLiveVideoTrack() : null).catch(() => undefined);
           });
           setScreenStream(stream);
           await replaceOutgoingVideoTrack(stream.getVideoTracks()[0] || null);
@@ -680,7 +772,7 @@ export default function MeetingRoom() {
       } else {
         screenStream?.getTracks().forEach((track) => track.stop());
         setScreenStream(null);
-        await replaceOutgoingVideoTrack(localStreamRef.current?.getVideoTracks()[0] || null);
+        await replaceOutgoingVideoTrack(nextVideo ? getLiveVideoTrack() : null);
       }
     }
 
