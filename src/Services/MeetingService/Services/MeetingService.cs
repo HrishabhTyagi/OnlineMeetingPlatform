@@ -23,6 +23,7 @@ public interface IMeetingService
     Task<List<LobbyRequest>> GetLobbyRequestsAsync(Guid meetingId);
     Task<LobbyRequest> DecideLobbyRequestAsync(Guid requestId, bool admit);
     Task<Meeting> UpdateNotesAsync(Guid meetingId, string? notes);
+    Task<Meeting> UpdateRecordingAsync(Guid meetingId, string recordingUrl);
     Task<List<MeetingInvite>> GetInvitesAsync(Guid meetingId);
     Task<List<MeetingInvite>> SendInvitesAsync(Guid meetingId, IEnumerable<string> emails);
     Task<List<Conversation>> GetConversationsAsync(Guid userId, string? userEmail, string userName);
@@ -338,6 +339,20 @@ public class MeetingServiceImpl : IMeetingService
             throw new InvalidOperationException("Meeting not found");
 
         meeting.Notes = notes;
+        meeting.UpdatedAt = DateTime.UtcNow;
+        _context.Meetings.Update(meeting);
+        await _context.SaveChangesAsync();
+        return meeting;
+    }
+
+    public async Task<Meeting> UpdateRecordingAsync(Guid meetingId, string recordingUrl)
+    {
+        var meeting = await _context.Meetings.FirstOrDefaultAsync(m => m.Id == meetingId);
+        if (meeting == null)
+            throw new InvalidOperationException("Meeting not found");
+
+        meeting.IsRecorded = true;
+        meeting.RecordingUrl = recordingUrl;
         meeting.UpdatedAt = DateTime.UtcNow;
         _context.Meetings.Update(meeting);
         await _context.SaveChangesAsync();

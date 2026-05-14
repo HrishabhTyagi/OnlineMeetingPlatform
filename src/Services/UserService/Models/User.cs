@@ -13,4 +13,36 @@ public class User
     public bool IsActive { get; set; } = true;
     public string? ProfilePictureUrl { get; set; }
     public string? PhoneNumber { get; set; }
+    public string Status { get; set; } = UserPresenceStatuses.Available;
+}
+
+public static class UserPresenceStatuses
+{
+    public const string Available = "Available";
+    public const string Busy = "Busy";
+    public const string DoNotDisturb = "DoNotDisturb";
+    public const string BeRightBack = "BeRightBack";
+    public const string Away = "Away";
+    public const string Offline = "Offline";
+
+    public static readonly HashSet<string> Allowed = new(StringComparer.OrdinalIgnoreCase)
+    {
+        Available,
+        Busy,
+        DoNotDisturb,
+        BeRightBack,
+        Away,
+        Offline
+    };
+
+    public static string Normalize(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return Available;
+        }
+
+        return Allowed.FirstOrDefault(item => string.Equals(item, status.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?? Available;
+    }
 }

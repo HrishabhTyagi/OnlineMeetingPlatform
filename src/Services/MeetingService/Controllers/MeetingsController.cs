@@ -12,11 +12,13 @@ namespace MeetingService.Controllers;
 public class MeetingsController : ControllerBase
 {
     private readonly IMeetingService _meetingService;
+    private readonly IWebHostEnvironment _environment;
     private readonly ILogger<MeetingsController> _logger;
 
-    public MeetingsController(IMeetingService meetingService, ILogger<MeetingsController> logger)
+    public MeetingsController(IMeetingService meetingService, IWebHostEnvironment environment, ILogger<MeetingsController> logger)
     {
         _meetingService = meetingService;
+        _environment = environment;
         _logger = logger;
     }
 
@@ -189,6 +191,76 @@ public class MeetingsController : ControllerBase
             _logger.LogError(ex, "Error updating meeting notes");
             return StatusCode(500, "An error occurred");
         }
+    }
+
+    [HttpPost("{id}/recordings")]
+    [RequestSizeLimit(750_000_000)]
+    [RequestFormLimits(MultipartBodyLengthLimit = 750_000_000)]
+    public async Task<ActionResult<MeetingDto>> UploadRecording(Guid id, [FromForm] IFormFile recording)
+    {
+        try
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            if (recording == null || recording.Length == 0)
+            {
+                return BadRequest("Recording file is required");
+            }
+
+            var meeting = await _meetingService.GetMeetingByIdAsync(id);
+            if (meeting == null)
+            {
+                return NotFound("Meeting not found");
+            }
+
+            if (meeting.OrganizerId != currentUserId)
+            {
+                return Forbid();
+            }
+
+            if (!meeting.AllowRecording)
+            {
+                return BadRequest("Recording is not enabled for this meeting");
+            }
+
+            var recordingDirectory = Path.Combine(_environment.ContentRootPath, "Recordings", id.ToString());
+            Directory.CreateDirectory(recordingDirectory);
+
+            var fileName = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}.webm";
+            var filePath = Path.Combine(recordingDirectory, fileName);
+
+            await using (var stream = System.IO.File.Create(filePath))
+            {
+                await recording.CopyToAsync(stream);
+            }
+
+            var recordingUrl = $"/api/meetings/{id}/recordings/{fileName}";
+            var updatedMeeting = await _meetingService.UpdateRecordingAsync(id, recordingUrl);
+            return Ok(MapToDto(updatedMeeting));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error uploading meeting recording");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpGet("{id}/recordings/{fileName}")]
+    [AllowAnonymous]
+    public IActionResult GetRecording(Guid id, string fileName)
+    {
+        var safeFileName = Path.GetFileName(fileName);
+        var filePath = Path.Combine(_environment.ContentRootPath, "Recordings", id.ToString(), safeFileName);
+        if (!System.IO.File.Exists(filePath))
+        {
+            return NotFound();
+        }
+
+        return PhysicalFile(filePath, "video/webm", enableRangeProcessing: true);
     }
 
     private MeetingDto MapToDto(Meeting meeting)

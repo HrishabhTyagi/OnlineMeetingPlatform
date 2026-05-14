@@ -49,6 +49,7 @@ export default function Register() {
           email: data.email,
           firstName: data.firstName,
           lastName: data.lastName,
+          status: data.status || 'Available',
           isEmailVerified: false,
           createdAt: new Date().toISOString(),
         },

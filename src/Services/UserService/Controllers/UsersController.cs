@@ -33,17 +33,7 @@ public class UsersController : ControllerBase
             }
 
             var users = await _userService.SearchUsersAsync(query, currentUserId);
-            return Ok(users.Select(user => new UserProfileDto
-            {
-                Id = user.Id,
-                Email = user.Email,
-                FirstName = user.FirstName,
-                LastName = user.LastName,
-                ProfilePictureUrl = user.ProfilePictureUrl,
-                PhoneNumber = user.PhoneNumber,
-                IsEmailVerified = user.IsEmailVerified,
-                CreatedAt = user.CreatedAt
-            }).ToList());
+            return Ok(users.Select(MapToDto).ToList());
         }
         catch (Exception ex)
         {
@@ -65,19 +55,7 @@ public class UsersController : ControllerBase
             if (user == null)
                 return NotFound("User not found");
 
-            var dto = new UserProfileDto
-            {
-                Id = user.Id,
-                Email = user.Email,
-                FirstName = user.FirstName,
-                LastName = user.LastName,
-                ProfilePictureUrl = user.ProfilePictureUrl,
-                PhoneNumber = user.PhoneNumber,
-                IsEmailVerified = user.IsEmailVerified,
-                CreatedAt = user.CreatedAt
-            };
-
-            return Ok(dto);
+            return Ok(MapToDto(user));
         }
         catch (Exception ex)
         {
@@ -98,23 +76,35 @@ public class UsersController : ControllerBase
             var user = await _userService.UpdateUserAsync(id, request);
             _logger.LogInformation("User profile updated: {UserId}", id);
 
-            var dto = new UserProfileDto
-            {
-                Id = user.Id,
-                Email = user.Email,
-                FirstName = user.FirstName,
-                LastName = user.LastName,
-                ProfilePictureUrl = user.ProfilePictureUrl,
-                PhoneNumber = user.PhoneNumber,
-                IsEmailVerified = user.IsEmailVerified,
-                CreatedAt = user.CreatedAt
-            };
-
-            return Ok(dto);
+            return Ok(MapToDto(user));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error updating profile");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPut("status")]
+    public async Task<ActionResult<UserProfileDto>> UpdateStatus([FromBody] UpdateUserStatusRequest request)
+    {
+        try
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(userId, out var id))
+                return Unauthorized();
+
+            if (!UserPresenceStatuses.Allowed.Contains(request.Status))
+                return BadRequest("Invalid status");
+
+            var user = await _userService.UpdateStatusAsync(id, request.Status);
+            _logger.LogInformation("User status updated: {UserId}, {Status}", id, user.Status);
+
+            return Ok(MapToDto(user));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating status");
             return StatusCode(500, "An error occurred");
         }
     }
@@ -129,23 +119,28 @@ public class UsersController : ControllerBase
             if (user == null)
                 return NotFound("User not found");
 
-            var dto = new UserProfileDto
-            {
-                Id = user.Id,
-                Email = user.Email,
-                FirstName = user.FirstName,
-                LastName = user.LastName,
-                ProfilePictureUrl = user.ProfilePictureUrl,
-                IsEmailVerified = user.IsEmailVerified,
-                CreatedAt = user.CreatedAt
-            };
-
-            return Ok(dto);
+            return Ok(MapToDto(user));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error fetching user");
             return StatusCode(500, "An error occurred");
         }
+    }
+
+    private static UserProfileDto MapToDto(User user)
+    {
+        return new UserProfileDto
+        {
+            Id = user.Id,
+            Email = user.Email,
+            FirstName = user.FirstName,
+            LastName = user.LastName,
+            ProfilePictureUrl = user.ProfilePictureUrl,
+            PhoneNumber = user.PhoneNumber,
+            Status = user.Status,
+            IsEmailVerified = user.IsEmailVerified,
+            CreatedAt = user.CreatedAt
+        };
     }
 }

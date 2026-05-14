@@ -11,6 +11,10 @@ export const apiClient = axios.create({
 
 // Add token to requests
 apiClient.interceptors.request.use((config) => {
+  if (config.data instanceof FormData) {
+    config.headers.set('Content-Type', undefined);
+  }
+
   const token = localStorage.getItem('authToken');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
@@ -36,6 +40,9 @@ export const userAPI = {
 
   updateProfile: (data: any) =>
     apiClient.put('/users/profile', data),
+
+  updateStatus: (status: string) =>
+    apiClient.put('/users/status', { status }),
 
   getUserById: (id: string) =>
     apiClient.get(`/users/${id}`),
@@ -99,6 +106,9 @@ export const meetingAPI = {
 
   sendInvites: (meetingId: string, data: any) =>
     apiClient.post(`/meetings/${meetingId}/invites/send`, data),
+
+  uploadRecording: (meetingId: string, data: FormData) =>
+    apiClient.post(`/meetings/${meetingId}/recordings`, data),
 };
 
 export const conversationAPI = {

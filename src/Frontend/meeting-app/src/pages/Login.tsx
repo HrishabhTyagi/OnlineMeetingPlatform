@@ -35,6 +35,7 @@ export default function Login() {
           email: data.email,
           firstName: data.firstName,
           lastName: data.lastName,
+          status: data.status || 'Available',
           isEmailVerified: true,
           createdAt: new Date().toISOString(),
         },

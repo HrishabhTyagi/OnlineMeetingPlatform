@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ProfileStatusMenu, UserStatusBadge, UserStatus } from '../components/UserStatus';
 import { conversationAPI, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinConversation,
   joinUserNotifications,
   leaveConversation,
+  notifyUserStatusChanged,
   onConversationMessageReceived,
+  onUserStatusChanged,
   sendConversationMessage,
   startSignalR,
 } from '../services/signalR';
@@ -18,6 +21,7 @@ interface UserSummary {
   firstName: string;
   lastName: string;
   fullName?: string;
+  status?: string;
 }
 
 interface ConversationMember {
@@ -75,6 +79,8 @@ function isEmail(value: string) {
 export default function Chat() {
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
+  const setUser = useAuthStore((state) => state.setUser);
+  const logout = useAuthStore((state) => state.logout);
   const token = useAuthStore((state) => state.token);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -89,6 +95,7 @@ export default function Chat() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [requestStatus, setRequestStatus] = useState('');
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -105,6 +112,22 @@ export default function Chat() {
     && !inviteEmails.some((email) => email.toLowerCase() === normalizedQuery)
     && !users.some((item) => item.email.toLowerCase() === normalizedQuery);
   const recipientCount = selectedUserIds.length + inviteEmails.length;
+
+  const getUserStatus = (userId?: string) => {
+    if (!userId) {
+      return 'Offline';
+    }
+
+    if (statusOverrides[userId]) {
+      return statusOverrides[userId];
+    }
+
+    if (user?.id === userId) {
+      return user.status || 'Available';
+    }
+
+    return users.find((item) => item.id === userId)?.status || 'Available';
+  };
 
   const refreshConversations = async () => {
     const response = await conversationAPI.getConversations();
@@ -134,13 +157,17 @@ export default function Chat() {
 
     const load = async () => {
       try {
-        const [conversationResponse, userResponse] = await Promise.all([
+        const [conversationResponse, userResponse, profileResponse] = await Promise.all([
           conversationAPI.getConversations(),
           userAPI.searchUsers(),
+          userAPI.getProfile().catch(() => ({ data: user })),
         ]);
         setError('');
         setConversations(conversationResponse.data);
         setUsers(userResponse.data);
+        if (profileResponse.data) {
+          setUser(profileResponse.data);
+        }
         setSelectedConversationId(conversationResponse.data[0]?.id || null);
       } catch {
         setError('Unable to load chats');
@@ -150,7 +177,7 @@ export default function Chat() {
     };
 
     load();
-  }, [navigate, user]);
+  }, [navigate, user?.id, setUser]);
 
   useEffect(() => {
     if (!token || !user) {
@@ -161,6 +188,16 @@ export default function Chat() {
     startSignalR()
       .then(async () => {
         await joinUserNotifications(user.id);
+        onUserStatusChanged((data) => {
+          setStatusOverrides((items) => ({ ...items, [data.userId]: data.status }));
+          setUsers((items) => items.map((item) => (
+            item.id === data.userId ? { ...item, status: data.status } : item
+          )));
+
+          if (data.userId === user.id) {
+            setUser({ ...user, status: data.status });
+          }
+        });
         onConversationMessageReceived((data) => {
           if (data.senderId === user.id) {
             return;
@@ -199,7 +236,29 @@ export default function Chat() {
         });
       })
       .catch((err) => console.warn('Chat SignalR connection failed', err));
-  }, [selectedConversationId, token, user]);
+  }, [selectedConversationId, token, user, setUser]);
+
+  const handleStatusChange = async (status: UserStatus) => {
+    if (!user) {
+      return;
+    }
+
+    const previousUser = user;
+    setUser({ ...user, status });
+
+    try {
+      const response = await userAPI.updateStatus(status);
+      setUser(response.data);
+      await notifyUserStatusChanged(user.id, displayName, response.data.status).catch(() => undefined);
+    } catch {
+      setUser(previousUser);
+    }
+  };
+
+  const handleSignOut = () => {
+    logout();
+    navigate('/login', { replace: true });
+  };
 
   useEffect(() => {
     conversations.forEach((conversation) => {
@@ -350,6 +409,13 @@ export default function Chat() {
             <h1 className="text-2xl font-semibold">Messages</h1>
           </div>
           <div className="flex items-center gap-2">
+            <ProfileStatusMenu
+              displayName={displayName}
+              email={user?.email}
+              status={user?.status}
+              onChange={handleStatusChange}
+              onSignOut={handleSignOut}
+            />
             <button onClick={() => navigate('/dashboard')} className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
               Calendar
             </button>
@@ -383,7 +449,15 @@ export default function Chat() {
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <p className="truncate text-sm font-semibold">{title}</p>
+                      <div className="flex min-w-0 items-center gap-2">
+                        {conversation.type === 'Direct' && (
+                          <UserStatusBadge
+                            status={getUserStatus(conversation.members.find((member) => member.userId !== user?.id)?.userId)}
+                            compact
+                          />
+                        )}
+                        <p className="truncate text-sm font-semibold">{title}</p>
+                      </div>
                       <span className="text-xs text-slate-400">{formatMessageTime(conversation.lastMessage?.sentAt || conversation.updatedAt)}</span>
                     </div>
                     <p className="mt-1 truncate text-sm text-slate-500">{conversation.lastMessage?.message || `${conversation.members.length} member chat`}</p>
@@ -398,14 +472,19 @@ export default function Chat() {
           <div className="border-b border-slate-200 p-4">
             <h2 className="font-semibold">{selectedTitle}</h2>
             {selectedConversation && (
-              <p className="text-sm text-slate-500">
-                {[
-                  ...selectedConversation.members.map((member) => member.userName),
-                  ...(selectedConversation.invites || [])
-                    .filter((invite) => !invite.hasAccepted)
-                    .map((invite) => `${invite.email} pending`),
-                ].join(', ')}
-              </p>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {selectedConversation.members.map((member) => (
+                  <span key={member.userId} className="inline-flex items-center gap-1.5 text-sm text-slate-500">
+                    <UserStatusBadge status={getUserStatus(member.userId)} compact />
+                    {member.userName}
+                  </span>
+                ))}
+                {(selectedConversation.invites || [])
+                  .filter((invite) => !invite.hasAccepted)
+                  .map((invite) => (
+                    <span key={invite.id} className="text-sm text-slate-500">{invite.email} pending</span>
+                  ))}
+              </div>
             )}
           </div>
 
@@ -534,7 +613,10 @@ export default function Chat() {
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="font-medium">{displayUser(item)}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium">{displayUser(item)}</p>
+                          <UserStatusBadge status={getUserStatus(item.id)} />
+                        </div>
                         <p className="text-xs text-slate-500">{item.email}</p>
                       </div>
                       <span className={`rounded px-2 py-1 text-xs font-semibold ${isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>

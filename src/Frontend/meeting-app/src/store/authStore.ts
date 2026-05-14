@@ -7,6 +7,7 @@ export interface User {
   lastName: string;
   profilePictureUrl?: string;
   phoneNumber?: string;
+  status?: string;
   isEmailVerified: boolean;
   createdAt: string;
 }

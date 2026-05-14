@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { meetingAPI } from '../services/api';
+import { ProfileStatusMenu, UserStatusBadge, UserStatus, statusLabel } from '../components/UserStatus';
+import { meetingAPI, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinMeetingGroup,
@@ -11,6 +12,7 @@ import {
   notifyParticipantJoined,
   notifyParticipantLeft,
   notifyParticipantMediaStatusChanged,
+  notifyUserStatusChanged,
   onDirectChatMessage,
   onLobbyDecisionReceived,
   onLobbyRequestReceived,
@@ -18,6 +20,7 @@ import {
   onParticipantJoined,
   onParticipantLeft,
   onParticipantMediaStatusChanged,
+  onUserStatusChanged,
   onWebRtcAnswer,
   onWebRtcIceCandidate,
   onWebRtcOffer,
@@ -45,6 +48,12 @@ interface Participant {
   isScreenSharing: boolean;
 }
 
+interface UserSummary {
+  id: string;
+  email: string;
+  status?: string;
+}
+
 interface ChatMessage {
   id: string;
   scope: 'group' | 'direct';
@@ -54,6 +63,19 @@ interface ChatMessage {
   timestamp: string;
   recipientUserId?: string;
   recipientName?: string;
+}
+
+function mapChatMessage(message: any): ChatMessage {
+  return {
+    id: message.id,
+    scope: message.scope === 'Direct' ? 'direct' : 'group',
+    senderId: message.senderId,
+    senderName: message.senderName,
+    recipientUserId: message.recipientUserId,
+    recipientName: message.recipientName,
+    message: message.message,
+    timestamp: message.sentAt,
+  };
 }
 
 interface LobbyRequest {
@@ -114,10 +136,50 @@ function formatDateTime(value: string) {
   }).format(new Date(value));
 }
 
+function formatDuration(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+  const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+  return `${minutes}:${seconds}`;
+}
+
+function resolveRecordingUrl(recordingUrl?: string) {
+  if (!recordingUrl) {
+    return '';
+  }
+
+  if (recordingUrl.startsWith('http')) {
+    return recordingUrl;
+  }
+
+  return `http://localhost:5000${recordingUrl}`;
+}
+
+function renderChatMessageText(message: string) {
+  return message.split(/(https?:\/\/[^\s]+)/g).map((part, index) => {
+    if (!part.startsWith('http')) {
+      return part;
+    }
+
+    return (
+      <a
+        key={`${part}-${index}`}
+        href={part}
+        target="_blank"
+        rel="noreferrer"
+        className="break-all font-semibold underline underline-offset-2"
+      >
+        {part}
+      </a>
+    );
+  });
+}
+
 export default function MeetingRoom() {
   const { id } = useParams();
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
+  const setUser = useAuthStore((state) => state.setUser);
+  const logout = useAuthStore((state) => state.logout);
   const token = useAuthStore((state) => state.token);
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -140,6 +202,11 @@ export default function MeetingRoom() {
   const [inviteText, setInviteText] = useState('');
   const [inviteStatus, setInviteStatus] = useState('');
   const [copyStatus, setCopyStatus] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [recordingStatus, setRecordingStatus] = useState('');
+  const [knownUsers, setKnownUsers] = useState<UserSummary[]>([]);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<RemoteStream[]>([]);
@@ -149,6 +216,20 @@ export default function MeetingRoom() {
   const pendingIceCandidatesRef = useRef<Record<string, RTCIceCandidateInit[]>>({});
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamsRef = useRef<RemoteStream[]>([]);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<BlobPart[]>([]);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingCanvasIntervalRef = useRef<number | null>(null);
+  const recordingTimerRef = useRef<number | null>(null);
+  const recordingAudioContextRef = useRef<AudioContext | null>(null);
+  const recordingAudioDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const recordingAudioSourcesRef = useRef<MediaStreamAudioSourceNode[]>([]);
+  const recordingAudioTrackKeysRef = useRef<Set<string>>(new Set());
+  const recordingVideoElementsRef = useRef<Record<string, HTMLVideoElement>>({});
+  const recordingStartedAtRef = useRef(0);
+  const recordingStopRequestedRef = useRef(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
   const participantsRef = useRef<Participant[]>([]);
   const currentParticipantRef = useRef<Participant | null>(null);
 
@@ -159,6 +240,19 @@ export default function MeetingRoom() {
 
     return `${user.firstName} ${user.lastName}`.trim() || user.email;
   }, [user]);
+
+  const getUserStatus = (userId?: string, email?: string) => {
+    if (userId && statusOverrides[userId]) {
+      return statusOverrides[userId];
+    }
+
+    if (userId && user?.id === userId) {
+      return user.status || 'Available';
+    }
+
+    const knownUser = knownUsers.find((item) => item.id === userId || item.email.toLowerCase() === email?.toLowerCase());
+    return knownUser?.status || 'Available';
+  };
 
   const isOrganizer = meeting?.organizerId === user?.id || currentParticipant?.role === 'Organizer';
 
@@ -181,30 +275,44 @@ export default function MeetingRoom() {
   }, [screenStream]);
 
   useEffect(() => {
+    remoteStreamsRef.current = remoteStreams;
+  }, [remoteStreams]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [chatMessages]);
+
+  useEffect(() => {
+    if (!isRecording) {
+      return;
+    }
+
+    connectRecordingAudioTracks('local', localStream);
+    remoteStreams.forEach((remote) => connectRecordingAudioTracks(remote.userId, remote.stream));
+  }, [isRecording, localStream, remoteStreams]);
+
+  useEffect(() => {
     if (!id) {
       return;
     }
 
     const loadMeeting = async () => {
       try {
-        const [meetingResponse, participantsResponse, chatResponse] = await Promise.all([
+        const [meetingResponse, participantsResponse, chatResponse, usersResponse, profileResponse] = await Promise.all([
           meetingAPI.getMeeting(id),
           meetingAPI.getParticipants(id),
           meetingAPI.getChatMessages(id).catch(() => ({ data: [] })),
+          userAPI.searchUsers().catch(() => ({ data: [] })),
+          userAPI.getProfile().catch(() => ({ data: user })),
         ]);
         setMeeting(meetingResponse.data);
         setMeetingNotes(meetingResponse.data.notes || '');
         setParticipants(participantsResponse.data);
-        setChatMessages(chatResponse.data.map((message: any) => ({
-          id: message.id,
-          scope: message.scope === 'Direct' ? 'direct' : 'group',
-          senderId: message.senderId,
-          senderName: message.senderName,
-          recipientUserId: message.recipientUserId,
-          recipientName: message.recipientName,
-          message: message.message,
-          timestamp: message.sentAt,
-        })));
+        setKnownUsers(usersResponse.data);
+        if (profileResponse.data) {
+          setUser(profileResponse.data);
+        }
+        setChatMessages(chatResponse.data.map(mapChatMessage));
       } catch (err: any) {
         setError(err.response?.data || 'Unable to load meeting');
       } finally {
@@ -213,7 +321,7 @@ export default function MeetingRoom() {
     };
 
     loadMeeting();
-  }, [id]);
+  }, [id, user?.id, setUser]);
 
   const getParticipantName = (userId: string) => {
     return participantsRef.current.find((participant) => participant.userId === userId)?.userName || 'Participant';
@@ -306,6 +414,355 @@ export default function MeetingRoom() {
 
     await attachLocalVideoTrack(track);
     return track;
+  };
+
+  const getRecordingVideoElement = (key: string, stream: MediaStream | null) => {
+    let video = recordingVideoElementsRef.current[key];
+    if (!video) {
+      video = document.createElement('video');
+      video.autoplay = true;
+      video.muted = true;
+      video.playsInline = true;
+      recordingVideoElementsRef.current[key] = video;
+    }
+
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+      video.play().catch(() => undefined);
+    }
+
+    return video;
+  };
+
+  const drawRecordingTile = (
+    context: CanvasRenderingContext2D,
+    source: { key: string; label: string; stream: MediaStream | null; initials: string },
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ) => {
+    context.fillStyle = '#020617';
+    context.fillRect(x, y, width, height);
+
+    const hasLiveVideo = source.stream?.getVideoTracks().some((track) => track.readyState === 'live' && track.enabled);
+    const video = getRecordingVideoElement(source.key, source.stream);
+
+    if (hasLiveVideo && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+      const scale = Math.max(width / video.videoWidth, height / video.videoHeight);
+      const sourceWidth = width / scale;
+      const sourceHeight = height / scale;
+      const sourceX = (video.videoWidth - sourceWidth) / 2;
+      const sourceY = (video.videoHeight - sourceHeight) / 2;
+      context.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
+    } else {
+      context.fillStyle = '#1e3a8a';
+      context.beginPath();
+      context.arc(x + width / 2, y + height / 2, Math.min(width, height) * 0.16, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = '#ffffff';
+      context.font = `${Math.max(26, Math.floor(Math.min(width, height) * 0.16))}px Segoe UI, Arial`;
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillText(source.initials.slice(0, 2).toUpperCase(), x + width / 2, y + height / 2);
+    }
+
+    context.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    context.fillRect(x + 10, y + height - 38, Math.min(width - 20, 260), 28);
+    context.fillStyle = '#ffffff';
+    context.font = '16px Segoe UI, Arial';
+    context.textAlign = 'left';
+    context.textBaseline = 'middle';
+    context.fillText(source.label, x + 20, y + height - 24, width - 40);
+  };
+
+  const drawRecordingFrame = (canvas: HTMLCanvasElement) => {
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return;
+    }
+
+    const width = canvas.width;
+    const height = canvas.height;
+    context.fillStyle = '#0f172a';
+    context.fillRect(0, 0, width, height);
+
+    const localSource = {
+      key: 'local',
+      label: `${displayName} (You)`,
+      stream: localStreamRef.current,
+      initials: displayName.charAt(0) || 'Y',
+    };
+    const remoteSources = remoteStreamsRef.current.map((remote) => ({
+      key: remote.userId,
+      label: remote.userName,
+      stream: remote.stream,
+      initials: remote.userName.charAt(0) || 'P',
+    }));
+    const screenTrack = screenStreamRef.current?.getVideoTracks().find((track) => track.readyState === 'live');
+
+    if (screenTrack && screenStreamRef.current) {
+      drawRecordingTile(context, {
+        key: 'screen',
+        label: 'Screen share',
+        stream: screenStreamRef.current,
+        initials: 'S',
+      }, 0, 0, width, height);
+
+      const thumbnails = [localSource, ...remoteSources].slice(0, 5);
+      thumbnails.forEach((source, index) => {
+        const tileWidth = 210;
+        const tileHeight = 118;
+        const x = 18 + index * (tileWidth + 12);
+        const y = height - tileHeight - 18;
+        drawRecordingTile(context, source, x, y, tileWidth, tileHeight);
+      });
+      return;
+    }
+
+    const sources = [localSource, ...remoteSources];
+    const count = Math.max(1, sources.length);
+    const columns = Math.ceil(Math.sqrt(count));
+    const rows = Math.ceil(count / columns);
+    const gap = 18;
+    const tileWidth = (width - gap * (columns + 1)) / columns;
+    const tileHeight = (height - gap * (rows + 1)) / rows;
+
+    sources.forEach((source, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const x = gap + column * (tileWidth + gap);
+      const y = gap + row * (tileHeight + gap);
+      drawRecordingTile(context, source, x, y, tileWidth, tileHeight);
+    });
+  };
+
+  const cleanupRecordingResources = () => {
+    if (recordingCanvasIntervalRef.current) {
+      window.clearInterval(recordingCanvasIntervalRef.current);
+      recordingCanvasIntervalRef.current = null;
+    }
+
+    if (recordingTimerRef.current) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+    recordingStartedAtRef.current = 0;
+    recordingStopRequestedRef.current = false;
+    recordingAudioDestinationRef.current = null;
+    recordingAudioSourcesRef.current = [];
+    recordingAudioTrackKeysRef.current.clear();
+    recordingAudioContextRef.current?.close().catch(() => undefined);
+    recordingAudioContextRef.current = null;
+    Object.values(recordingVideoElementsRef.current).forEach((video) => {
+      video.pause();
+      video.srcObject = null;
+    });
+    recordingVideoElementsRef.current = {};
+  };
+
+  const connectRecordingAudioTracks = (sourceKey: string, stream: MediaStream | null) => {
+    const audioContext = recordingAudioContextRef.current;
+    const destination = recordingAudioDestinationRef.current;
+    if (!audioContext || !destination) {
+      return;
+    }
+
+    const tracks = stream?.getAudioTracks().filter((track) => track.readyState === 'live') || [];
+    tracks.forEach((track) => {
+      const trackKey = `${sourceKey}:${track.id}`;
+      if (recordingAudioTrackKeysRef.current.has(trackKey)) {
+        return;
+      }
+
+      const audioSource = audioContext.createMediaStreamSource(new MediaStream([track]));
+      audioSource.connect(destination);
+      recordingAudioSourcesRef.current.push(audioSource);
+      recordingAudioTrackKeysRef.current.add(trackKey);
+    });
+  };
+
+  const createRecordingStream = async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1280;
+    canvas.height = 720;
+    drawRecordingFrame(canvas);
+    recordingCanvasIntervalRef.current = window.setInterval(() => drawRecordingFrame(canvas), 1000 / 15);
+
+    const canvasStream = canvas.captureStream(15);
+    const AudioContextConstructor = window.AudioContext || (window as any).webkitAudioContext;
+    const audioContext = new AudioContextConstructor();
+    const destination = audioContext.createMediaStreamDestination();
+    recordingAudioContextRef.current = audioContext;
+    recordingAudioDestinationRef.current = destination;
+    recordingAudioSourcesRef.current = [];
+    recordingAudioTrackKeysRef.current.clear();
+
+    connectRecordingAudioTracks('local', localStreamRef.current);
+    remoteStreamsRef.current.forEach((remote) => connectRecordingAudioTracks(remote.userId, remote.stream));
+
+    return new MediaStream([
+      ...canvasStream.getVideoTracks(),
+      ...destination.stream.getAudioTracks(),
+    ]);
+  };
+
+  const uploadRecordingBlob = async (blob: Blob) => {
+    if (!id || !meeting) {
+      throw new Error('Meeting is not loaded');
+    }
+
+    const formData = new FormData();
+    const safeTitle = meeting.title.replace(/[^a-z0-9-_]+/gi, '-').replace(/^-|-$/g, '') || 'meeting';
+    formData.append('recording', blob, `${safeTitle}-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`);
+    const response = await meetingAPI.uploadRecording(id, formData);
+    setMeeting(response.data);
+    return response.data as Meeting;
+  };
+
+  const shareRecordingInChat = async (updatedMeeting: Meeting) => {
+    if (!id || !currentParticipant || !updatedMeeting.recordingUrl) {
+      return;
+    }
+
+    const senderId = user?.id || currentParticipant.userId;
+    const recordingUrl = resolveRecordingUrl(updatedMeeting.recordingUrl);
+    const message = `Recording is ready: ${recordingUrl}`;
+    const saved = await meetingAPI.sendChatMessage(id, {
+      senderId,
+      senderName: displayName,
+      message,
+    });
+    setChatMessages((messages) => [...messages, mapChatMessage(saved.data)]);
+    await sendMeetingChatMessage(id, senderId, displayName, message).catch(() => undefined);
+  };
+
+  const getMediaRecorderOptions = () => {
+    const supportedType = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+    ].find((type) => MediaRecorder.isTypeSupported(type));
+
+    return supportedType ? { mimeType: supportedType } : undefined;
+  };
+
+  const startRecording = async () => {
+    if (!meeting?.allowRecording || !currentParticipant || !isOrganizer) {
+      setRecordingStatus('Recording is not available for this meeting');
+      return;
+    }
+
+    if (!window.MediaRecorder) {
+      setRecordingStatus('Recording is not supported in this browser');
+      return;
+    }
+
+    try {
+      setRecordingStatus('Preparing recording...');
+      recordingChunksRef.current = [];
+      recordingStopRequestedRef.current = false;
+      const recordingStream = await createRecordingStream();
+      recordingStreamRef.current = recordingStream;
+      const recorder = new MediaRecorder(recordingStream, getMediaRecorderOptions());
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        setIsRecording(false);
+        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'video/webm' });
+        cleanupRecordingResources();
+
+        if (blob.size === 0) {
+          setRecordingStatus('Recording was empty. Please record for at least a few seconds.');
+          return;
+        }
+
+        try {
+          setRecordingStatus('Saving recording...');
+          const updatedMeeting = await uploadRecordingBlob(blob);
+          try {
+            await shareRecordingInChat(updatedMeeting);
+            setRecordingStatus('Recording saved and shared in chat');
+            setActivity((items) => ['Recording saved and shared in chat', ...items].slice(0, 5));
+          } catch {
+            setRecordingStatus('Recording saved, but chat link could not be shared');
+            setActivity((items) => ['Recording saved', ...items].slice(0, 5));
+          }
+        } catch {
+          setRecordingStatus('Recording could not be uploaded');
+        }
+      };
+
+      recorder.start();
+      recordingStartedAtRef.current = Date.now();
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = window.setInterval(() => {
+        setRecordingSeconds((seconds) => seconds + 1);
+      }, 1000);
+      setRecordingStatus('Recording in progress');
+    } catch {
+      cleanupRecordingResources();
+      setIsRecording(false);
+      setRecordingStatus('Recording could not be started');
+    }
+  };
+
+  const stopRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state === 'recording' && !recordingStopRequestedRef.current) {
+      recordingStopRequestedRef.current = true;
+      setRecordingStatus('Stopping recording...');
+      const elapsedMilliseconds = Date.now() - recordingStartedAtRef.current;
+      const stopDelayMilliseconds = Math.max(0, 1500 - elapsedMilliseconds);
+      window.setTimeout(() => {
+        if (recorder.state === 'recording') {
+          try {
+            recorder.requestData();
+          } catch {
+            // Some browsers throw if the recorder has already queued its final chunk.
+          }
+          recorder.stop();
+        }
+      }, stopDelayMilliseconds);
+    }
+  };
+
+  const enableRecording = async () => {
+    if (!id || !meeting || !isOrganizer) {
+      return;
+    }
+
+    const response = await meetingAPI.updateMeeting(id, {
+      title: meeting.title,
+      description: meeting.description,
+      startTime: meeting.startTime,
+      endTime: meeting.endTime,
+      durationMinutes: meeting.durationMinutes,
+      attendeeEmails: meeting.attendeeEmails || [],
+      location: meeting.location,
+      isOnlineMeeting: meeting.isOnlineMeeting,
+      lobbyEnabled: meeting.lobbyEnabled,
+      allowChat: meeting.allowChat,
+      allowReactions: meeting.allowReactions,
+      allowScreenShare: meeting.allowScreenShare,
+      allowAttendeeUnmute: meeting.allowAttendeeUnmute,
+      allowRecording: true,
+      allowTranscription: meeting.allowTranscription,
+      recurrenceRule: meeting.recurrenceRule,
+      maxParticipants: meeting.maxParticipants,
+    });
+    setMeeting(response.data);
+    setRecordingStatus('Recording enabled');
   };
 
   const flushPendingIceCandidates = async (remoteUserId: string, connection: RTCPeerConnection) => {
@@ -401,6 +858,16 @@ export default function MeetingRoom() {
         if (user?.id) {
           await joinUserNotifications(user.id);
         }
+        onUserStatusChanged((data) => {
+          setStatusOverrides((items) => ({ ...items, [data.userId]: data.status }));
+          setKnownUsers((items) => items.map((item) => (
+            item.id === data.userId ? { ...item, status: data.status } : item
+          )));
+
+          if (data.userId === user?.id && user) {
+            setUser({ ...user, status: data.status });
+          }
+        });
         onParticipantJoined((data) => {
           setActivity((items) => [`${data.participantName} joined`, ...items].slice(0, 5));
           refreshParticipants().catch(() => undefined);
@@ -573,7 +1040,7 @@ export default function MeetingRoom() {
     return () => {
       leaveMeetingGroup(id).catch(() => undefined);
     };
-  }, [id, isOrganizer, token, user?.id]);
+  }, [id, isOrganizer, setUser, token, user?.id]);
 
   useEffect(() => {
     if (videoRef.current) {
@@ -615,6 +1082,7 @@ export default function MeetingRoom() {
       Object.values(peerConnectionsRef.current).forEach((connection) => connection.close());
       peerConnectionsRef.current = {};
       pendingIceCandidatesRef.current = {};
+      cleanupRecordingResources();
       setRemoteStreams([]);
     };
   }, []);
@@ -705,11 +1173,55 @@ export default function MeetingRoom() {
       Object.values(peerConnectionsRef.current).forEach((connection) => connection.close());
       peerConnectionsRef.current = {};
       pendingIceCandidatesRef.current = {};
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      } else {
+        cleanupRecordingResources();
+      }
       setRemoteStreams([]);
       await meetingAPI.leaveMeeting(id, currentParticipant.id);
       await notifyParticipantLeft(id, displayName);
     } finally {
       navigate('/dashboard', { replace: true });
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      if (id && currentParticipant) {
+        localStream?.getTracks().forEach((track) => track.stop());
+        screenStream?.getTracks().forEach((track) => track.stop());
+        Object.values(peerConnectionsRef.current).forEach((connection) => connection.close());
+        peerConnectionsRef.current = {};
+        pendingIceCandidatesRef.current = {};
+        cleanupRecordingResources();
+        setRemoteStreams([]);
+        await meetingAPI.leaveMeeting(id, currentParticipant.id);
+        await notifyParticipantLeft(id, displayName);
+      }
+    } finally {
+      logout();
+      navigate('/login', { replace: true });
+    }
+  };
+
+  const updatePresenceStatus = async (status: UserStatus) => {
+    if (!user) {
+      return;
+    }
+
+    const previousUser = user;
+    setUser({ ...user, status });
+    setStatusOverrides((items) => ({ ...items, [user.id]: status }));
+
+    try {
+      const response = await userAPI.updateStatus(status);
+      setUser(response.data);
+      setStatusOverrides((items) => ({ ...items, [user.id]: response.data.status }));
+      await notifyUserStatusChanged(user.id, displayName, response.data.status).catch(() => undefined);
+    } catch {
+      setUser(previousUser);
+      setStatusOverrides((items) => ({ ...items, [user.id]: previousUser.status || 'Available' }));
     }
   };
 
@@ -963,12 +1475,22 @@ export default function MeetingRoom() {
             <h1 className="text-xl font-semibold">{meeting.title}</h1>
             <p className="text-sm text-slate-300">{formatDateTime(meeting.startTime)}</p>
           </div>
-          <button
-            onClick={handleLeave}
-            className="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
-          >
-            {hasJoined ? 'Leave' : 'Close'}
-          </button>
+          <div className="flex items-center gap-2">
+            <ProfileStatusMenu
+              displayName={displayName}
+              email={user?.email}
+              status={user?.status}
+              onChange={updatePresenceStatus}
+              onSignOut={handleSignOut}
+              dark
+            />
+            <button
+              onClick={handleLeave}
+              className="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
+            >
+              {hasJoined ? 'Leave' : 'Close'}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1068,7 +1590,33 @@ export default function MeetingRoom() {
             >
               {screenSharing ? 'Stop sharing' : 'Share screen'}
             </button>
+            {isOrganizer && (
+              meeting.allowRecording ? (
+                <button
+                  disabled={!hasJoined || recordingStatus === 'Saving recording...' || recordingStatus === 'Preparing recording...' || recordingStatus === 'Stopping recording...'}
+                  onClick={isRecording ? stopRecording : startRecording}
+                  className={`rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-40 ${
+                    isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-purple-600 hover:bg-purple-700'
+                  }`}
+                >
+                  {isRecording ? `Stop recording ${formatDuration(recordingSeconds)}` : 'Start recording'}
+                </button>
+              ) : (
+                <button
+                  disabled={!hasJoined}
+                  onClick={enableRecording}
+                  className="rounded-md bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700 disabled:opacity-40"
+                >
+                  Enable recording
+                </button>
+              )
+            )}
           </div>
+          {recordingStatus && (
+            <p className={`mt-3 text-center text-sm ${isRecording ? 'text-red-200' : 'text-slate-300'}`}>
+              {recordingStatus}
+            </p>
+          )}
         </section>
 
         <aside className="space-y-5">
@@ -1080,6 +1628,16 @@ export default function MeetingRoom() {
               <p>{meeting.durationMinutes || 60} minutes</p>
               <p>Lobby {meeting.lobbyEnabled ? 'enabled' : 'disabled'}</p>
               <p>{meeting.allowRecording ? 'Recording allowed' : 'Recording unavailable'} - {meeting.allowTranscription ? 'Transcription allowed' : 'Transcription unavailable'}</p>
+              {meeting.recordingUrl && (
+                <a
+                  href={resolveRecordingUrl(meeting.recordingUrl)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex rounded-md border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20"
+                >
+                  Open recording
+                </a>
+              )}
               {meeting.meetingLink && (
                 <div className="flex flex-wrap items-center gap-2">
                   <button
@@ -1133,7 +1691,13 @@ export default function MeetingRoom() {
                 participants.map((participant) => (
                   <div key={participant.id} className="rounded-md bg-slate-800 px-3 py-2">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-medium">{participant.userName}</p>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="truncate text-sm font-medium">{participant.userName}</p>
+                          <UserStatusBadge status={getUserStatus(participant.userId, participant.userEmail)} compact />
+                        </div>
+                        <p className="text-xs text-slate-400">{statusLabel(getUserStatus(participant.userId, participant.userEmail))}</p>
+                      </div>
                       {isOrganizer && participant.userId !== user?.id ? (
                         <select
                           value={participant.role || 'Attendee'}
@@ -1240,11 +1804,12 @@ export default function MeetingRoom() {
                         <span>{isMine ? 'You' : message.senderName}</span>
                         <span>{message.scope === 'direct' ? `Direct${message.recipientName ? ` to ${message.recipientName}` : ''}` : 'Everyone'}</span>
                       </div>
-                      <p>{message.message}</p>
+                      <p className="break-words">{renderChatMessageText(message.message)}</p>
                     </div>
                   );
                 })
               )}
+              <div ref={chatEndRef} />
             </div>
 
             <div className="mt-3 flex gap-2">

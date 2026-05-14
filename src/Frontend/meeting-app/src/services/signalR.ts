@@ -211,6 +211,16 @@ export const sendConversationMessage = async (
   }
 };
 
+export const notifyUserStatusChanged = async (
+  userId: string,
+  userName: string,
+  status: string,
+) => {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    await connection.invoke('NotifyUserStatusChanged', userId, userName, status);
+  }
+};
+
 export const sendWebRtcOffer = async (
   meetingId: string,
   senderUserId: string,
@@ -304,5 +314,12 @@ export const onConversationMessageReceived = (callback: (data: any) => void) => 
   if (connection) {
     connection.off('ConversationMessageReceived');
     connection.on('ConversationMessageReceived', callback);
+  }
+};
+
+export const onUserStatusChanged = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.off('UserStatusChanged');
+    connection.on('UserStatusChanged', callback);
   }
 };

@@ -20,6 +20,7 @@ public class LoginResponse
     public string Email { get; set; } = string.Empty;
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
+    public string Status { get; set; } = UserPresenceStatuses.Available;
     public string Token { get; set; } = string.Empty;
     public DateTime ExpiresAt { get; set; }
 }
@@ -33,6 +34,7 @@ public class UserProfileDto
     public string FullName => $"{FirstName} {LastName}";
     public string? ProfilePictureUrl { get; set; }
     public string? PhoneNumber { get; set; }
+    public string Status { get; set; } = UserPresenceStatuses.Available;
     public bool IsEmailVerified { get; set; }
     public DateTime CreatedAt { get; set; }
 }
@@ -43,4 +45,9 @@ public class UpdateProfileRequest
     public string LastName { get; set; } = string.Empty;
     public string? PhoneNumber { get; set; }
     public string? ProfilePictureUrl { get; set; }
+}
+
+public class UpdateUserStatusRequest
+{
+    public string Status { get; set; } = UserPresenceStatuses.Available;
 }

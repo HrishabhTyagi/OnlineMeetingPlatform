@@ -58,6 +58,17 @@ public class NotificationHub : Hub
         await Clients.Group($"user_{userId}").SendAsync("ReceiveNotification", message);
     }
 
+    public async Task NotifyUserStatusChanged(string userId, string userName, string status)
+    {
+        await Clients.All.SendAsync("UserStatusChanged", new
+        {
+            UserId = userId,
+            UserName = userName,
+            Status = status,
+            Timestamp = DateTime.UtcNow
+        });
+    }
+
     public async Task SendMeetingChatMessage(string meetingId, string senderId, string senderName, string message)
     {
         if (string.IsNullOrWhiteSpace(message))

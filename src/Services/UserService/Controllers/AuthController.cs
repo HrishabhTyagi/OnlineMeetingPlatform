@@ -42,6 +42,7 @@ public class AuthController : ControllerBase
                 Email = user.Email,
                 FirstName = user.FirstName,
                 LastName = user.LastName,
+                Status = user.Status,
                 Token = token,
                 ExpiresAt = DateTime.UtcNow.AddHours(24)
             });
@@ -71,6 +72,7 @@ public class AuthController : ControllerBase
                 Email = user.Email,
                 FirstName = user.FirstName,
                 LastName = user.LastName,
+                Status = user.Status,
                 Token = token,
                 ExpiresAt = DateTime.UtcNow.AddHours(24)
             });
