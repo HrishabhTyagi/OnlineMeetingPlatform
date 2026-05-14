@@ -139,6 +139,7 @@ export default function MeetingRoom() {
   const [meetingNotes, setMeetingNotes] = useState('');
   const [inviteText, setInviteText] = useState('');
   const [inviteStatus, setInviteStatus] = useState('');
+  const [copyStatus, setCopyStatus] = useState('');
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<RemoteStream[]>([]);
@@ -798,6 +799,19 @@ export default function MeetingRoom() {
     }
   };
 
+  const copyJoinLink = async () => {
+    const link = meeting?.meetingLink || window.location.href;
+
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopyStatus('Copied');
+    } catch {
+      setCopyStatus('Unable to copy');
+    }
+
+    window.setTimeout(() => setCopyStatus(''), 2500);
+  };
+
   const updateRole = async (participantId: string, role: string) => {
     if (!id || !isOrganizer) {
       return;
@@ -975,12 +989,24 @@ export default function MeetingRoom() {
               <p>Lobby {meeting.lobbyEnabled ? 'enabled' : 'disabled'}</p>
               <p>{meeting.allowRecording ? 'Recording allowed' : 'Recording unavailable'} - {meeting.allowTranscription ? 'Transcription allowed' : 'Transcription unavailable'}</p>
               {meeting.meetingLink && (
-                <button
-                  onClick={() => navigator.clipboard.writeText(meeting.meetingLink || window.location.href)}
-                  className="rounded-md border border-white/10 px-3 py-2 text-left text-xs text-slate-200 hover:bg-white/5"
-                >
-                  Copy join link
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={copyJoinLink}
+                    className="rounded-md border border-white/10 px-3 py-2 text-left text-xs text-slate-200 hover:bg-white/5"
+                  >
+                    Copy join link
+                  </button>
+                  {copyStatus && (
+                    <span
+                      aria-live="polite"
+                      className={`rounded px-2 py-1 text-xs font-semibold ${
+                        copyStatus === 'Copied' ? 'bg-emerald-500/20 text-emerald-200' : 'bg-red-500/20 text-red-200'
+                      }`}
+                    >
+                      {copyStatus}
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           </section>
