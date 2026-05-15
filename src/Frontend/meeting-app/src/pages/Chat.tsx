@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus } from '../components/UserStatus';
-import { conversationAPI, resolveApiAssetUrl, userAPI } from '../services/api';
+import { conversationAPI, meetingAPI, resolveApiAssetUrl, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinConversation,
@@ -216,6 +216,7 @@ export default function Chat() {
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
   const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'photos'>('chat');
+  const [startingCall, setStartingCall] = useState<'audio' | 'video' | null>(null);
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -594,6 +595,74 @@ export default function Chat() {
     );
   };
 
+  const startInstantCall = async (mode: 'audio' | 'video') => {
+    if (!user || !selectedConversation || startingCall) {
+      setError('Select a chat before starting a call');
+      return;
+    }
+
+    const attendeeEmails = Array.from(new Set([
+      ...selectedConversation.members
+        .filter((member) => member.userId !== user.id)
+        .map((member) => member.userEmail)
+        .filter(Boolean),
+      ...(selectedConversation.invites || [])
+        .filter((invite) => !invite.hasAccepted)
+        .map((invite) => invite.email)
+        .filter(Boolean),
+    ])).filter((email) => email.toLowerCase() !== user.email.toLowerCase());
+
+    if (attendeeEmails.length === 0) {
+      setError('Add someone to this chat before starting a call');
+      return;
+    }
+
+    const startedAt = new Date();
+    const durationMinutes = 60;
+    const callLabel = mode === 'video' ? 'video call' : 'call';
+    setStartingCall(mode);
+    setError('');
+
+    try {
+      const response = await meetingAPI.createMeeting({
+        title: `${selectedTitle} ${mode === 'video' ? 'video call' : 'call'}`,
+        description: `${displayName} started an instant ${callLabel} from chat.`,
+        startTime: startedAt.toISOString(),
+        endTime: new Date(startedAt.getTime() + durationMinutes * 60000).toISOString(),
+        durationMinutes,
+        attendeeEmails,
+        location: '',
+        isOnlineMeeting: true,
+        lobbyEnabled: false,
+        allowChat: true,
+        allowReactions: true,
+        allowScreenShare: true,
+        allowAttendeeUnmute: true,
+        allowRecording: false,
+        allowTranscription: false,
+        recurrenceRule: '',
+        maxParticipants: Math.max(2, attendeeEmails.length + 1),
+        isRecorded: false,
+      });
+
+      const meetingId = response.data.id;
+      const callUrl = `${window.location.origin}/meeting/${meetingId}?call=${mode}&autojoin=1`;
+      const callMessage = `${displayName} started a ${callLabel}: ${callUrl}`;
+      const messageResponse = await conversationAPI.sendMessage(selectedConversation.id, {
+        senderId: user.id,
+        senderName: displayName,
+        message: callMessage,
+      });
+      appendSentMessage(messageResponse.data);
+      await notifyConversationMessage(messageResponse.data);
+      navigate(`/meeting/${meetingId}?call=${mode}&autojoin=1`);
+    } catch (err: any) {
+      setError(err.response?.data?.message || err.response?.data || `Unable to start ${callLabel}`);
+    } finally {
+      setStartingCall(null);
+    }
+  };
+
   const addPendingFiles = (files: FileList | File[]) => {
     const incomingFiles = Array.from(files);
     if (incomingFiles.length === 0) {
@@ -919,8 +988,20 @@ export default function Chat() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button onClick={() => navigate('/create-meeting')} className="rounded-md px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Video</button>
-              <button onClick={() => navigate('/create-meeting')} className="rounded-md px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Call</button>
+              <button
+                onClick={() => startInstantCall('video')}
+                disabled={!selectedConversation || !!startingCall}
+                className="rounded-md px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:text-slate-400 disabled:hover:bg-transparent"
+              >
+                {startingCall === 'video' ? 'Starting...' : 'Video'}
+              </button>
+              <button
+                onClick={() => startInstantCall('audio')}
+                disabled={!selectedConversation || !!startingCall}
+                className="rounded-md px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:text-slate-400 disabled:hover:bg-transparent"
+              >
+                {startingCall === 'audio' ? 'Starting...' : 'Call'}
+              </button>
               <button onClick={() => setNewChatOpen(true)} className="rounded-md px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Add</button>
               <button onClick={() => setChatSearch('')} className="rounded-md px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Search</button>
               <button className="rounded-md px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">More</button>

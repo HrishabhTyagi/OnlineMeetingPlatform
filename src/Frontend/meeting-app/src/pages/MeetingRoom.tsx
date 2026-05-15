@@ -223,7 +223,7 @@ export default function MeetingRoom() {
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState('');
   const [audioEnabled, setAudioEnabled] = useState(true);
-  const [videoEnabled, setVideoEnabled] = useState(true);
+  const [videoEnabled, setVideoEnabled] = useState(() => new URLSearchParams(window.location.search).get('call') !== 'audio');
   const [screenSharing, setScreenSharing] = useState(false);
   const [activity, setActivity] = useState<string[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -265,6 +265,7 @@ export default function MeetingRoom() {
   const recordingVideoElementsRef = useRef<Record<string, HTMLVideoElement>>({});
   const recordingStartedAtRef = useRef(0);
   const recordingStopRequestedRef = useRef(false);
+  const autoJoinAttemptedRef = useRef(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const participantsRef = useRef<Participant[]>([]);
   const currentParticipantRef = useRef<Participant | null>(null);
@@ -303,6 +304,7 @@ export default function MeetingRoom() {
   const isOrganizer = meeting?.organizerId === user?.id || currentParticipant?.role === 'Organizer';
 
   const currentUserId = user?.id || currentParticipant?.userId || '';
+  const autoJoinRequested = useMemo(() => new URLSearchParams(window.location.search).get('autojoin') === '1', []);
 
   useEffect(() => {
     participantsRef.current = participants;
@@ -1178,7 +1180,7 @@ export default function MeetingRoom() {
       }
 
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: videoEnabled });
         setLocalStream(stream);
         stream.getAudioTracks().forEach((track) => {
           track.enabled = audioEnabled;
@@ -1187,7 +1189,21 @@ export default function MeetingRoom() {
           track.enabled = videoEnabled;
         });
       } catch {
-        setActivity((items) => ['Camera or microphone permission was not granted', ...items].slice(0, 5));
+        if (videoEnabled) {
+          try {
+            const audioOnlyStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            setLocalStream(audioOnlyStream);
+            audioOnlyStream.getAudioTracks().forEach((track) => {
+              track.enabled = audioEnabled;
+            });
+            setVideoEnabled(false);
+            setActivity((items) => ['Camera could not be started. Joined with audio only.', ...items].slice(0, 5));
+          } catch {
+            setActivity((items) => ['Camera or microphone permission was not granted', ...items].slice(0, 5));
+          }
+        } else {
+          setActivity((items) => ['Microphone permission was not granted', ...items].slice(0, 5));
+        }
       }
 
       const response = await meetingAPI.joinMeeting(id, {
@@ -1206,6 +1222,15 @@ export default function MeetingRoom() {
       setJoining(false);
     }
   };
+
+  useEffect(() => {
+    if (!autoJoinRequested || autoJoinAttemptedRef.current || !meeting || currentParticipant || joining || waitingForLobby) {
+      return;
+    }
+
+    autoJoinAttemptedRef.current = true;
+    handleJoin().catch(() => undefined);
+  }, [autoJoinRequested, meeting, currentParticipant, joining, waitingForLobby]);
 
   const handleLeave = async () => {
     if (!id || !currentParticipant) {
