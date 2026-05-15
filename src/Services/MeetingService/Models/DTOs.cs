@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Http;
+
 namespace MeetingService.Models;
 
 public class CreateMeetingRequest
@@ -196,6 +198,10 @@ public class ConversationMessageDto
     public Guid SenderId { get; set; }
     public string SenderName { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
+    public string? AttachmentFileName { get; set; }
+    public string? AttachmentUrl { get; set; }
+    public string? AttachmentContentType { get; set; }
+    public long? AttachmentSizeBytes { get; set; }
     public DateTime SentAt { get; set; }
 }
 
@@ -212,4 +218,16 @@ public class SendConversationMessageRequest
     public Guid SenderId { get; set; }
     public string SenderName { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
+    public string? AttachmentFileName { get; set; }
+    public string? AttachmentUrl { get; set; }
+    public string? AttachmentContentType { get; set; }
+    public long? AttachmentSizeBytes { get; set; }
+}
+
+public class SendConversationAttachmentRequest
+{
+    public Guid SenderId { get; set; }
+    public string SenderName { get; set; } = string.Empty;
+    public string? Message { get; set; }
+    public IFormFile? File { get; set; }
 }

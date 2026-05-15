@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ProfileStatusMenu, UserStatusBadge, UserStatus, statusLabel } from '../components/UserStatus';
+import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus, statusLabel } from '../components/UserStatus';
 import { meetingAPI, userAPI } from '../services/api';
 import {
   initializeSignalR,
@@ -51,6 +51,7 @@ interface Participant {
 interface UserSummary {
   id: string;
   email: string;
+  profilePictureUrl?: string;
   status?: string;
 }
 
@@ -154,7 +155,23 @@ function resolveRecordingUrl(recordingUrl?: string) {
   return `http://localhost:5000${recordingUrl}`;
 }
 
-function renderChatMessageText(message: string) {
+function stripCodeFence(value: string) {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n?```$/);
+  return match ? match[1] : value;
+}
+
+function looksLikeCode(value: string) {
+  const lines = value.split('\n');
+  if (lines.length < 2) {
+    return false;
+  }
+
+  return lines.some((line) => /^\s*(#include|using\s|import\s|function\s|class\s|public\s|private\s|const\s|let\s|var\s|if\s*\(|for\s*\(|while\s*\(|return\b|int\s+main|printf|<\/?\w|[{};])/.test(line))
+    || lines.some((line) => /^\s{2,}\S/.test(line));
+}
+
+function linkifyChatMessageText(message: string, isMine: boolean) {
   return message.split(/(https?:\/\/[^\s]+)/g).map((part, index) => {
     if (!part.startsWith('http')) {
       return part;
@@ -166,7 +183,7 @@ function renderChatMessageText(message: string) {
         href={part}
         target="_blank"
         rel="noreferrer"
-        className="break-all font-semibold underline underline-offset-2"
+        className={`break-all font-semibold underline underline-offset-2 ${isMine ? 'text-white' : 'text-blue-200'}`}
       >
         {part}
       </a>
@@ -174,11 +191,29 @@ function renderChatMessageText(message: string) {
   });
 }
 
+function renderChatMessageText(message: string, isMine: boolean) {
+  if (looksLikeCode(message) || message.trim().startsWith('```')) {
+    return (
+      <pre className={`mt-1 max-h-80 overflow-auto rounded-md border px-3 py-2 text-left font-mono text-xs leading-relaxed ${isMine ? 'border-white/20 bg-blue-700 text-white' : 'border-white/10 bg-slate-950 text-slate-100'}`}>
+        <code className="whitespace-pre">{stripCodeFence(message)}</code>
+      </pre>
+    );
+  }
+
+  return (
+    <p className="whitespace-pre-wrap break-words">
+      {linkifyChatMessageText(message, isMine)}
+    </p>
+  );
+}
+
 export default function MeetingRoom() {
   const { id } = useParams();
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
+  const accounts = useAuthStore((state) => state.accounts);
+  const switchAccount = useAuthStore((state) => state.switchAccount);
   const logout = useAuthStore((state) => state.logout);
   const token = useAuthStore((state) => state.token);
   const [meeting, setMeeting] = useState<Meeting | null>(null);
@@ -207,6 +242,7 @@ export default function MeetingRoom() {
   const [recordingStatus, setRecordingStatus] = useState('');
   const [knownUsers, setKnownUsers] = useState<UserSummary[]>([]);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
+  const [avatarUploading, setAvatarUploading] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<RemoteStream[]>([]);
@@ -252,6 +288,16 @@ export default function MeetingRoom() {
 
     const knownUser = knownUsers.find((item) => item.id === userId || item.email.toLowerCase() === email?.toLowerCase());
     return knownUser?.status || 'Available';
+  };
+
+  const getUserAvatar = (userId?: string, email?: string) => {
+    if (userId && user?.id === userId) {
+      return user.profilePictureUrl;
+    }
+
+    const knownUser = knownUsers.find((item) => item.id === userId || item.email.toLowerCase() === email?.toLowerCase());
+    return knownUser?.profilePictureUrl
+      || accounts.find((account) => account.user.id === userId || account.user.email.toLowerCase() === email?.toLowerCase())?.user.profilePictureUrl;
   };
 
   const isOrganizer = meeting?.organizerId === user?.id || currentParticipant?.role === 'Organizer';
@@ -1187,6 +1233,7 @@ export default function MeetingRoom() {
   };
 
   const handleSignOut = async () => {
+    const hadOtherAccounts = accounts.some((account) => account.user.id !== user?.id);
     try {
       if (id && currentParticipant) {
         localStream?.getTracks().forEach((track) => track.stop());
@@ -1201,7 +1248,26 @@ export default function MeetingRoom() {
       }
     } finally {
       logout();
-      navigate('/login', { replace: true });
+      navigate(hadOtherAccounts ? '/dashboard' : '/login', { replace: true });
+    }
+  };
+
+  const handleSwitchAccount = async (userId: string) => {
+    try {
+      if (id && currentParticipant) {
+        localStream?.getTracks().forEach((track) => track.stop());
+        screenStream?.getTracks().forEach((track) => track.stop());
+        Object.values(peerConnectionsRef.current).forEach((connection) => connection.close());
+        peerConnectionsRef.current = {};
+        pendingIceCandidatesRef.current = {};
+        cleanupRecordingResources();
+        setRemoteStreams([]);
+        await meetingAPI.leaveMeeting(id, currentParticipant.id);
+        await notifyParticipantLeft(id, displayName);
+      }
+    } finally {
+      switchAccount(userId);
+      navigate('/dashboard', { replace: true });
     }
   };
 
@@ -1222,6 +1288,29 @@ export default function MeetingRoom() {
     } catch {
       setUser(previousUser);
       setStatusOverrides((items) => ({ ...items, [user.id]: previousUser.status || 'Available' }));
+    }
+  };
+
+  const handleAvatarChange = async (file: File) => {
+    const data = new FormData();
+    data.append('file', file);
+    setAvatarUploading(true);
+
+    try {
+      const response = await userAPI.uploadAvatar(data);
+      setUser(response.data);
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
+  const handleAvatarRemove = async () => {
+    setAvatarUploading(true);
+    try {
+      const response = await userAPI.removeAvatar();
+      setUser(response.data);
+    } finally {
+      setAvatarUploading(false);
     }
   };
 
@@ -1305,11 +1394,11 @@ export default function MeetingRoom() {
   };
 
   const handleSendChat = async () => {
-    if (!id || !currentParticipant || !chatDraft.trim()) {
+    const message = chatDraft.replace(/\s+$/, '');
+    if (!id || !currentParticipant || !message.trim()) {
       return;
     }
 
-    const message = chatDraft.trim();
     setChatDraft('');
     const senderId = user?.id || currentParticipant.userId;
 
@@ -1478,9 +1567,17 @@ export default function MeetingRoom() {
           <div className="flex items-center gap-2">
             <ProfileStatusMenu
               displayName={displayName}
+              currentUserId={user?.id}
               email={user?.email}
+              profilePictureUrl={user?.profilePictureUrl}
               status={user?.status}
+              accounts={accounts.map((account) => account.user)}
+              avatarUploading={avatarUploading}
               onChange={updatePresenceStatus}
+              onSwitchAccount={handleSwitchAccount}
+              onAddAccount={() => navigate('/login?addAccount=1')}
+              onAvatarChange={handleAvatarChange}
+              onAvatarRemove={handleAvatarRemove}
               onSignOut={handleSignOut}
               dark
             />
@@ -1516,9 +1613,13 @@ export default function MeetingRoom() {
                     ) : localStream && videoEnabled ? (
                       <video ref={videoRef} autoPlay playsInline muted className="h-full max-h-[60vh] w-full object-contain" />
                     ) : (
-                      <div className="flex h-24 w-24 items-center justify-center rounded-full bg-blue-600 text-3xl font-semibold">
-                        {displayName.charAt(0).toUpperCase()}
-                      </div>
+                      <UserAvatar
+                        displayName={displayName}
+                        email={user?.email}
+                        profilePictureUrl={user?.profilePictureUrl}
+                        size="xl"
+                        dark
+                      />
                     )}
                     <div className="absolute bottom-3 left-3 rounded bg-black/60 px-2 py-1 text-xs font-medium text-white">
                       You {audioEnabled ? '' : '(muted)'} {screenSharing ? '- presenting' : ''}
@@ -1691,12 +1792,23 @@ export default function MeetingRoom() {
                 participants.map((participant) => (
                   <div key={participant.id} className="rounded-md bg-slate-800 px-3 py-2">
                     <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <UserAvatar
+                          displayName={participant.userName}
+                          email={participant.userEmail}
+                          profilePictureUrl={getUserAvatar(participant.userId, participant.userEmail)}
+                          status={getUserStatus(participant.userId, participant.userEmail)}
+                          showStatus
+                          size="sm"
+                          dark
+                        />
+                        <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <p className="truncate text-sm font-medium">{participant.userName}</p>
                           <UserStatusBadge status={getUserStatus(participant.userId, participant.userEmail)} compact />
                         </div>
                         <p className="text-xs text-slate-400">{statusLabel(getUserStatus(participant.userId, participant.userEmail))}</p>
+                        </div>
                       </div>
                       {isOrganizer && participant.userId !== user?.id ? (
                         <select
@@ -1804,7 +1916,7 @@ export default function MeetingRoom() {
                         <span>{isMine ? 'You' : message.senderName}</span>
                         <span>{message.scope === 'direct' ? `Direct${message.recipientName ? ` to ${message.recipientName}` : ''}` : 'Everyone'}</span>
                       </div>
-                      <p className="break-words">{renderChatMessageText(message.message)}</p>
+                      {renderChatMessageText(message.message, isMine)}
                     </div>
                   );
                 })
@@ -1812,19 +1924,34 @@ export default function MeetingRoom() {
               <div ref={chatEndRef} />
             </div>
 
-            <div className="mt-3 flex gap-2">
-              <input
+            <div className="mt-3 flex items-end gap-2">
+              <textarea
                 value={chatDraft}
                 onChange={(event) => setChatDraft(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
+                  if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
                     handleSendChat();
+                    return;
+                  }
+
+                  if (event.key === 'Tab') {
+                    event.preventDefault();
+                    const target = event.currentTarget;
+                    const start = target.selectionStart;
+                    const end = target.selectionEnd;
+                    const nextDraft = `${chatDraft.slice(0, start)}  ${chatDraft.slice(end)}`;
+                    setChatDraft(nextDraft);
+                    window.requestAnimationFrame(() => {
+                      target.selectionStart = start + 2;
+                      target.selectionEnd = start + 2;
+                    });
                   }
                 }}
+                rows={Math.min(5, Math.max(2, chatDraft.split('\n').length))}
                 disabled={!hasJoined}
                 placeholder={hasJoined ? 'Type a message' : 'Join to chat'}
-                className="min-w-0 flex-1 rounded-md border border-white/10 bg-slate-800 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 disabled:opacity-50"
+                className="max-h-32 min-w-0 flex-1 resize-none rounded-md border border-white/10 bg-slate-800 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 disabled:opacity-50"
               />
               <button
                 onClick={handleSendChat}

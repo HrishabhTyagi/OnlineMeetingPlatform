@@ -1,9 +1,26 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { meetingAPI } from '../services/api';
+import { UserAvatar, UserStatusBadge } from '../components/UserStatus';
+import { meetingAPI, userAPI } from '../services/api';
 import { useMeetingStore } from '../store/meetingStore';
 
 const durationOptions = [15, 30, 45, 60, 90, 120, 180];
+const recurrenceOptions = [
+  { value: '', label: 'Does not repeat' },
+  { value: 'Daily', label: 'Daily' },
+  { value: 'Weekdays', label: 'Every weekday' },
+  { value: 'Weekly', label: 'Weekly' },
+];
+
+interface UserSummary {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  fullName?: string;
+  profilePictureUrl?: string;
+  status?: string;
+}
 
 function pad(value: number) {
   return value.toString().padStart(2, '0');
@@ -34,6 +51,14 @@ function formatDateTime(date: Date) {
   }).format(date);
 }
 
+function recurrenceLabel(rule?: string) {
+  return recurrenceOptions.find((option) => option.value === rule)?.label || 'Does not repeat';
+}
+
+function findUserByEmail(users: UserSummary[], email: string) {
+  return users.find((item) => item.email.toLowerCase() === email.toLowerCase());
+}
+
 function notifyMeetingCreated(title: string, joinLink: string) {
   if (!('Notification' in window) || Notification.permission !== 'granted') {
     return;
@@ -58,12 +83,14 @@ export default function CreateMeeting() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [knownUsers, setKnownUsers] = useState<UserSummary[]>([]);
   const [formData, setFormData] = useState({
     title: '',
     attendeeText: '',
     date: toDateInputValue(now),
     startTime: toTimeInputValue(now),
     durationMinutes: 60,
+    recurrenceRule: '',
     location: '',
     isOnlineMeeting: true,
     isRecorded: false,
@@ -87,6 +114,12 @@ export default function CreateMeeting() {
     () => new Date(startDate.getTime() + Number(formData.durationMinutes) * 60000),
     [startDate, formData.durationMinutes],
   );
+
+  useEffect(() => {
+    userAPI.searchUsers()
+      .then((response) => setKnownUsers(response.data))
+      .catch(() => setKnownUsers([]));
+  }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
@@ -129,6 +162,7 @@ export default function CreateMeeting() {
         allowAttendeeUnmute: formData.allowAttendeeUnmute,
         allowRecording: formData.allowRecording,
         allowTranscription: formData.allowTranscription,
+        recurrenceRule: formData.recurrenceRule,
         maxParticipants: Number(formData.maxParticipants),
         isRecorded: formData.isRecorded,
       });
@@ -196,6 +230,35 @@ export default function CreateMeeting() {
               rows={3}
               className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
             />
+            {attendeeEmails.length > 0 && (
+              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                {attendeeEmails.map((email) => {
+                  const attendee = findUserByEmail(knownUsers, email);
+                  return (
+                    <div key={email} className="flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2 text-sm">
+                      <span className="flex min-w-0 items-center gap-2 text-slate-700">
+                        {attendee && (
+                          <UserAvatar
+                            displayName={attendee.fullName || `${attendee.firstName} ${attendee.lastName}`.trim()}
+                            email={attendee.email}
+                            profilePictureUrl={attendee.profilePictureUrl}
+                            status={attendee.status}
+                            showStatus
+                            size="sm"
+                          />
+                        )}
+                        <span className="min-w-0 truncate">{attendee?.fullName || email}</span>
+                      </span>
+                      {attendee ? (
+                        <UserStatusBadge status={attendee.status} />
+                      ) : (
+                        <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-500">External invite</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="grid gap-4 md:grid-cols-[1fr_160px_160px]">
@@ -290,7 +353,7 @@ export default function CreateMeeting() {
             </div>
           </fieldset>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-3">
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700">Location</label>
               <input
@@ -301,6 +364,21 @@ export default function CreateMeeting() {
                 placeholder="Room, office, or link"
                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Repeat</label>
+              <select
+                name="recurrenceRule"
+                value={formData.recurrenceRule}
+                onChange={handleChange}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              >
+                {recurrenceOptions.map((option) => (
+                  <option key={option.value || 'none'} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700">Capacity</label>
@@ -353,6 +431,7 @@ export default function CreateMeeting() {
               <p className="text-sm font-semibold text-blue-950">{formData.title || 'Untitled meeting'}</p>
               <p className="mt-2 text-sm text-blue-900">{formatDateTime(startDate)}</p>
               <p className="text-sm text-blue-900">Ends {formatDateTime(endDate)}</p>
+              <p className="mt-2 text-sm text-blue-900">{recurrenceLabel(formData.recurrenceRule)}</p>
               <p className="mt-3 text-sm text-blue-900">
                 {attendeeEmails.length} attendee{attendeeEmails.length === 1 ? '' : 's'}
               </p>

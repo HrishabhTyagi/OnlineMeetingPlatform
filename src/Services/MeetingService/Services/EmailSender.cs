@@ -101,18 +101,79 @@ public class SmtpEmailSender : IEmailSender
         var start = meeting.StartTime.ToLocalTime().ToString("f");
         var end = meeting.EndTime?.ToLocalTime().ToString("t");
         var joinLink = meeting.MeetingLink ?? string.Empty;
-        var location = string.IsNullOrWhiteSpace(meeting.Location) ? "Online" : meeting.Location;
+        var location = string.IsNullOrWhiteSpace(meeting.Location)
+            ? (meeting.IsOnlineMeeting ? "Online meeting" : "In person")
+            : meeting.Location;
+        var duration = ResolveDurationLabel(meeting);
+        var recurrence = ResolveRecurrenceLabel(meeting.RecurrenceRule);
+        var attendees = SplitEmails(meeting.AttendeeEmails);
+        var attendeeLine = attendees.Count == 0
+            ? string.Empty
+            : $"<p><strong>Attendees:</strong> {string.Join(", ", attendees.Select(WebUtility.HtmlEncode))}</p>";
+        var optionItems = new[]
+        {
+            meeting.LobbyEnabled ? "Lobby enabled" : "Lobby disabled",
+            meeting.AllowChat ? "Chat enabled" : "Chat disabled",
+            meeting.AllowScreenShare ? "Screen sharing enabled" : "Screen sharing disabled",
+            meeting.AllowRecording ? "Recording allowed" : "Recording disabled"
+        };
+        var optionsList = string.Join("", optionItems.Select(item => $"<li>{WebUtility.HtmlEncode(item)}</li>"));
 
         return $"""
             <div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.5;color:#0f172a">
               <h2>{WebUtility.HtmlEncode(meeting.Title)}</h2>
               <p>You have been invited to a meeting.</p>
               <p><strong>When:</strong> {WebUtility.HtmlEncode(start)}{(string.IsNullOrWhiteSpace(end) ? string.Empty : $" - {WebUtility.HtmlEncode(end)}")}</p>
+              <p><strong>Duration:</strong> {WebUtility.HtmlEncode(duration)}</p>
+              <p><strong>Repeat:</strong> {WebUtility.HtmlEncode(recurrence)}</p>
               <p><strong>Location:</strong> {WebUtility.HtmlEncode(location)}</p>
-              {(string.IsNullOrWhiteSpace(meeting.Description) ? string.Empty : $"<p><strong>Agenda:</strong> {WebUtility.HtmlEncode(meeting.Description)}</p>")}
+              {attendeeLine}
+              <p><strong>Options:</strong></p>
+              <ul>{optionsList}</ul>
+              {(string.IsNullOrWhiteSpace(meeting.Description) ? string.Empty : $"<p><strong>Agenda:</strong><br>{HtmlText(meeting.Description)}</p>")}
               {(string.IsNullOrWhiteSpace(joinLink) ? string.Empty : $"<p><a href=\"{WebUtility.HtmlEncode(joinLink)}\" style=\"display:inline-block;background:#2563eb;color:white;padding:10px 16px;text-decoration:none;border-radius:6px\">Join meeting</a></p><p>{WebUtility.HtmlEncode(joinLink)}</p>")}
             </div>
             """;
+    }
+
+    private static string ResolveDurationLabel(Meeting meeting)
+    {
+        var minutes = meeting.DurationMinutes
+            ?? (meeting.EndTime.HasValue ? Math.Max(15, (int)Math.Round((meeting.EndTime.Value - meeting.StartTime).TotalMinutes)) : 60);
+
+        return minutes < 60
+            ? $"{minutes} minutes"
+            : $"{minutes / 60d:0.#} hours";
+    }
+
+    private static string ResolveRecurrenceLabel(string? recurrenceRule)
+    {
+        return recurrenceRule switch
+        {
+            "Daily" => "Daily",
+            "Weekdays" => "Every weekday",
+            "Weekly" => "Weekly",
+            _ => "Does not repeat"
+        };
+    }
+
+    private static IReadOnlyList<string> SplitEmails(string? emails)
+    {
+        if (string.IsNullOrWhiteSpace(emails))
+        {
+            return Array.Empty<string>();
+        }
+
+        return emails
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(email => !string.IsNullOrWhiteSpace(email))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string HtmlText(string value)
+    {
+        return WebUtility.HtmlEncode(value).Replace("\n", "<br>");
     }
 
     private static string BuildConversationInviteBody(Conversation conversation, string inviterName)

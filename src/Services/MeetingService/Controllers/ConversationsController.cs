@@ -11,12 +11,15 @@ namespace MeetingService.Controllers;
 [Authorize]
 public class ConversationsController : ControllerBase
 {
+    private const long MaxAttachmentBytes = 50 * 1024 * 1024;
     private readonly IMeetingService _meetingService;
+    private readonly IWebHostEnvironment _environment;
     private readonly ILogger<ConversationsController> _logger;
 
-    public ConversationsController(IMeetingService meetingService, ILogger<ConversationsController> logger)
+    public ConversationsController(IMeetingService meetingService, IWebHostEnvironment environment, ILogger<ConversationsController> logger)
     {
         _meetingService = meetingService;
+        _environment = environment;
         _logger = logger;
     }
 
@@ -94,6 +97,102 @@ public class ConversationsController : ControllerBase
         }
     }
 
+    [HttpPost("{conversationId}/messages/attachments")]
+    [RequestSizeLimit(MaxAttachmentBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaxAttachmentBytes)]
+    public async Task<ActionResult<ConversationMessageDto>> SendAttachment(Guid conversationId, [FromForm] SendConversationAttachmentRequest request)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        if (request.File == null || request.File.Length == 0)
+        {
+            return BadRequest("Attachment file is required");
+        }
+
+        if (request.File.Length > MaxAttachmentBytes)
+        {
+            return BadRequest("Attachment must be 50 MB or smaller");
+        }
+
+        if (!await _meetingService.CanAccessConversationAsync(conversationId, userId))
+        {
+            return NotFound("Conversation not found");
+        }
+
+        try
+        {
+            var originalFileName = Path.GetFileName(request.File.FileName);
+            if (string.IsNullOrWhiteSpace(originalFileName))
+            {
+                originalFileName = "attachment";
+            }
+
+            var extension = Path.GetExtension(originalFileName);
+            var storedFileName = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}{extension}";
+            var attachmentDirectory = Path.Combine(_environment.ContentRootPath, "ChatAttachments", conversationId.ToString());
+            Directory.CreateDirectory(attachmentDirectory);
+
+            var filePath = Path.Combine(attachmentDirectory, storedFileName);
+            await using (var stream = System.IO.File.Create(filePath))
+            {
+                await request.File.CopyToAsync(stream);
+            }
+
+            var attachmentUrl = $"/api/conversations/{conversationId}/attachments/{storedFileName}";
+            var contentType = string.IsNullOrWhiteSpace(request.File.ContentType)
+                ? "application/octet-stream"
+                : request.File.ContentType;
+
+            var message = await _meetingService.AddConversationMessageAsync(conversationId, new SendConversationMessageRequest
+            {
+                SenderId = userId,
+                SenderName = GetCurrentUserName(),
+                Message = request.Message ?? string.Empty,
+                AttachmentFileName = originalFileName,
+                AttachmentUrl = attachmentUrl,
+                AttachmentContentType = contentType,
+                AttachmentSizeBytes = request.File.Length
+            });
+
+            return Ok(MapMessageToDto(message));
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound("Conversation not found");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error sending conversation attachment");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpGet("{conversationId}/attachments/{fileName}")]
+    public async Task<IActionResult> GetAttachment(Guid conversationId, string fileName)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        if (!await _meetingService.CanAccessConversationAsync(conversationId, userId))
+        {
+            return NotFound();
+        }
+
+        var safeFileName = Path.GetFileName(fileName);
+        var filePath = Path.Combine(_environment.ContentRootPath, "ChatAttachments", conversationId.ToString(), safeFileName);
+        if (!System.IO.File.Exists(filePath))
+        {
+            return NotFound();
+        }
+
+        return PhysicalFile(filePath, "application/octet-stream", enableRangeProcessing: true);
+    }
+
     private bool TryGetCurrentUserId(out Guid userId)
     {
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -158,6 +257,10 @@ public class ConversationsController : ControllerBase
             SenderId = message.SenderId,
             SenderName = message.SenderName,
             Message = message.Message,
+            AttachmentFileName = message.AttachmentFileName,
+            AttachmentUrl = message.AttachmentUrl,
+            AttachmentContentType = message.AttachmentContentType,
+            AttachmentSizeBytes = message.AttachmentSizeBytes,
             SentAt = message.SentAt
         };
     }

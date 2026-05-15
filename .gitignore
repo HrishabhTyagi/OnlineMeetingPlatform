@@ -38,6 +38,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 src/Services/MeetingService/Recordings/
+src/Services/MeetingService/ChatAttachments/
+src/Services/UserService/UserAvatars/
 
 ## Misc
 .cache/

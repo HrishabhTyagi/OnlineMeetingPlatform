@@ -30,6 +30,7 @@ public interface IMeetingService
     Task<Conversation> CreateConversationAsync(Guid creatorId, CreateConversationRequest request);
     Task<List<ConversationMessage>> GetConversationMessagesAsync(Guid conversationId, Guid userId);
     Task<ConversationMessage> AddConversationMessageAsync(Guid conversationId, SendConversationMessageRequest request);
+    Task<bool> CanAccessConversationAsync(Guid conversationId, Guid userId);
 }
 
 public class MeetingServiceImpl : IMeetingService
@@ -265,7 +266,7 @@ public class MeetingServiceImpl : IMeetingService
             RecipientUserId = request.RecipientUserId,
             RecipientName = request.RecipientName,
             Scope = request.RecipientUserId.HasValue ? ChatScope.Direct : ChatScope.Everyone,
-            Message = request.Message.Trim(),
+            Message = request.Message.TrimEnd(),
             SentAt = DateTime.UtcNow
         };
 
@@ -543,6 +544,12 @@ public class MeetingServiceImpl : IMeetingService
             .ToListAsync();
     }
 
+    public async Task<bool> CanAccessConversationAsync(Guid conversationId, Guid userId)
+    {
+        return await _context.ConversationMembers
+            .AnyAsync(member => member.ConversationId == conversationId && member.UserId == userId);
+    }
+
     public async Task<ConversationMessage> AddConversationMessageAsync(Guid conversationId, SendConversationMessageRequest request)
     {
         var isMember = await _context.ConversationMembers
@@ -553,13 +560,23 @@ public class MeetingServiceImpl : IMeetingService
             throw new InvalidOperationException("Conversation not found");
         }
 
+        var messageText = (request.Message ?? string.Empty).TrimEnd();
+        if (string.IsNullOrWhiteSpace(messageText) && string.IsNullOrWhiteSpace(request.AttachmentUrl))
+        {
+            throw new InvalidOperationException("Message or attachment is required");
+        }
+
         var message = new ConversationMessage
         {
             Id = Guid.NewGuid(),
             ConversationId = conversationId,
             SenderId = request.SenderId,
             SenderName = request.SenderName,
-            Message = request.Message.Trim(),
+            Message = messageText,
+            AttachmentFileName = request.AttachmentFileName,
+            AttachmentUrl = request.AttachmentUrl,
+            AttachmentContentType = request.AttachmentContentType,
+            AttachmentSizeBytes = request.AttachmentSizeBytes,
             SentAt = DateTime.UtcNow
         };
 

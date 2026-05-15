@@ -3,12 +3,19 @@ import * as signalR from '@microsoft/signalr';
 const NOTIFICATION_HUB_URL = 'http://localhost:5000/hubs/notifications';
 
 let connection: signalR.HubConnection | null = null;
+let activeToken: string | null = null;
 
 export const initializeSignalR = (token: string) => {
-  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+  if (connection && activeToken === token) {
     return connection;
   }
 
+  if (connection && activeToken !== token) {
+    connection.stop().catch(() => undefined);
+    connection = null;
+  }
+
+  activeToken = token;
   connection = new signalR.HubConnectionBuilder()
     .withUrl(NOTIFICATION_HUB_URL, {
       accessTokenFactory: () => token,
@@ -51,6 +58,7 @@ export const disconnectSignalR = async () => {
   if (connection) {
     await connection.stop();
     connection = null;
+    activeToken = null;
   }
 };
 
@@ -201,13 +209,32 @@ export const sendDirectChatMessage = async (
 
 export const sendConversationMessage = async (
   conversationId: string,
+  messageId: string,
   senderId: string,
   senderName: string,
   message: string,
   recipientUserIds: string[],
+  attachment?: {
+    attachmentFileName?: string;
+    attachmentUrl?: string;
+    attachmentContentType?: string;
+    attachmentSizeBytes?: number;
+  },
 ) => {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
-    await connection.invoke('SendConversationMessage', conversationId, senderId, senderName, message, recipientUserIds);
+    await connection.invoke(
+      'SendConversationMessage',
+      conversationId,
+      messageId,
+      senderId,
+      senderName,
+      message,
+      recipientUserIds,
+      attachment?.attachmentFileName || null,
+      attachment?.attachmentUrl || null,
+      attachment?.attachmentContentType || null,
+      attachment?.attachmentSizeBytes || null,
+    );
   }
 };
 

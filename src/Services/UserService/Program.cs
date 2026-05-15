@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using UserService.Data;
@@ -81,6 +82,14 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowFrontend");
+
+var avatarPath = Path.Combine(app.Environment.ContentRootPath, "UserAvatars");
+Directory.CreateDirectory(avatarPath);
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(avatarPath),
+    RequestPath = "/user-avatars"
+});
 
 app.UseAuthentication();
 app.UseAuthorization();

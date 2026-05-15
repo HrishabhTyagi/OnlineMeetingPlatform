@@ -11,13 +11,24 @@ namespace UserService.Controllers;
 [Authorize]
 public class UsersController : ControllerBase
 {
+    private const long MaxAvatarBytes = 5 * 1024 * 1024;
+    private static readonly Dictionary<string, string> AvatarExtensionsByContentType = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["image/jpeg"] = ".jpg",
+        ["image/png"] = ".png",
+        ["image/webp"] = ".webp",
+        ["image/gif"] = ".gif"
+    };
+
     private readonly IUserService _userService;
     private readonly ILogger<UsersController> _logger;
+    private readonly IWebHostEnvironment _environment;
 
-    public UsersController(IUserService userService, ILogger<UsersController> logger)
+    public UsersController(IUserService userService, ILogger<UsersController> logger, IWebHostEnvironment environment)
     {
         _userService = userService;
         _logger = logger;
+        _environment = environment;
     }
 
     [HttpGet]
@@ -85,6 +96,78 @@ public class UsersController : ControllerBase
         }
     }
 
+    [HttpPost("profile/avatar")]
+    [RequestSizeLimit(MaxAvatarBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaxAvatarBytes)]
+    public async Task<ActionResult<UserProfileDto>> UploadAvatar([FromForm] IFormFile file)
+    {
+        try
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(userId, out var id))
+                return Unauthorized();
+
+            if (file == null || file.Length == 0)
+                return BadRequest("Avatar image is required");
+
+            if (file.Length > MaxAvatarBytes)
+                return BadRequest("Avatar must be 5 MB or smaller");
+
+            if (!AvatarExtensionsByContentType.TryGetValue(file.ContentType, out var extension))
+                return BadRequest("Avatar must be a JPG, PNG, WebP, or GIF image");
+
+            var currentUser = await _userService.GetUserByIdAsync(id);
+            if (currentUser == null)
+                return NotFound("User not found");
+
+            var avatarDirectory = Path.Combine(_environment.ContentRootPath, "UserAvatars", id.ToString());
+            Directory.CreateDirectory(avatarDirectory);
+
+            var fileName = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}{extension}";
+            var filePath = Path.Combine(avatarDirectory, fileName);
+
+            await using (var stream = System.IO.File.Create(filePath))
+            {
+                await file.CopyToAsync(stream);
+            }
+
+            DeleteLocalAvatar(currentUser.ProfilePictureUrl);
+
+            var avatarUrl = $"/user-avatars/{id}/{fileName}";
+            var user = await _userService.UpdateAvatarAsync(id, avatarUrl);
+            return Ok(MapToDto(user));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error uploading avatar");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpDelete("profile/avatar")]
+    public async Task<ActionResult<UserProfileDto>> RemoveAvatar()
+    {
+        try
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(userId, out var id))
+                return Unauthorized();
+
+            var currentUser = await _userService.GetUserByIdAsync(id);
+            if (currentUser == null)
+                return NotFound("User not found");
+
+            DeleteLocalAvatar(currentUser.ProfilePictureUrl);
+            var user = await _userService.UpdateAvatarAsync(id, null);
+            return Ok(MapToDto(user));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error removing avatar");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
     [HttpPut("status")]
     public async Task<ActionResult<UserProfileDto>> UpdateStatus([FromBody] UpdateUserStatusRequest request)
     {
@@ -142,5 +225,26 @@ public class UsersController : ControllerBase
             IsEmailVerified = user.IsEmailVerified,
             CreatedAt = user.CreatedAt
         };
+    }
+
+    private void DeleteLocalAvatar(string? profilePictureUrl)
+    {
+        if (string.IsNullOrWhiteSpace(profilePictureUrl) || !profilePictureUrl.StartsWith("/user-avatars/", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var relativePath = profilePictureUrl["/user-avatars/".Length..].Replace('/', Path.DirectorySeparatorChar);
+        var avatarRoot = Path.GetFullPath(Path.Combine(_environment.ContentRootPath, "UserAvatars"));
+        var filePath = Path.GetFullPath(Path.Combine(avatarRoot, relativePath));
+        if (!filePath.StartsWith(avatarRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (System.IO.File.Exists(filePath))
+        {
+            System.IO.File.Delete(filePath);
+        }
     }
 }

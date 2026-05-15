@@ -11,6 +11,7 @@ public interface IUserService
     Task<List<User>> SearchUsersAsync(string? query, Guid? excludeUserId);
     Task<User> RegisterUserAsync(RegisterRequest request, string passwordHash);
     Task<User> UpdateUserAsync(Guid userId, UpdateProfileRequest request);
+    Task<User> UpdateAvatarAsync(Guid userId, string? profilePictureUrl);
     Task<User> UpdateStatusAsync(Guid userId, string status);
     Task<bool> UserExistsAsync(string email);
 }
@@ -88,6 +89,20 @@ public class UserServiceImpl : IUserService
         user.LastName = request.LastName;
         user.PhoneNumber = request.PhoneNumber;
         user.ProfilePictureUrl = request.ProfilePictureUrl;
+        user.UpdatedAt = DateTime.UtcNow;
+
+        _context.Users.Update(user);
+        await _context.SaveChangesAsync();
+        return user;
+    }
+
+    public async Task<User> UpdateAvatarAsync(Guid userId, string? profilePictureUrl)
+    {
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+        if (user == null)
+            throw new InvalidOperationException("User not found");
+
+        user.ProfilePictureUrl = profilePictureUrl;
         user.UpdatedAt = DateTime.UtcNow;
 
         _context.Users.Update(user);

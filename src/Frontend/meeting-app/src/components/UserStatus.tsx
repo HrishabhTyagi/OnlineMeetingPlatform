@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { resolveApiAssetUrl } from '../services/api';
 
 export type UserStatus = 'Available' | 'Busy' | 'DoNotDisturb' | 'BeRightBack' | 'Away' | 'Offline';
 
@@ -63,6 +64,57 @@ function getInitials(name?: string, email?: string) {
   return source.slice(0, 2).toUpperCase();
 }
 
+export function UserAvatar({
+  displayName,
+  email,
+  profilePictureUrl,
+  status,
+  showStatus = false,
+  size = 'md',
+  dark = false,
+}: {
+  displayName?: string;
+  email?: string;
+  profilePictureUrl?: string;
+  status?: string;
+  showStatus?: boolean;
+  size?: 'sm' | 'md' | 'lg' | 'xl';
+  dark?: boolean;
+}) {
+  const imageUrl = resolveApiAssetUrl(profilePictureUrl);
+  const sizeClass = {
+    sm: 'h-8 w-8 text-xs',
+    md: 'h-9 w-9 text-sm',
+    lg: 'h-14 w-14 text-lg',
+    xl: 'h-24 w-24 text-3xl',
+  }[size];
+  const dotClass = {
+    sm: 'h-2.5 w-2.5 border-2',
+    md: 'h-3 w-3 border-2',
+    lg: 'h-4 w-4 border-2',
+    xl: 'h-5 w-5 border-[3px]',
+  }[size];
+
+  return (
+    <span className={`relative flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-200 font-semibold text-slate-700 ${sizeClass}`}>
+      {getInitials(displayName, email)}
+      {imageUrl && (
+        <img
+          src={imageUrl}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+          onError={(event) => {
+            event.currentTarget.style.display = 'none';
+          }}
+        />
+      )}
+      {showStatus && (
+        <span className={`absolute bottom-0 right-0 rounded-full ${dark ? 'border-slate-800' : 'border-white'} ${dotClass} ${statusDotClass(status)}`} />
+      )}
+    </span>
+  );
+}
+
 function StatusIcon({ status }: { status?: string }) {
   const normalized = normalizeStatus(status);
   const baseClass = 'relative inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full';
@@ -120,25 +172,51 @@ export function UserStatusBadge({ status, compact = false, dark = false }: { sta
   );
 }
 
+interface AccountMenuItem {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  profilePictureUrl?: string;
+  status?: string;
+}
+
 export function ProfileStatusMenu({
   displayName,
   email,
+  profilePictureUrl,
   status,
+  currentUserId,
+  accounts = [],
   onChange,
   disabled,
   dark = false,
+  avatarUploading = false,
   onSignOut,
+  onSwitchAccount,
+  onAddAccount,
+  onAvatarChange,
+  onAvatarRemove,
 }: {
   displayName: string;
   email?: string;
+  profilePictureUrl?: string;
   status?: string;
+  currentUserId?: string;
+  accounts?: AccountMenuItem[];
   onChange: (status: UserStatus) => void;
   disabled?: boolean;
   dark?: boolean;
+  avatarUploading?: boolean;
   onSignOut?: () => void;
+  onSwitchAccount?: (userId: string) => void;
+  onAddAccount?: () => void;
+  onAvatarChange?: (file: File) => void | Promise<void>;
+  onAvatarRemove?: () => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const normalized = normalizeStatus(status);
 
   useEffect(() => {
@@ -173,10 +251,14 @@ export function ProfileStatusMenu({
             : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
         }`}
       >
-        <span className="relative flex h-9 w-9 items-center justify-center rounded-full bg-slate-200 text-sm font-semibold text-slate-700">
-          {getInitials(displayName, email)}
-          <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 ${dark ? 'border-slate-800' : 'border-white'} ${statusDotClass(normalized)}`} />
-        </span>
+        <UserAvatar
+          displayName={displayName}
+          email={email}
+          profilePictureUrl={profilePictureUrl}
+          status={normalized}
+          showStatus
+          dark={dark}
+        />
         <span className="hidden min-w-0 sm:block">
           <span className="block max-w-[150px] truncate font-semibold">{displayName}</span>
           <span className={`block text-xs ${dark ? 'text-slate-300' : 'text-slate-500'}`}>{statusLabel(normalized)}</span>
@@ -202,14 +284,112 @@ export function ProfileStatusMenu({
           </div>
 
           <div className="mt-5 flex items-center gap-3 px-4">
-            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-200 text-lg font-semibold text-slate-700">
-              {getInitials(displayName, email)}
-            </span>
+            <UserAvatar
+              displayName={displayName}
+              email={email}
+              profilePictureUrl={profilePictureUrl}
+              status={normalized}
+              showStatus
+              size="lg"
+            />
             <div className="min-w-0">
               <p className="truncate text-base font-semibold">{displayName}</p>
               {email && <p className="truncate text-sm text-slate-600">{email}</p>}
+              {(onAvatarChange || onAvatarRemove) && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {onAvatarChange && (
+                    <>
+                      <input
+                        ref={avatarInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        className="hidden"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file) {
+                            void Promise.resolve(onAvatarChange(file)).catch(() => undefined);
+                          }
+                          event.target.value = '';
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={avatarUploading}
+                        onClick={() => avatarInputRef.current?.click()}
+                        className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        {avatarUploading ? 'Uploading...' : profilePictureUrl ? 'Change avatar' : 'Upload avatar'}
+                      </button>
+                    </>
+                  )}
+                  {onAvatarRemove && profilePictureUrl && (
+                    <button
+                      type="button"
+                      disabled={avatarUploading}
+                      onClick={() => void Promise.resolve(onAvatarRemove()).catch(() => undefined)}
+                      className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
+
+          {(accounts.length > 0 || onAddAccount) && (
+            <div className="mt-5 border-t border-slate-100 pt-2">
+              <p className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Accounts</p>
+              <div className="space-y-1 px-3">
+                {accounts.map((account) => {
+                  const accountName = `${account.firstName} ${account.lastName}`.trim() || account.email;
+                  const isCurrent = account.id === currentUserId;
+                  return (
+                    <button
+                      key={account.id}
+                      type="button"
+                      disabled={isCurrent}
+                      onClick={() => {
+                        setOpen(false);
+                        onSwitchAccount?.(account.id);
+                      }}
+                      className={`flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm ${
+                        isCurrent ? 'bg-blue-50 text-blue-900' : 'hover:bg-slate-100'
+                      }`}
+                    >
+                      <UserAvatar
+                        displayName={accountName}
+                        email={account.email}
+                        profilePictureUrl={account.profilePictureUrl}
+                        status={account.status}
+                        showStatus
+                        size="md"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-semibold">{accountName}</span>
+                        <span className="block truncate text-xs text-slate-500">{account.email}</span>
+                      </span>
+                      {isCurrent && <span className="text-xs font-semibold text-blue-700">Current</span>}
+                    </button>
+                  );
+                })}
+
+                {onAddAccount && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      onAddAccount();
+                    }}
+                    className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm font-semibold text-blue-700 hover:bg-blue-50"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-lg">+</span>
+                    Add another account
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="mt-5 border-t border-slate-100 pt-2">
             <div className="flex items-center justify-between px-4 py-2 text-base">

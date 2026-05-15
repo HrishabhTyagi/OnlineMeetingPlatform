@@ -110,6 +110,9 @@ public class MeetingDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.SenderName).IsRequired().HasMaxLength(255);
             entity.Property(e => e.Message).IsRequired().HasColumnType("text");
+            entity.Property(e => e.AttachmentFileName).HasMaxLength(260);
+            entity.Property(e => e.AttachmentUrl).HasColumnType("text");
+            entity.Property(e => e.AttachmentContentType).HasMaxLength(255);
             entity.Property(e => e.SentAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
 

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ProfileStatusMenu, UserStatusBadge, UserStatus } from '../components/UserStatus';
+import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus } from '../components/UserStatus';
 import { conversationAPI, userAPI } from '../services/api';
 import {
   initializeSignalR,
@@ -21,6 +21,7 @@ interface UserSummary {
   firstName: string;
   lastName: string;
   fullName?: string;
+  profilePictureUrl?: string;
   status?: string;
 }
 
@@ -36,6 +37,10 @@ interface ConversationMessage {
   senderId: string;
   senderName: string;
   message: string;
+  attachmentFileName?: string;
+  attachmentUrl?: string;
+  attachmentContentType?: string;
+  attachmentSizeBytes?: number;
   sentAt: string;
 }
 
@@ -76,10 +81,101 @@ function isEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
+function formatFileSize(bytes?: number) {
+  if (!bytes || bytes <= 0) {
+    return '';
+  }
+
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function fileKey(file: File) {
+  return `${file.name}-${file.size}-${file.lastModified}`;
+}
+
+function describeLastMessage(message: ConversationMessage | undefined, memberCount: number) {
+  if (!message) {
+    return `${memberCount} member chat`;
+  }
+
+  if (message.attachmentFileName && message.message) {
+    return `${message.message} - ${message.attachmentFileName}`;
+  }
+
+  if (message.attachmentFileName) {
+    return `Shared ${message.attachmentFileName}`;
+  }
+
+  return message.message;
+}
+
+function stripCodeFence(value: string) {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n?```$/);
+  return match ? match[1] : value;
+}
+
+function looksLikeCode(value: string) {
+  const lines = value.split('\n');
+  if (lines.length < 2) {
+    return false;
+  }
+
+  return lines.some((line) => /^\s*(#include|using\s|import\s|function\s|class\s|public\s|private\s|const\s|let\s|var\s|if\s*\(|for\s*\(|while\s*\(|return\b|int\s+main|printf|<\/?\w|[{};])/.test(line))
+    || lines.some((line) => /^\s{2,}\S/.test(line));
+}
+
+function linkifyMessageText(value: string, isMine: boolean) {
+  return value.split(/(https?:\/\/[^\s]+)/g).map((part, index) => {
+    if (!part.startsWith('http')) {
+      return part;
+    }
+
+    return (
+      <a
+        key={`${part}-${index}`}
+        href={part}
+        target="_blank"
+        rel="noreferrer"
+        className={`break-all font-semibold underline underline-offset-2 ${isMine ? 'text-white' : 'text-blue-700'}`}
+      >
+        {part}
+      </a>
+    );
+  });
+}
+
+function FormattedMessage({ message, isMine }: { message: string; isMine: boolean }) {
+  if (looksLikeCode(message) || message.trim().startsWith('```')) {
+    return (
+      <pre className={`mt-1 max-h-96 overflow-auto rounded-md border px-3 py-2 text-left font-mono text-xs leading-relaxed ${isMine ? 'border-white/20 bg-blue-700 text-white' : 'border-slate-200 bg-slate-950 text-slate-100'}`}>
+        <code className="whitespace-pre">{stripCodeFence(message)}</code>
+      </pre>
+    );
+  }
+
+  return (
+    <p className="whitespace-pre-wrap break-words">
+      {linkifyMessageText(message, isMine)}
+    </p>
+  );
+}
+
 export default function Chat() {
   const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
+  const accounts = useAuthStore((state) => state.accounts);
+  const switchAccount = useAuthStore((state) => state.switchAccount);
   const logout = useAuthStore((state) => state.logout);
   const token = useAuthStore((state) => state.token);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -96,6 +192,11 @@ export default function Chat() {
   const [error, setError] = useState('');
   const [requestStatus, setRequestStatus] = useState('');
   const [statusOverrides, setStatusOverrides] = useState<Record<string, string>>({});
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [attachmentStatus, setAttachmentStatus] = useState('');
+  const [isDraggingAttachment, setIsDraggingAttachment] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -127,6 +228,19 @@ export default function Chat() {
     }
 
     return users.find((item) => item.id === userId)?.status || 'Available';
+  };
+
+  const getUserAvatar = (userId?: string) => {
+    if (!userId) {
+      return undefined;
+    }
+
+    if (user?.id === userId) {
+      return user.profilePictureUrl;
+    }
+
+    return users.find((item) => item.id === userId)?.profilePictureUrl
+      || accounts.find((account) => account.user.id === userId)?.user.profilePictureUrl;
   };
 
   const refreshConversations = async () => {
@@ -204,11 +318,15 @@ export default function Chat() {
           }
 
           const incoming: ConversationMessage = {
-            id: `${data.conversationId}-${data.senderId}-${data.timestamp}`,
+            id: data.id || `${data.conversationId}-${data.senderId}-${data.timestamp}`,
             conversationId: data.conversationId,
             senderId: data.senderId,
             senderName: data.senderName,
-            message: data.message,
+            message: data.message || '',
+            attachmentFileName: data.attachmentFileName,
+            attachmentUrl: data.attachmentUrl,
+            attachmentContentType: data.attachmentContentType,
+            attachmentSizeBytes: data.attachmentSizeBytes,
             sentAt: data.timestamp,
           };
 
@@ -255,9 +373,46 @@ export default function Chat() {
     }
   };
 
+  const handleAvatarChange = async (file: File) => {
+    const data = new FormData();
+    data.append('file', file);
+    setAvatarUploading(true);
+
+    try {
+      const response = await userAPI.uploadAvatar(data);
+      setUser(response.data);
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
+  const handleAvatarRemove = async () => {
+    setAvatarUploading(true);
+    try {
+      const response = await userAPI.removeAvatar();
+      setUser(response.data);
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
   const handleSignOut = () => {
+    const hadOtherAccounts = accounts.some((account) => account.user.id !== user?.id);
     logout();
-    navigate('/login', { replace: true });
+    if (!hadOtherAccounts) {
+      navigate('/login', { replace: true });
+    }
+  };
+
+  const handleSwitchAccount = (userId: string) => {
+    setLoading(true);
+    setConversations([]);
+    setMessages([]);
+    setSelectedConversationId(null);
+    setPendingFiles([]);
+    setAttachmentStatus('');
+    setError('');
+    switchAccount(userId);
   };
 
   useEffect(() => {
@@ -283,6 +438,9 @@ export default function Chat() {
     conversationAPI.getMessages(selectedConversationId)
       .then((response) => setMessages(response.data))
       .catch(() => setError('Unable to load messages'));
+    setPendingFiles([]);
+    setAttachmentStatus('');
+    setIsDraggingAttachment(false);
 
     return () => {
       leaveConversation(selectedConversationId).catch(() => undefined);
@@ -343,33 +501,154 @@ export default function Chat() {
     }
   };
 
-  const sendMessage = async () => {
-    if (!user || !selectedConversation || !messageDraft.trim()) {
+  const appendSentMessage = (message: ConversationMessage) => {
+    setMessages((items) => (
+      items.some((item) => item.id === message.id) ? items : [...items, message]
+    ));
+    setConversations((items) => items.map((conversation) => (
+      conversation.id === message.conversationId
+        ? { ...conversation, lastMessage: message, updatedAt: message.sentAt }
+        : conversation
+    )));
+  };
+
+  const notifyConversationMessage = async (message: ConversationMessage) => {
+    if (!user || !selectedConversation) {
       return;
     }
 
-    const text = messageDraft.trim();
-    setMessageDraft('');
-
-    const response = await conversationAPI.sendMessage(selectedConversation.id, {
-      senderId: user.id,
-      senderName: displayName,
-      message: text,
-    });
-
-    setMessages((items) => [...items, response.data]);
-    setConversations((items) => items.map((conversation) => (
-      conversation.id === selectedConversation.id
-        ? { ...conversation, lastMessage: response.data, updatedAt: response.data.sentAt }
-        : conversation
-    )));
     await sendConversationMessage(
       selectedConversation.id,
+      message.id,
       user.id,
       displayName,
-      text,
+      message.message,
       selectedConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
+      message.attachmentUrl
+        ? {
+            attachmentFileName: message.attachmentFileName,
+            attachmentUrl: message.attachmentUrl,
+            attachmentContentType: message.attachmentContentType,
+            attachmentSizeBytes: message.attachmentSizeBytes,
+          }
+        : undefined,
     );
+  };
+
+  const addPendingFiles = (files: FileList | File[]) => {
+    const incomingFiles = Array.from(files);
+    if (incomingFiles.length === 0) {
+      return;
+    }
+
+    const validFiles = incomingFiles.filter((file) => file.size <= 50 * 1024 * 1024);
+    const skipped = incomingFiles.length - validFiles.length;
+    setPendingFiles((items) => {
+      const existing = new Set(items.map(fileKey));
+      const next = [...items];
+      validFiles.forEach((file) => {
+        if (!existing.has(fileKey(file))) {
+          next.push(file);
+        }
+      });
+      return next;
+    });
+    setAttachmentStatus(skipped > 0 ? `${skipped} file${skipped === 1 ? '' : 's'} skipped. Limit is 50 MB each.` : '');
+  };
+
+  const removePendingFile = (index: number) => {
+    setPendingFiles((items) => items.filter((_, itemIndex) => itemIndex !== index));
+    setAttachmentStatus('');
+  };
+
+  const sendMessage = async () => {
+    if (!user || !selectedConversation || sending) {
+      return;
+    }
+
+    const text = messageDraft.replace(/\s+$/, '');
+    const filesToSend = pendingFiles;
+    if (!text.trim() && filesToSend.length === 0) {
+      return;
+    }
+
+    setMessageDraft('');
+    setPendingFiles([]);
+    setAttachmentStatus('');
+    setSending(true);
+
+    try {
+      if (filesToSend.length === 0) {
+        const response = await conversationAPI.sendMessage(selectedConversation.id, {
+          senderId: user.id,
+          senderName: displayName,
+          message: text,
+        });
+        appendSentMessage(response.data);
+        await notifyConversationMessage(response.data);
+        return;
+      }
+
+      for (const [index, file] of filesToSend.entries()) {
+        const formData = new FormData();
+        formData.append('senderId', user.id);
+        formData.append('senderName', displayName);
+        formData.append('message', index === 0 ? text : '');
+        formData.append('file', file);
+
+        const response = await conversationAPI.uploadAttachment(selectedConversation.id, formData);
+        appendSentMessage(response.data);
+        await notifyConversationMessage(response.data);
+      }
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to send message or attachment');
+      setMessageDraft(text);
+      setPendingFiles(filesToSend);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLElement>) => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsDraggingAttachment(true);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLElement>) => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsDraggingAttachment(false);
+    addPendingFiles(event.dataTransfer.files);
+  };
+
+  const downloadAttachment = async (message: ConversationMessage) => {
+    if (!message.attachmentUrl) {
+      return;
+    }
+
+    try {
+      const response = await conversationAPI.downloadAttachment(message.attachmentUrl);
+      const blob = new Blob([response.data], {
+        type: message.attachmentContentType || response.data.type || 'application/octet-stream',
+      });
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = message.attachmentFileName || 'attachment';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    } catch {
+      setAttachmentStatus('Unable to download attachment');
+    }
   };
 
   const toggleUser = (id: string) => {
@@ -411,9 +690,17 @@ export default function Chat() {
           <div className="flex items-center gap-2">
             <ProfileStatusMenu
               displayName={displayName}
+              currentUserId={user?.id}
               email={user?.email}
+              profilePictureUrl={user?.profilePictureUrl}
               status={user?.status}
+              accounts={accounts.map((account) => account.user)}
+              avatarUploading={avatarUploading}
               onChange={handleStatusChange}
+              onSwitchAccount={handleSwitchAccount}
+              onAddAccount={() => navigate('/login?addAccount=1')}
+              onAvatarChange={handleAvatarChange}
+              onAvatarRemove={handleAvatarRemove}
               onSignOut={handleSignOut}
             />
             <button onClick={() => navigate('/dashboard')} className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
@@ -435,9 +722,10 @@ export default function Chat() {
               <p className="p-4 text-sm text-slate-500">No chats yet.</p>
             ) : (
               conversations.map((conversation) => {
+                const otherMember = conversation.members.find((member) => member.userId !== user?.id);
                 const title = conversation.type === 'Group'
                   ? conversation.title || 'Group chat'
-                  : conversation.members.find((member) => member.userId !== user?.id)?.userName
+                  : otherMember?.userName
                     || conversation.invites?.find((invite) => !invite.hasAccepted)?.email
                     || 'Direct chat';
                 return (
@@ -450,17 +738,19 @@ export default function Chat() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex min-w-0 items-center gap-2">
-                        {conversation.type === 'Direct' && (
-                          <UserStatusBadge
-                            status={getUserStatus(conversation.members.find((member) => member.userId !== user?.id)?.userId)}
-                            compact
-                          />
-                        )}
+                        <UserAvatar
+                          displayName={title}
+                          email={otherMember?.userEmail}
+                          profilePictureUrl={conversation.type === 'Direct' ? getUserAvatar(otherMember?.userId) : undefined}
+                          status={conversation.type === 'Direct' ? getUserStatus(otherMember?.userId) : undefined}
+                          showStatus={conversation.type === 'Direct'}
+                          size="sm"
+                        />
                         <p className="truncate text-sm font-semibold">{title}</p>
                       </div>
                       <span className="text-xs text-slate-400">{formatMessageTime(conversation.lastMessage?.sentAt || conversation.updatedAt)}</span>
                     </div>
-                    <p className="mt-1 truncate text-sm text-slate-500">{conversation.lastMessage?.message || `${conversation.members.length} member chat`}</p>
+                    <p className="mt-1 truncate text-sm text-slate-500">{describeLastMessage(conversation.lastMessage, conversation.members.length)}</p>
                   </button>
                 );
               })
@@ -468,14 +758,26 @@ export default function Chat() {
           </div>
         </section>
 
-        <section className="flex min-h-[calc(100vh-150px)] flex-col rounded-md border border-slate-200 bg-white">
+        <section
+          onDragOver={handleDragOver}
+          onDragLeave={() => setIsDraggingAttachment(false)}
+          onDrop={handleDrop}
+          className="relative flex min-h-[calc(100vh-150px)] flex-col rounded-md border border-slate-200 bg-white"
+        >
           <div className="border-b border-slate-200 p-4">
             <h2 className="font-semibold">{selectedTitle}</h2>
             {selectedConversation && (
               <div className="mt-1 flex flex-wrap gap-2">
                 {selectedConversation.members.map((member) => (
                   <span key={member.userId} className="inline-flex items-center gap-1.5 text-sm text-slate-500">
-                    <UserStatusBadge status={getUserStatus(member.userId)} compact />
+                    <UserAvatar
+                      displayName={member.userName}
+                      email={member.userEmail}
+                      profilePictureUrl={getUserAvatar(member.userId)}
+                      status={getUserStatus(member.userId)}
+                      showStatus
+                      size="sm"
+                    />
                     {member.userName}
                   </span>
                 ))}
@@ -489,6 +791,11 @@ export default function Chat() {
           </div>
 
           {error && <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
+          {isDraggingAttachment && selectedConversation && (
+            <div className="pointer-events-none absolute inset-x-4 bottom-24 top-24 z-20 flex items-center justify-center rounded-md border-2 border-dashed border-blue-400 bg-blue-50/90 text-sm font-semibold text-blue-800">
+              Drop files to share
+            </div>
+          )}
 
           <div className="flex-1 space-y-3 overflow-y-auto bg-slate-50 p-4">
             {!selectedConversation ? (
@@ -505,7 +812,25 @@ export default function Chat() {
                         <span>{isMine ? 'You' : message.senderName}</span>
                         <span>{formatMessageTime(message.sentAt)}</span>
                       </div>
-                      <p className="whitespace-pre-wrap break-words">{message.message}</p>
+                      {message.message && <FormattedMessage message={message.message} isMine={isMine} />}
+                      {message.attachmentUrl && (
+                        <div className={`mt-2 rounded-md border px-3 py-2 ${isMine ? 'border-white/30 bg-white/10' : 'border-slate-200 bg-slate-50'}`}>
+                          <p className="break-words text-sm font-semibold">{message.attachmentFileName || 'Attachment'}</p>
+                          <p className={`mt-1 text-xs ${isMine ? 'text-blue-50' : 'text-slate-500'}`}>
+                            {[message.attachmentContentType, formatFileSize(message.attachmentSizeBytes)].filter(Boolean).join(' - ') || 'File'}
+                          </p>
+                          <button
+                            onClick={() => downloadAttachment(message)}
+                            className={`mt-2 rounded-md px-3 py-1.5 text-xs font-semibold ${
+                              isMine
+                                ? 'bg-white text-blue-700 hover:bg-blue-50'
+                                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            Download
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -514,26 +839,84 @@ export default function Chat() {
           </div>
 
           <div className="border-t border-slate-200 p-4">
-            <div className="flex gap-2">
+            {pendingFiles.length > 0 && (
+              <div className="mb-3 space-y-2 rounded-md border border-blue-200 bg-blue-50 p-3">
+                <p className="text-xs font-semibold text-blue-900">Ready to send</p>
+                <div className="flex flex-wrap gap-2">
+                  {pendingFiles.map((file, index) => (
+                    <span key={fileKey(file)} className="inline-flex max-w-full items-center gap-2 rounded-md bg-white px-2.5 py-1.5 text-xs text-slate-700 ring-1 ring-blue-100">
+                      <span className="truncate">{file.name}</span>
+                      <span className="shrink-0 text-slate-400">{formatFileSize(file.size)}</span>
+                      <button
+                        type="button"
+                        onClick={() => removePendingFile(index)}
+                        className="shrink-0 font-semibold text-slate-500 hover:text-red-600"
+                      >
+                        Remove
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {attachmentStatus && (
+              <p className="mb-3 text-sm font-medium text-amber-700">{attachmentStatus}</p>
+            )}
+            <div className="flex items-end gap-2">
               <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files) {
+                    addPendingFiles(event.target.files);
+                  }
+                  event.target.value = '';
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!selectedConversation || sending}
+                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Attach
+              </button>
+              <textarea
                 value={messageDraft}
                 onChange={(event) => setMessageDraft(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
+                  if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
                     sendMessage();
+                    return;
+                  }
+
+                  if (event.key === 'Tab') {
+                    event.preventDefault();
+                    const target = event.currentTarget;
+                    const start = target.selectionStart;
+                    const end = target.selectionEnd;
+                    const nextDraft = `${messageDraft.slice(0, start)}  ${messageDraft.slice(end)}`;
+                    setMessageDraft(nextDraft);
+                    window.requestAnimationFrame(() => {
+                      target.selectionStart = start + 2;
+                      target.selectionEnd = start + 2;
+                    });
                   }
                 }}
-                disabled={!selectedConversation}
-                placeholder={selectedConversation ? 'Type a message' : 'Select a chat first'}
-                className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 disabled:bg-slate-100"
+                rows={Math.min(6, Math.max(2, messageDraft.split('\n').length))}
+                disabled={!selectedConversation || sending}
+                placeholder={selectedConversation ? 'Type a message or drop files here' : 'Select a chat first'}
+                className="max-h-40 min-w-0 flex-1 resize-none rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 disabled:bg-slate-100"
               />
               <button
                 onClick={sendMessage}
-                disabled={!selectedConversation || !messageDraft.trim()}
+                disabled={!selectedConversation || sending || (!messageDraft.trim() && pendingFiles.length === 0)}
                 className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
               >
-                Send
+                {sending ? 'Sending...' : 'Send'}
               </button>
             </div>
           </div>
@@ -612,12 +995,22 @@ export default function Chat() {
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <div>
+                      <div className="flex min-w-0 items-center gap-3">
+                        <UserAvatar
+                          displayName={displayUser(item)}
+                          email={item.email}
+                          profilePictureUrl={item.profilePictureUrl}
+                          status={getUserStatus(item.id)}
+                          showStatus
+                          size="md"
+                        />
+                        <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <p className="font-medium">{displayUser(item)}</p>
                           <UserStatusBadge status={getUserStatus(item.id)} />
                         </div>
                         <p className="text-xs text-slate-500">{item.email}</p>
+                        </div>
                       </div>
                       <span className={`rounded px-2 py-1 text-xs font-semibold ${isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
                         {isSelected ? 'Selected' : 'Select'}

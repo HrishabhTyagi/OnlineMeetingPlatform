@@ -81,7 +81,7 @@ public class NotificationHub : Hub
             MeetingId = meetingId,
             SenderId = senderId,
             SenderName = senderName,
-            Message = message.Trim(),
+            Message = message.TrimEnd(),
             Timestamp = DateTime.UtcNow
         });
     }
@@ -100,7 +100,7 @@ public class NotificationHub : Hub
             SenderName = senderName,
             RecipientUserId = recipientUserId,
             RecipientName = recipientName,
-            Message = message.Trim(),
+            Message = message.TrimEnd(),
             Timestamp = DateTime.UtcNow
         };
 
@@ -108,19 +108,34 @@ public class NotificationHub : Hub
         await Clients.Caller.SendAsync("DirectChatMessage", payload);
     }
 
-    public async Task SendConversationMessage(string conversationId, string senderId, string senderName, string message, List<string> recipientUserIds)
+    public async Task SendConversationMessage(
+        string conversationId,
+        string messageId,
+        string senderId,
+        string senderName,
+        string message,
+        List<string> recipientUserIds,
+        string? attachmentFileName = null,
+        string? attachmentUrl = null,
+        string? attachmentContentType = null,
+        long? attachmentSizeBytes = null)
     {
-        if (string.IsNullOrWhiteSpace(message))
+        if (string.IsNullOrWhiteSpace(message) && string.IsNullOrWhiteSpace(attachmentUrl))
         {
             return;
         }
 
         var payload = new
         {
+            Id = messageId,
             ConversationId = conversationId,
             SenderId = senderId,
             SenderName = senderName,
-            Message = message.Trim(),
+            Message = message.TrimEnd(),
+            AttachmentFileName = attachmentFileName,
+            AttachmentUrl = attachmentUrl,
+            AttachmentContentType = attachmentContentType,
+            AttachmentSizeBytes = attachmentSizeBytes,
             Timestamp = DateTime.UtcNow
         };
 

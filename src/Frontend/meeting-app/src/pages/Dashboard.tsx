@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ProfileStatusMenu, UserStatus } from '../components/UserStatus';
+import { ProfileStatusMenu, UserAvatar, UserStatus, UserStatusBadge } from '../components/UserStatus';
 import { meetingAPI, userAPI } from '../services/api';
 import { initializeSignalR, joinUserNotifications, notifyUserStatusChanged, onMeetingInvite, startSignalR } from '../services/signalR';
 import { useAuthStore } from '../store/authStore';
@@ -19,6 +19,16 @@ function formatDate(value: string) {
     month: 'short',
     day: 'numeric',
   }).format(new Date(value));
+}
+
+function formatDateTime(date: Date) {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date);
 }
 
 function startOfWeek(date: Date) {
@@ -66,6 +76,18 @@ function formatHourLabel(hour: number) {
   return `${hour.toString().padStart(2, '0')}:00`;
 }
 
+function pad(value: number) {
+  return value.toString().padStart(2, '0');
+}
+
+function toDateInputValue(date: Date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function toTimeInputValue(date: Date) {
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function getMeetingDurationMinutes(meeting: Meeting) {
   if (meeting.durationMinutes && meeting.durationMinutes > 0) {
     return meeting.durationMinutes;
@@ -81,6 +103,134 @@ function getMeetingDurationMinutes(meeting: Meeting) {
 
 function minutesSinceStartOfDay(date: Date) {
   return date.getHours() * 60 + date.getMinutes();
+}
+
+function parseAttendees(value: string) {
+  return value
+    .split(/[\n,;]/)
+    .map((email) => email.trim())
+    .filter(Boolean);
+}
+
+function createSlotDate(day: Date, minutes: number) {
+  const next = new Date(day);
+  next.setHours(0, minutes, 0, 0);
+  return next;
+}
+
+function createQuickScheduleForm(start: Date): QuickScheduleForm {
+  return {
+    title: '',
+    attendeeText: '',
+    date: toDateInputValue(start),
+    startTime: toTimeInputValue(start),
+    durationMinutes: 30,
+    location: '',
+    description: '',
+    isOnlineMeeting: true,
+    lobbyEnabled: true,
+    allowChat: true,
+    allowRecording: false,
+    recurrenceRule: '',
+  };
+}
+
+function toEditMeetingForm(meeting: Meeting): EditMeetingForm {
+  const start = new Date(meeting.startTime);
+  return {
+    title: meeting.title,
+    attendeeText: meeting.attendeeEmails?.join(', ') || '',
+    date: toDateInputValue(start),
+    startTime: toTimeInputValue(start),
+    durationMinutes: getMeetingDurationMinutes(meeting),
+    location: meeting.location || '',
+    description: meeting.description || '',
+    isOnlineMeeting: meeting.isOnlineMeeting,
+    lobbyEnabled: meeting.lobbyEnabled,
+    allowChat: meeting.allowChat,
+    allowRecording: meeting.allowRecording,
+    recurrenceRule: meeting.recurrenceRule || '',
+    maxParticipants: meeting.maxParticipants || 100,
+    allowReactions: meeting.allowReactions,
+    allowScreenShare: meeting.allowScreenShare,
+    allowAttendeeUnmute: meeting.allowAttendeeUnmute,
+    allowTranscription: meeting.allowTranscription,
+  };
+}
+
+function getJoinLink(meeting: Meeting) {
+  return meeting.meetingLink || `${window.location.origin}/meeting/${meeting.id}`;
+}
+
+function getRecordingLink(meeting: Meeting) {
+  if (!meeting.recordingUrl) {
+    return '';
+  }
+
+  return meeting.recordingUrl.startsWith('http')
+    ? meeting.recordingUrl
+    : `http://localhost:5000${meeting.recordingUrl}`;
+}
+
+function normalizeRecurrence(rule?: string) {
+  return RECURRENCE_OPTIONS.some((option) => option.value === rule) ? rule || '' : '';
+}
+
+function recurrenceLabel(rule?: string) {
+  return RECURRENCE_OPTIONS.find((option) => option.value === normalizeRecurrence(rule))?.label || 'Does not repeat';
+}
+
+function shouldShowOccurrence(rule: string, originalStart: Date, day: Date) {
+  if (day < new Date(originalStart.getFullYear(), originalStart.getMonth(), originalStart.getDate())) {
+    return false;
+  }
+
+  if (rule === 'Daily') {
+    return true;
+  }
+
+  if (rule === 'Weekdays') {
+    return day.getDay() >= 1 && day.getDay() <= 5;
+  }
+
+  if (rule === 'Weekly') {
+    return day.getDay() === originalStart.getDay();
+  }
+
+  return sameDate(originalStart, day);
+}
+
+function expandMeetingsForCalendar(meetings: Meeting[], days: Date[]) {
+  if (days.length === 0) {
+    return [];
+  }
+
+  return meetings.flatMap((meeting) => {
+    const rule = normalizeRecurrence(meeting.recurrenceRule);
+    const originalStart = new Date(meeting.startTime);
+    const duration = getMeetingDurationMinutes(meeting);
+
+    if (!rule) {
+      return [meeting];
+    }
+
+    return days
+      .filter((day) => shouldShowOccurrence(rule, originalStart, day))
+      .map((day) => {
+        const occurrenceStart = new Date(day);
+        occurrenceStart.setHours(originalStart.getHours(), originalStart.getMinutes(), 0, 0);
+        const occurrenceEnd = new Date(occurrenceStart.getTime() + duration * 60000);
+        return {
+          ...meeting,
+          startTime: occurrenceStart.toISOString(),
+          endTime: occurrenceEnd.toISOString(),
+        };
+      });
+  });
+}
+
+function findUserByEmail(users: UserSummary[], email: string) {
+  return users.find((item) => item.email.toLowerCase() === email.toLowerCase());
 }
 
 function showBrowserMeetingNotification(meeting: Meeting) {
@@ -124,20 +274,77 @@ function MeetingCard({ meeting }: { meeting: Meeting }) {
 const HOUR_HEIGHT = 76;
 const HOURS = Array.from({ length: 24 }, (_, index) => index);
 const DAY_GRID_HEIGHT = HOUR_HEIGHT * HOURS.length;
+const QUICK_DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 180];
+const RECURRENCE_OPTIONS = [
+  { value: '', label: 'Does not repeat' },
+  { value: 'Daily', label: 'Daily' },
+  { value: 'Weekdays', label: 'Every weekday' },
+  { value: 'Weekly', label: 'Weekly' },
+];
+
+interface UserSummary {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  fullName?: string;
+  profilePictureUrl?: string;
+  status?: string;
+}
+
+interface DashboardNotification {
+  id: string;
+  message: string;
+  time: string;
+  meetingId?: string;
+}
+
+interface QuickScheduleForm {
+  title: string;
+  attendeeText: string;
+  date: string;
+  startTime: string;
+  durationMinutes: number;
+  location: string;
+  description: string;
+  isOnlineMeeting: boolean;
+  lobbyEnabled: boolean;
+  allowChat: boolean;
+  allowRecording: boolean;
+  recurrenceRule: string;
+}
+
+interface EditMeetingForm extends QuickScheduleForm {
+  maxParticipants: number;
+  allowReactions: boolean;
+  allowScreenShare: boolean;
+  allowAttendeeUnmute: boolean;
+  allowTranscription: boolean;
+}
 
 function TimeGridCalendar({
   days,
   meetingsByDay,
-  navigateToMeeting,
+  onMeetingClick,
+  onTimeSlotClick,
 }: {
   days: Date[];
   meetingsByDay: Array<{ day: Date; meetings: Meeting[] }>;
-  navigateToMeeting: (meetingId: string) => void;
+  onMeetingClick: (meeting: Meeting) => void;
+  onTimeSlotClick: (start: Date) => void;
 }) {
   const now = new Date();
   const todayIndex = days.findIndex((day) => sameDate(day, now));
   const currentTimeTop = minutesSinceStartOfDay(now) / 60 * HOUR_HEIGHT;
   const gridTemplateColumns = `64px repeat(${days.length}, minmax(170px, 1fr))`;
+
+  const handleColumnClick = (event: MouseEvent<HTMLDivElement>, day: Date) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const offsetY = Math.max(0, Math.min(DAY_GRID_HEIGHT, event.clientY - bounds.top));
+    const clickedMinutes = offsetY / HOUR_HEIGHT * 60;
+    const roundedMinutes = Math.floor(clickedMinutes / 30) * 30;
+    onTimeSlotClick(createSlotDate(day, roundedMinutes));
+  };
 
   return (
     <section className="overflow-hidden rounded-md border border-slate-200 bg-white">
@@ -176,7 +383,11 @@ function TimeGridCalendar({
           </div>
 
           {meetingsByDay.map(({ day, meetings: dayMeetings }) => (
-            <div key={day.toISOString()} className="relative border-r border-slate-200 last:border-r-0">
+            <div
+              key={day.toISOString()}
+              onClick={(event) => handleColumnClick(event, day)}
+              className="relative cursor-crosshair border-r border-slate-200 last:border-r-0"
+            >
               {HOURS.map((hour) => (
                 <div key={hour} className="border-t border-slate-200" style={{ height: HOUR_HEIGHT }}>
                   <div className="mt-[37px] border-t border-dashed border-slate-100" />
@@ -189,8 +400,11 @@ function TimeGridCalendar({
                 const height = Math.max(38, getMeetingDurationMinutes(meeting) / 60 * HOUR_HEIGHT);
                 return (
                   <button
-                    key={meeting.id}
-                    onClick={() => navigateToMeeting(meeting.id)}
+                    key={`${meeting.id}-${meeting.startTime}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onMeetingClick(meeting);
+                    }}
                     className="absolute left-2 right-2 z-10 overflow-hidden rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-2 text-left text-indigo-950 shadow-sm hover:border-indigo-400 hover:bg-indigo-100"
                     style={{ top, height }}
                   >
@@ -217,19 +431,537 @@ function TimeGridCalendar({
   );
 }
 
+function QuickScheduleModal({
+  form,
+  error,
+  saving,
+  createdMeeting,
+  copyStatus,
+  users,
+  onChange,
+  onClose,
+  onSubmit,
+  onCopy,
+  onJoin,
+}: {
+  form: QuickScheduleForm;
+  error: string;
+  saving: boolean;
+  createdMeeting: Meeting | null;
+  copyStatus: string;
+  users: UserSummary[];
+  onChange: (updates: Partial<QuickScheduleForm>) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+  onCopy: () => void;
+  onJoin: (meeting: Meeting) => void;
+}) {
+  const startDate = new Date(`${form.date}T${form.startTime}`);
+  const endDate = new Date(startDate.getTime() + Number(form.durationMinutes) * 60000);
+  const joinLink = createdMeeting?.meetingLink || (createdMeeting ? `${window.location.origin}/meeting/${createdMeeting.id}` : '');
+  const attendees = parseAttendees(form.attendeeText);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-md border border-slate-200 bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div>
+            <p className="text-sm font-medium text-blue-700">Calendar</p>
+            <h2 className="text-xl font-semibold text-slate-950">Schedule meeting</h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-5">
+          {error && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          {createdMeeting && (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3">
+              <p className="text-sm font-semibold text-emerald-900">Meeting scheduled</p>
+              <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                <input
+                  readOnly
+                  value={joinLink}
+                  className="min-w-0 flex-1 rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm text-emerald-950"
+                />
+                <button
+                  onClick={onCopy}
+                  className="rounded-md border border-emerald-300 bg-white px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
+                >
+                  {copyStatus || 'Copy link'}
+                </button>
+                <button
+                  onClick={() => onJoin(createdMeeting)}
+                  className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+                >
+                  Open
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Title</label>
+            <input
+              value={form.title}
+              onChange={(event) => onChange({ title: event.target.value })}
+              placeholder="Add a title"
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-[1fr_140px_140px]">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Date</label>
+              <input
+                type="date"
+                value={form.date}
+                onChange={(event) => onChange({ date: event.target.value })}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Start</label>
+              <input
+                type="time"
+                value={form.startTime}
+                onChange={(event) => onChange({ startTime: event.target.value })}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Duration</label>
+              <select
+                value={form.durationMinutes}
+                onChange={(event) => onChange({ durationMinutes: Number(event.target.value) })}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              >
+                {QUICK_DURATION_OPTIONS.map((duration) => (
+                  <option key={duration} value={duration}>
+                    {duration < 60 ? `${duration} min` : `${duration / 60} hr${duration > 60 ? 's' : ''}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
+            {Number.isNaN(startDate.getTime()) ? 'Choose a meeting time' : `${formatDateTime(startDate)} - ${formatTime(endDate.toISOString())}`}
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Required attendees</label>
+            <textarea
+              value={form.attendeeText}
+              onChange={(event) => onChange({ attendeeText: event.target.value })}
+              placeholder="name@example.com, teammate@example.com"
+              rows={3}
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            />
+            {attendees.length > 0 && (
+              <div className="mt-2 space-y-2">
+                {attendees.map((email) => {
+                  const attendee = findUserByEmail(users, email);
+                  return (
+                    <div key={email} className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-2 text-sm">
+                      <span className="flex min-w-0 items-center gap-2 text-slate-700">
+                        {attendee && (
+                          <UserAvatar
+                            displayName={attendee.fullName || `${attendee.firstName} ${attendee.lastName}`.trim()}
+                            email={attendee.email}
+                            profilePictureUrl={attendee.profilePictureUrl}
+                            status={attendee.status}
+                            showStatus
+                            size="sm"
+                          />
+                        )}
+                        <span className="truncate">{attendee?.fullName || email}</span>
+                      </span>
+                      {attendee ? (
+                        <UserStatusBadge status={attendee.status} />
+                      ) : (
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-500">External invite</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Location</label>
+              <input
+                value={form.location}
+                onChange={(event) => onChange({ location: event.target.value })}
+                placeholder="Room, office, or link"
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Repeat</label>
+              <select
+                value={form.recurrenceRule}
+                onChange={(event) => onChange({ recurrenceRule: event.target.value })}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              >
+                {RECURRENCE_OPTIONS.map((option) => (
+                  <option key={option.value || 'none'} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Agenda</label>
+            <textarea
+              value={form.description}
+              onChange={(event) => onChange({ description: event.target.value })}
+              placeholder="Add agenda, notes, or preparation details"
+              rows={3}
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="flex items-center gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={form.isOnlineMeeting}
+                onChange={(event) => onChange({ isOnlineMeeting: event.target.checked })}
+                className="h-4 w-4"
+              />
+              Online meeting
+            </label>
+            <label className="flex items-center gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={form.lobbyEnabled}
+                onChange={(event) => onChange({ lobbyEnabled: event.target.checked })}
+                className="h-4 w-4"
+              />
+              Use lobby
+            </label>
+            <label className="flex items-center gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={form.allowChat}
+                onChange={(event) => onChange({ allowChat: event.target.checked })}
+                className="h-4 w-4"
+              />
+              Allow chat
+            </label>
+            <label className="flex items-center gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={form.allowRecording}
+                onChange={(event) => onChange({ allowRecording: event.target.checked })}
+                className="h-4 w-4"
+              />
+              Allow recording
+            </label>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-3 border-t border-slate-200 px-5 py-4">
+          <button
+            onClick={onClose}
+            className="rounded-md border border-slate-300 bg-white px-5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onSubmit}
+            disabled={saving}
+            className="rounded-md bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+          >
+            {saving ? 'Scheduling...' : 'Schedule'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MeetingDetailsModal({
+  meeting,
+  editForm,
+  users,
+  editMode,
+  saving,
+  error,
+  copyStatus,
+  onClose,
+  onJoin,
+  onCopy,
+  onEdit,
+  onEditChange,
+  onSave,
+  onCancelEdit,
+  onCancelMeeting,
+}: {
+  meeting: Meeting;
+  editForm: EditMeetingForm;
+  users: UserSummary[];
+  editMode: boolean;
+  saving: boolean;
+  error: string;
+  copyStatus: string;
+  onClose: () => void;
+  onJoin: () => void;
+  onCopy: () => void;
+  onEdit: () => void;
+  onEditChange: (updates: Partial<EditMeetingForm>) => void;
+  onSave: () => void;
+  onCancelEdit: () => void;
+  onCancelMeeting: () => void;
+}) {
+  const attendees = parseAttendees(editMode ? editForm.attendeeText : meeting.attendeeEmails?.join(', ') || '');
+  const meetingStart = editMode ? new Date(`${editForm.date}T${editForm.startTime}`) : new Date(meeting.startTime);
+  const durationMinutes = editMode ? Number(editForm.durationMinutes) : getMeetingDurationMinutes(meeting);
+  const meetingEnd = new Date(meetingStart.getTime() + durationMinutes * 60000);
+  const joinLink = getJoinLink(meeting);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6">
+      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-md border border-slate-200 bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div>
+            <p className="text-sm font-medium text-blue-700">Meeting details</p>
+            <h2 className="text-xl font-semibold text-slate-950">{editMode ? 'Edit meeting' : meeting.title}</h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-5">
+          {error && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          {!editMode ? (
+            <>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-950">{meeting.title}</h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {formatDateTime(meetingStart)} - {formatTime(meetingEnd.toISOString())}
+                    </p>
+                    <p className="mt-1 text-sm text-slate-600">{durationMinutes} min - {recurrenceLabel(meeting.recurrenceRule)}</p>
+                    {meeting.location && <p className="mt-1 text-sm text-slate-600">{meeting.location}</p>}
+                  </div>
+                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">{meeting.status}</span>
+                </div>
+                {meeting.description && <p className="mt-4 whitespace-pre-wrap text-sm text-slate-700">{meeting.description}</p>}
+              </div>
+
+              <div>
+                <p className="mb-2 text-sm font-medium text-slate-700">Join link</p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input readOnly value={joinLink} className="min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700" />
+                  <button onClick={onCopy} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                    {copyStatus || 'Copy'}
+                  </button>
+                  <button onClick={onJoin} className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700">
+                    Join
+                  </button>
+                </div>
+              </div>
+
+              {meeting.recordingUrl && (
+                <a
+                  href={getRecordingLink(meeting)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
+                >
+                  Open recording
+                </a>
+              )}
+
+              <div>
+                <p className="mb-2 text-sm font-medium text-slate-700">Attendees</p>
+                {attendees.length === 0 ? (
+                  <p className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-500">No attendees added.</p>
+                ) : (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {attendees.map((email) => {
+                      const attendee = findUserByEmail(users, email);
+                      return (
+                        <div key={email} className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-2 text-sm">
+                          <span className="flex min-w-0 items-center gap-2 text-slate-700">
+                            {attendee && (
+                              <UserAvatar
+                                displayName={attendee.fullName || `${attendee.firstName} ${attendee.lastName}`.trim()}
+                                email={attendee.email}
+                                profilePictureUrl={attendee.profilePictureUrl}
+                                status={attendee.status}
+                                showStatus
+                                size="sm"
+                              />
+                            )}
+                            <span className="truncate">{attendee?.fullName || email}</span>
+                          </span>
+                          {attendee ? <UserStatusBadge status={attendee.status} /> : <span className="text-xs text-slate-500">External</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">Title</label>
+                <input
+                  value={editForm.title}
+                  onChange={(event) => onEditChange({ title: event.target.value })}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-[1fr_140px_140px]">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">Date</label>
+                  <input type="date" value={editForm.date} onChange={(event) => onEditChange({ date: event.target.value })} className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500" />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">Start</label>
+                  <input type="time" value={editForm.startTime} onChange={(event) => onEditChange({ startTime: event.target.value })} className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500" />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">Duration</label>
+                  <select value={editForm.durationMinutes} onChange={(event) => onEditChange({ durationMinutes: Number(event.target.value) })} className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500">
+                    {QUICK_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{duration < 60 ? `${duration} min` : `${duration / 60} hr${duration > 60 ? 's' : ''}`}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">Repeat</label>
+                  <select value={editForm.recurrenceRule} onChange={(event) => onEditChange({ recurrenceRule: event.target.value })} className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500">
+                    {RECURRENCE_OPTIONS.map((option) => <option key={option.value || 'none'} value={option.value}>{option.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">Location</label>
+                  <input value={editForm.location} onChange={(event) => onEditChange({ location: event.target.value })} className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500" />
+                </div>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">Required attendees</label>
+                <textarea value={editForm.attendeeText} onChange={(event) => onEditChange({ attendeeText: event.target.value })} rows={3} className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500" />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">Agenda</label>
+                <textarea value={editForm.description} onChange={(event) => onEditChange({ description: event.target.value })} rows={3} className="w-full rounded-md border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-500" />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {[
+                  ['isOnlineMeeting', 'Online meeting'],
+                  ['lobbyEnabled', 'Use lobby'],
+                  ['allowChat', 'Allow chat'],
+                  ['allowRecording', 'Allow recording'],
+                  ['allowReactions', 'Allow reactions'],
+                  ['allowScreenShare', 'Allow screen sharing'],
+                  ['allowAttendeeUnmute', 'Allow attendees to unmute'],
+                  ['allowTranscription', 'Allow transcription'],
+                ].map(([name, label]) => (
+                  <label key={name} className="flex items-center gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(editForm[name as keyof EditMeetingForm])}
+                      onChange={(event) => onEditChange({ [name]: event.target.checked } as Partial<EditMeetingForm>)}
+                      className="h-4 w-4"
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="flex flex-wrap justify-end gap-3 border-t border-slate-200 px-5 py-4">
+          {!editMode ? (
+            <>
+              <button onClick={onCancelMeeting} className="mr-auto rounded-md border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50">
+                Cancel meeting
+              </button>
+              <button onClick={onEdit} className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                Edit
+              </button>
+              <button onClick={onJoin} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">
+                Join
+              </button>
+            </>
+          ) : (
+            <>
+              <button onClick={onCancelEdit} className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                Back
+              </button>
+              <button onClick={onSave} disabled={saving} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60">
+                {saving ? 'Saving...' : 'Save changes'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
+  const accounts = useAuthStore((state) => state.accounts);
+  const switchAccount = useAuthStore((state) => state.switchAccount);
   const logout = useAuthStore((state) => state.logout);
   const token = useAuthStore((state) => state.token);
   const meetings = useMeetingStore((state) => state.meetings);
   const setMeetings = useMeetingStore((state) => state.setMeetings);
+  const addMeeting = useMeetingStore((state) => state.addMeeting);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'calendar' | 'list'>('calendar');
   const [calendarRange, setCalendarRange] = useState<'workWeek' | 'week'>('workWeek');
+  const [dashboardView, setDashboardView] = useState<'calendar' | 'recordings'>('calendar');
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [notices, setNotices] = useState<string[]>([]);
+  const [notifications, setNotifications] = useState<DashboardNotification[]>([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [knownUsers, setKnownUsers] = useState<UserSummary[]>([]);
+  const [quickScheduleForm, setQuickScheduleForm] = useState<QuickScheduleForm | null>(null);
+  const [quickScheduleError, setQuickScheduleError] = useState('');
+  const [quickScheduleSaving, setQuickScheduleSaving] = useState(false);
+  const [quickCreatedMeeting, setQuickCreatedMeeting] = useState<Meeting | null>(null);
+  const [quickCopyStatus, setQuickCopyStatus] = useState('');
+  const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
+  const [meetingEditMode, setMeetingEditMode] = useState(false);
+  const [meetingEditForm, setMeetingEditForm] = useState<EditMeetingForm | null>(null);
+  const [meetingModalError, setMeetingModalError] = useState('');
+  const [meetingSaving, setMeetingSaving] = useState(false);
+  const [meetingCopyStatus, setMeetingCopyStatus] = useState('');
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -244,6 +976,17 @@ export default function Dashboard() {
     [meetings],
   );
 
+  const addNotification = (notification: Omit<DashboardNotification, 'id' | 'time'>) => {
+    setNotifications((items) => [
+      {
+        ...notification,
+        id: `${Date.now()}-${items.length}`,
+        time: new Date().toISOString(),
+      },
+      ...items,
+    ].slice(0, 20));
+  };
+
   useEffect(() => {
     if (!user) {
       navigate('/login');
@@ -252,11 +995,13 @@ export default function Dashboard() {
 
     const fetchMeetings = async () => {
       try {
-        const [meetingsResponse, profileResponse] = await Promise.all([
+        const [meetingsResponse, profileResponse, usersResponse] = await Promise.all([
           meetingAPI.getMyMeetings(),
           userAPI.getProfile().catch(() => ({ data: user })),
+          userAPI.searchUsers().catch(() => ({ data: [] })),
         ]);
         setMeetings(meetingsResponse.data);
+        setKnownUsers(usersResponse.data);
         if (profileResponse.data) {
           setUser(profileResponse.data);
         }
@@ -280,7 +1025,9 @@ export default function Dashboard() {
       .then(async () => {
         await joinUserNotifications(user.id);
         onMeetingInvite((data) => {
-          setNotices((items) => [`${data.organizerName} invited you to ${data.meetingTitle}`, ...items].slice(0, 3));
+          const message = `${data.organizerName} invited you to ${data.meetingTitle}`;
+          setNotices((items) => [message, ...items].slice(0, 3));
+          addNotification({ message, meetingId: data.meetingId });
         });
       })
       .catch((error) => console.warn('Notification connection failed', error));
@@ -303,7 +1050,9 @@ export default function Dashboard() {
         const startMs = new Date(meeting.startTime).getTime();
         const reminderMs = Math.max(0, startMs - Date.now() - 5 * 60 * 1000);
         return window.setTimeout(() => {
-          setNotices((items) => [`${meeting.title} starts at ${formatTime(meeting.startTime)}. Join link is ready.`, ...items].slice(0, 3));
+          const message = `${meeting.title} starts at ${formatTime(meeting.startTime)}. Join link is ready.`;
+          setNotices((items) => [message, ...items].slice(0, 3));
+          addNotification({ message, meetingId: meeting.id });
           showBrowserMeetingNotification(meeting);
         }, reminderMs);
       });
@@ -317,18 +1066,41 @@ export default function Dashboard() {
     return Array.from({ length: dayCount }, (_, index) => addDays(start, index));
   }, [calendarRange, selectedDate]);
 
+  const visibleMeetings = useMemo(
+    () => expandMeetingsForCalendar(sortedMeetings, weekDays),
+    [sortedMeetings, weekDays],
+  );
+
   const meetingsByDay = useMemo(
     () =>
       weekDays.map((day) => ({
         day,
-        meetings: sortedMeetings.filter((meeting) => sameDate(new Date(meeting.startTime), day)),
+        meetings: visibleMeetings.filter((meeting) => sameDate(new Date(meeting.startTime), day)),
       })),
-    [sortedMeetings, weekDays],
+    [visibleMeetings, weekDays],
+  );
+
+  const recordingMeetings = useMemo(
+    () => sortedMeetings.filter((meeting) => meeting.recordingUrl),
+    [sortedMeetings],
   );
 
   const handleLogout = () => {
+    const hadOtherAccounts = accounts.some((account) => account.user.id !== user?.id);
     logout();
-    navigate('/login');
+    if (!hadOtherAccounts) {
+      navigate('/login');
+    }
+  };
+
+  const handleSwitchAccount = (userId: string) => {
+    setLoading(true);
+    setMeetings([]);
+    setNotices([]);
+    setNotifications([]);
+    closeMeetingDetails();
+    closeQuickSchedule();
+    switchAccount(userId);
   };
 
   const handleStatusChange = async (status: UserStatus) => {
@@ -346,6 +1118,233 @@ export default function Dashboard() {
       await notifyUserStatusChanged(user.id, displayName, response.data.status).catch(() => undefined);
     } catch {
       setUser(previousUser);
+    }
+  };
+
+  const handleAvatarChange = async (file: File) => {
+    if (!user) {
+      return;
+    }
+
+    const data = new FormData();
+    data.append('file', file);
+    setAvatarUploading(true);
+
+    try {
+      const response = await userAPI.uploadAvatar(data);
+      setUser(response.data);
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
+  const handleAvatarRemove = async () => {
+    setAvatarUploading(true);
+    try {
+      const response = await userAPI.removeAvatar();
+      setUser(response.data);
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
+  const openQuickSchedule = (start: Date) => {
+    setQuickScheduleForm(createQuickScheduleForm(start));
+    setQuickScheduleError('');
+    setQuickCreatedMeeting(null);
+    setQuickCopyStatus('');
+  };
+
+  const updateQuickScheduleForm = (updates: Partial<QuickScheduleForm>) => {
+    setQuickScheduleForm((current) => current ? { ...current, ...updates } : current);
+    setQuickScheduleError('');
+    setQuickCopyStatus('');
+  };
+
+  const closeQuickSchedule = () => {
+    setQuickScheduleForm(null);
+    setQuickScheduleError('');
+    setQuickCreatedMeeting(null);
+    setQuickCopyStatus('');
+  };
+
+  const submitQuickSchedule = async () => {
+    if (!quickScheduleForm) {
+      return;
+    }
+
+    const startDate = new Date(`${quickScheduleForm.date}T${quickScheduleForm.startTime}`);
+    const durationMinutes = Number(quickScheduleForm.durationMinutes);
+    const endDate = new Date(startDate.getTime() + durationMinutes * 60000);
+    const attendeeEmails = parseAttendees(quickScheduleForm.attendeeText);
+
+    if (!quickScheduleForm.title.trim()) {
+      setQuickScheduleError('Meeting title is required');
+      return;
+    }
+
+    if (Number.isNaN(startDate.getTime()) || startDate < new Date(Date.now() - 60000)) {
+      setQuickScheduleError('Choose a valid future start time');
+      return;
+    }
+
+    setQuickScheduleSaving(true);
+    setQuickScheduleError('');
+    setQuickCopyStatus('');
+
+    try {
+      const response = await meetingAPI.createMeeting({
+        title: quickScheduleForm.title.trim(),
+        description: quickScheduleForm.description.trim(),
+        startTime: startDate.toISOString(),
+        endTime: endDate.toISOString(),
+        durationMinutes,
+        attendeeEmails,
+        location: quickScheduleForm.location.trim(),
+        isOnlineMeeting: quickScheduleForm.isOnlineMeeting,
+        lobbyEnabled: quickScheduleForm.lobbyEnabled,
+        allowChat: quickScheduleForm.allowChat,
+        allowReactions: true,
+        allowScreenShare: true,
+        allowAttendeeUnmute: true,
+        allowRecording: quickScheduleForm.allowRecording,
+        allowTranscription: false,
+        recurrenceRule: quickScheduleForm.recurrenceRule,
+        maxParticipants: 100,
+        isRecorded: false,
+      });
+      addMeeting(response.data);
+      setQuickCreatedMeeting(response.data);
+      addNotification({ message: `${response.data.title} was scheduled`, meetingId: response.data.id });
+      showBrowserMeetingNotification(response.data);
+    } catch (err: any) {
+      setQuickScheduleError(err.response?.data?.message || err.response?.data || 'Failed to create meeting');
+    } finally {
+      setQuickScheduleSaving(false);
+    }
+  };
+
+  const copyQuickJoinLink = async () => {
+    if (!quickCreatedMeeting) {
+      return;
+    }
+
+    const joinLink = quickCreatedMeeting.meetingLink || `${window.location.origin}/meeting/${quickCreatedMeeting.id}`;
+    try {
+      await navigator.clipboard.writeText(joinLink);
+      setQuickCopyStatus('Copied');
+    } catch {
+      setQuickCopyStatus('Unable to copy');
+    }
+  };
+
+  const openMeetingDetails = (calendarMeeting: Meeting) => {
+    const sourceMeeting = meetings.find((meeting) => meeting.id === calendarMeeting.id) || calendarMeeting;
+    setSelectedMeeting(sourceMeeting);
+    setMeetingEditForm(toEditMeetingForm(sourceMeeting));
+    setMeetingEditMode(false);
+    setMeetingModalError('');
+    setMeetingCopyStatus('');
+  };
+
+  const closeMeetingDetails = () => {
+    setSelectedMeeting(null);
+    setMeetingEditForm(null);
+    setMeetingEditMode(false);
+    setMeetingModalError('');
+    setMeetingCopyStatus('');
+  };
+
+  const updateMeetingEditForm = (updates: Partial<EditMeetingForm>) => {
+    setMeetingEditForm((current) => current ? { ...current, ...updates } : current);
+    setMeetingModalError('');
+    setMeetingCopyStatus('');
+  };
+
+  const copyMeetingJoinLink = async () => {
+    if (!selectedMeeting) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(getJoinLink(selectedMeeting));
+      setMeetingCopyStatus('Copied');
+    } catch {
+      setMeetingCopyStatus('Unable to copy');
+    }
+  };
+
+  const saveMeetingChanges = async () => {
+    if (!selectedMeeting || !meetingEditForm) {
+      return;
+    }
+
+    const startDate = new Date(`${meetingEditForm.date}T${meetingEditForm.startTime}`);
+    const durationMinutes = Number(meetingEditForm.durationMinutes);
+    const endDate = new Date(startDate.getTime() + durationMinutes * 60000);
+
+    if (!meetingEditForm.title.trim()) {
+      setMeetingModalError('Meeting title is required');
+      return;
+    }
+
+    if (Number.isNaN(startDate.getTime()) || startDate < new Date(Date.now() - 60000)) {
+      setMeetingModalError('Choose a valid future start time');
+      return;
+    }
+
+    setMeetingSaving(true);
+    setMeetingModalError('');
+
+    try {
+      const response = await meetingAPI.updateMeeting(selectedMeeting.id, {
+        title: meetingEditForm.title.trim(),
+        description: meetingEditForm.description.trim(),
+        startTime: startDate.toISOString(),
+        endTime: endDate.toISOString(),
+        durationMinutes,
+        attendeeEmails: parseAttendees(meetingEditForm.attendeeText),
+        location: meetingEditForm.location.trim(),
+        isOnlineMeeting: meetingEditForm.isOnlineMeeting,
+        lobbyEnabled: meetingEditForm.lobbyEnabled,
+        allowChat: meetingEditForm.allowChat,
+        allowReactions: meetingEditForm.allowReactions,
+        allowScreenShare: meetingEditForm.allowScreenShare,
+        allowAttendeeUnmute: meetingEditForm.allowAttendeeUnmute,
+        allowRecording: meetingEditForm.allowRecording,
+        allowTranscription: meetingEditForm.allowTranscription,
+        recurrenceRule: meetingEditForm.recurrenceRule,
+        maxParticipants: Number(meetingEditForm.maxParticipants),
+      });
+      setMeetings(meetings.map((meeting) => meeting.id === selectedMeeting.id ? response.data : meeting));
+      setSelectedMeeting(response.data);
+      setMeetingEditForm(toEditMeetingForm(response.data));
+      setMeetingEditMode(false);
+      addNotification({ message: `${response.data.title} was updated`, meetingId: response.data.id });
+    } catch (err: any) {
+      setMeetingModalError(err.response?.data?.message || err.response?.data || 'Failed to update meeting');
+    } finally {
+      setMeetingSaving(false);
+    }
+  };
+
+  const cancelSelectedMeeting = async () => {
+    if (!selectedMeeting) {
+      return;
+    }
+
+    setMeetingSaving(true);
+    setMeetingModalError('');
+
+    try {
+      await meetingAPI.deleteMeeting(selectedMeeting.id);
+      setMeetings(meetings.filter((meeting) => meeting.id !== selectedMeeting.id));
+      addNotification({ message: `${selectedMeeting.title} was cancelled`, meetingId: selectedMeeting.id });
+      closeMeetingDetails();
+    } catch (err: any) {
+      setMeetingModalError(err.response?.data?.message || err.response?.data || 'Failed to cancel meeting');
+    } finally {
+      setMeetingSaving(false);
     }
   };
 
@@ -368,9 +1367,17 @@ export default function Dashboard() {
           <div className="flex items-center gap-3">
             <ProfileStatusMenu
               displayName={displayName}
+              currentUserId={user?.id}
               email={user?.email}
+              profilePictureUrl={user?.profilePictureUrl}
               status={user?.status}
+              accounts={accounts.map((account) => account.user)}
+              avatarUploading={avatarUploading}
               onChange={handleStatusChange}
+              onSwitchAccount={handleSwitchAccount}
+              onAddAccount={() => navigate('/login?addAccount=1')}
+              onAvatarChange={handleAvatarChange}
+              onAvatarRemove={handleAvatarRemove}
               onSignOut={handleLogout}
             />
           </div>
@@ -392,6 +1399,56 @@ export default function Dashboard() {
             >
               Chat
             </button>
+            <button
+              onClick={() => setDashboardView(dashboardView === 'recordings' ? 'calendar' : 'recordings')}
+              className={`rounded-md border px-5 py-2 text-sm font-semibold ${
+                dashboardView === 'recordings'
+                  ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              Recordings
+            </button>
+            <div className="relative">
+              <button
+                onClick={() => setNotificationsOpen((value) => !value)}
+                className="rounded-md border border-slate-300 bg-white px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Notifications {notifications.length > 0 ? `(${notifications.length})` : ''}
+              </button>
+              {notificationsOpen && (
+                <div className="absolute left-0 z-40 mt-2 w-80 rounded-md border border-slate-200 bg-white p-3 shadow-xl">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold text-slate-950">Notifications</p>
+                    <button onClick={() => setNotifications([])} className="text-xs font-semibold text-slate-500 hover:text-slate-950">Clear</button>
+                  </div>
+                  <div className="mt-3 max-h-80 space-y-2 overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <p className="text-sm text-slate-500">No notifications yet.</p>
+                    ) : (
+                      notifications.map((item) => (
+                        <button
+                          key={item.id}
+                          onClick={() => {
+                            if (item.meetingId) {
+                              const meeting = meetings.find((entry) => entry.id === item.meetingId);
+                              if (meeting) {
+                                openMeetingDetails(meeting);
+                              }
+                            }
+                            setNotificationsOpen(false);
+                          }}
+                          className="w-full rounded-md bg-slate-50 px-3 py-2 text-left text-sm hover:bg-slate-100"
+                        >
+                          <p className="font-medium text-slate-800">{item.message}</p>
+                          <p className="mt-1 text-xs text-slate-500">{formatTime(item.time)}</p>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="rounded-md border border-slate-300 bg-white p-1">
               <button
                 onClick={() => setView('calendar')}
@@ -412,7 +1469,7 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {view === 'calendar' && (
+          {dashboardView === 'calendar' && view === 'calendar' && (
             <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => moveWeek(-1)}
@@ -469,11 +1526,52 @@ export default function Dashboard() {
           <div className="rounded-md border border-slate-200 bg-white py-12 text-center text-slate-500">
             Loading meetings...
           </div>
+        ) : dashboardView === 'recordings' ? (
+          <section className="rounded-md border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950">Recordings</h2>
+                <p className="text-sm text-slate-500">Saved meeting recordings from your meetings.</p>
+              </div>
+              <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                {recordingMeetings.length}
+              </span>
+            </div>
+            <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {recordingMeetings.length === 0 ? (
+                <p className="text-sm text-slate-500">No recordings yet.</p>
+              ) : (
+                recordingMeetings.map((meeting) => (
+                  <div key={meeting.id} className="rounded-md border border-slate-200 bg-slate-50 p-4">
+                    <p className="font-semibold text-slate-950">{meeting.title}</p>
+                    <p className="mt-1 text-sm text-slate-600">{formatDate(meeting.startTime)} at {formatTime(meeting.startTime)}</p>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <a
+                        href={getRecordingLink(meeting)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+                      >
+                        Open recording
+                      </a>
+                      <button
+                        onClick={() => openMeetingDetails(meeting)}
+                        className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        Details
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
         ) : view === 'calendar' ? (
           <TimeGridCalendar
             days={weekDays}
             meetingsByDay={meetingsByDay}
-            navigateToMeeting={(meetingId) => navigate(`/meeting/${meetingId}`)}
+            onMeetingClick={openMeetingDetails}
+            onTimeSlotClick={openQuickSchedule}
           />
         ) : meetings.length === 0 ? (
           <div className="rounded-md border border-slate-200 bg-white py-12 text-center">
@@ -493,6 +1591,45 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+
+      {quickScheduleForm && (
+        <QuickScheduleModal
+          form={quickScheduleForm}
+          error={quickScheduleError}
+          saving={quickScheduleSaving}
+          createdMeeting={quickCreatedMeeting}
+          copyStatus={quickCopyStatus}
+          users={knownUsers}
+          onChange={updateQuickScheduleForm}
+          onClose={closeQuickSchedule}
+          onSubmit={submitQuickSchedule}
+          onCopy={copyQuickJoinLink}
+          onJoin={(meeting) => navigate(`/meeting/${meeting.id}`)}
+        />
+      )}
+      {selectedMeeting && meetingEditForm && (
+        <MeetingDetailsModal
+          meeting={selectedMeeting}
+          editForm={meetingEditForm}
+          users={knownUsers}
+          editMode={meetingEditMode}
+          saving={meetingSaving}
+          error={meetingModalError}
+          copyStatus={meetingCopyStatus}
+          onClose={closeMeetingDetails}
+          onJoin={() => navigate(`/meeting/${selectedMeeting.id}`)}
+          onCopy={copyMeetingJoinLink}
+          onEdit={() => setMeetingEditMode(true)}
+          onEditChange={updateMeetingEditForm}
+          onSave={saveMeetingChanges}
+          onCancelEdit={() => {
+            setMeetingEditForm(toEditMeetingForm(selectedMeeting));
+            setMeetingEditMode(false);
+            setMeetingModalError('');
+          }}
+          onCancelMeeting={cancelSelectedMeeting}
+        />
+      )}
     </div>
   );
 }

@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:5000/api';
+export const API_BASE_URL = 'http://localhost:5000/api';
+export const API_ORIGIN = API_BASE_URL.replace(/\/api$/, '');
+const ACTIVE_ACCOUNT_ID_KEY = 'activeAuthAccountId';
+const ACCOUNTS_KEY = 'authAccounts';
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -9,13 +12,43 @@ export const apiClient = axios.create({
   },
 });
 
+export function resolveApiAssetUrl(url?: string | null) {
+  if (!url) {
+    return '';
+  }
+
+  if (/^(https?:|data:|blob:)/i.test(url)) {
+    return url;
+  }
+
+  return `${API_ORIGIN}${url.startsWith('/') ? url : `/${url}`}`;
+}
+
+function getStoredAuthToken() {
+  try {
+    const activeAccountId = sessionStorage.getItem(ACTIVE_ACCOUNT_ID_KEY);
+    const accounts = JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || '[]');
+    const activeAccount = activeAccountId
+      ? accounts.find((account: any) => account.user?.id === activeAccountId)
+      : null;
+
+    if (activeAccount?.token) {
+      return activeAccount.token;
+    }
+  } catch {
+    // Fall back to the legacy single-account token below.
+  }
+
+  return localStorage.getItem('authToken');
+}
+
 // Add token to requests
 apiClient.interceptors.request.use((config) => {
   if (config.data instanceof FormData) {
     config.headers.set('Content-Type', undefined);
   }
 
-  const token = localStorage.getItem('authToken');
+  const token = getStoredAuthToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -40,6 +73,12 @@ export const userAPI = {
 
   updateProfile: (data: any) =>
     apiClient.put('/users/profile', data),
+
+  uploadAvatar: (data: FormData) =>
+    apiClient.post('/users/profile/avatar', data),
+
+  removeAvatar: () =>
+    apiClient.delete('/users/profile/avatar'),
 
   updateStatus: (status: string) =>
     apiClient.put('/users/status', { status }),
@@ -123,4 +162,15 @@ export const conversationAPI = {
 
   sendMessage: (conversationId: string, data: any) =>
     apiClient.post(`/conversations/${conversationId}/messages`, data),
+
+  uploadAttachment: (conversationId: string, data: FormData) =>
+    apiClient.post(`/conversations/${conversationId}/messages/attachments`, data),
+
+  downloadAttachment: (attachmentUrl: string) =>
+    apiClient.get(
+      attachmentUrl
+        .replace(/^https?:\/\/localhost:5000\/api/i, '')
+        .replace(/^\/api/i, ''),
+      { responseType: 'blob' },
+    ),
 };
