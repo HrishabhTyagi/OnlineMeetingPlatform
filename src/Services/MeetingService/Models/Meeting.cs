@@ -160,6 +160,7 @@ public class Conversation
     public ICollection<ConversationMember> Members { get; set; } = new List<ConversationMember>();
     public ICollection<ConversationMessage> Messages { get; set; } = new List<ConversationMessage>();
     public ICollection<ConversationInvite> Invites { get; set; } = new List<ConversationInvite>();
+    public ICollection<ScheduledConversationMessage> ScheduledMessages { get; set; } = new List<ScheduledConversationMessage>();
 }
 
 public class ConversationMember
@@ -186,9 +187,41 @@ public class ConversationMessage
     public string? AttachmentUrl { get; set; }
     public string? AttachmentContentType { get; set; }
     public long? AttachmentSizeBytes { get; set; }
+    public Guid? ReplyToMessageId { get; set; }
+    public string? ReplyToSenderName { get; set; }
+    public string? ReplyToPreview { get; set; }
     public DateTime SentAt { get; set; } = DateTime.UtcNow;
     public DateTime? EditedAt { get; set; }
+    public bool IsPinned { get; set; }
     public bool IsDeleted { get; set; }
+
+    public Conversation Conversation { get; set; } = null!;
+    public ICollection<ConversationMessageReaction> Reactions { get; set; } = new List<ConversationMessageReaction>();
+}
+
+public class ConversationMessageReaction
+{
+    public Guid Id { get; set; }
+    public Guid ConversationMessageId { get; set; }
+    public Guid UserId { get; set; }
+    public string UserName { get; set; } = string.Empty;
+    public string Emoji { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public ConversationMessage Message { get; set; } = null!;
+}
+
+public class ScheduledConversationMessage
+{
+    public Guid Id { get; set; }
+    public Guid ConversationId { get; set; }
+    public Guid SenderId { get; set; }
+    public string SenderName { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public DateTime ScheduledFor { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? SentAt { get; set; }
+    public string Status { get; set; } = "Pending";
 
     public Conversation Conversation { get; set; } = null!;
 }

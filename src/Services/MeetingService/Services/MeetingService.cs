@@ -29,8 +29,16 @@ public interface IMeetingService
     Task<List<Conversation>> GetConversationsAsync(Guid userId, string? userEmail, string userName);
     Task<Conversation> CreateConversationAsync(Guid creatorId, CreateConversationRequest request);
     Task<List<ConversationMessage>> GetConversationMessagesAsync(Guid conversationId, Guid userId);
+    Task MarkConversationReadAsync(Guid conversationId, Guid userId);
+    Task MarkConversationUnreadAsync(Guid conversationId, Guid messageId, Guid userId);
     Task<ConversationMessage> AddConversationMessageAsync(Guid conversationId, SendConversationMessageRequest request);
     Task<ConversationMessage> UpdateConversationMessageAsync(Guid conversationId, Guid messageId, Guid userId, UpdateConversationMessageRequest request);
+    Task<ConversationMessage> ToggleConversationMessagePinAsync(Guid conversationId, Guid messageId, Guid userId);
+    Task DeleteConversationMessageAsync(Guid conversationId, Guid messageId, Guid userId);
+    Task<List<ConversationMessageReaction>> ToggleConversationMessageReactionAsync(Guid conversationId, Guid messageId, Guid userId, string userName, ToggleConversationMessageReactionRequest request);
+    Task<List<ScheduledConversationMessage>> GetScheduledConversationMessagesAsync(Guid conversationId, Guid userId);
+    Task<ScheduledConversationMessage> ScheduleConversationMessageAsync(Guid conversationId, Guid userId, string senderName, ScheduleConversationMessageRequest request);
+    Task CancelScheduledConversationMessageAsync(Guid conversationId, Guid scheduledMessageId, Guid userId);
     Task<bool> CanAccessConversationAsync(Guid conversationId, Guid userId);
 }
 
@@ -423,9 +431,10 @@ public class MeetingServiceImpl : IMeetingService
         return await _context.Conversations
             .Include(conversation => conversation.Members)
             .Include(conversation => conversation.Invites)
-            .Include(conversation => conversation.Messages.Where(message => !message.IsDeleted).OrderByDescending(message => message.SentAt).Take(1))
+            .Include(conversation => conversation.Messages.Where(message => !message.IsDeleted))
             .Where(conversation => conversation.Members.Any(member => member.UserId == userId))
             .OrderByDescending(conversation => conversation.UpdatedAt ?? conversation.CreatedAt)
+            .AsSplitQuery()
             .ToListAsync();
     }
 
@@ -472,7 +481,7 @@ public class MeetingServiceImpl : IMeetingService
                 var existing = await _context.Conversations
                     .Include(conversation => conversation.Members)
                     .Include(conversation => conversation.Invites)
-                    .Include(conversation => conversation.Messages.Where(message => !message.IsDeleted).OrderByDescending(message => message.SentAt).Take(1))
+                    .Include(conversation => conversation.Messages.Where(message => !message.IsDeleted))
                     .Where(conversation => conversation.Type == ConversationType.Direct)
                     .Where(conversation => conversation.Members.Count == 2)
                     .Where(conversation => conversation.Members.Any(member => member.UserId == firstMemberId))
@@ -499,7 +508,8 @@ public class MeetingServiceImpl : IMeetingService
                 UserId = member.UserId,
                 UserEmail = member.UserEmail,
                 UserName = member.UserName,
-                JoinedAt = DateTime.UtcNow
+                JoinedAt = DateTime.UtcNow,
+                LastReadAt = DateTime.UtcNow
             }).ToList()
         };
 
@@ -535,18 +545,75 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task<List<ConversationMessage>> GetConversationMessagesAsync(Guid conversationId, Guid userId)
     {
-        var isMember = await _context.ConversationMembers
-            .AnyAsync(member => member.ConversationId == conversationId && member.UserId == userId);
+        var member = await _context.ConversationMembers
+            .FirstOrDefaultAsync(item => item.ConversationId == conversationId && item.UserId == userId);
 
-        if (!isMember)
+        if (member == null)
         {
             throw new InvalidOperationException("Conversation not found");
         }
 
-        return await _context.ConversationMessages
+        var messages = await _context.ConversationMessages
+            .Include(message => message.Reactions)
             .Where(message => message.ConversationId == conversationId && !message.IsDeleted)
             .OrderBy(message => message.SentAt)
             .ToListAsync();
+
+        var readAt = messages.Count > 0 ? messages.Max(message => message.SentAt) : DateTime.UtcNow;
+        if (!member.LastReadAt.HasValue || member.LastReadAt.Value < readAt)
+        {
+            member.LastReadAt = readAt;
+            _context.ConversationMembers.Update(member);
+            await _context.SaveChangesAsync();
+        }
+
+        return messages;
+    }
+
+    public async Task MarkConversationReadAsync(Guid conversationId, Guid userId)
+    {
+        var member = await _context.ConversationMembers
+            .FirstOrDefaultAsync(item => item.ConversationId == conversationId && item.UserId == userId);
+
+        if (member == null)
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        var latestMessageAt = await _context.ConversationMessages
+            .Where(message => message.ConversationId == conversationId && !message.IsDeleted)
+            .MaxAsync(message => (DateTime?)message.SentAt);
+
+        var readAt = latestMessageAt ?? DateTime.UtcNow;
+        if (!member.LastReadAt.HasValue || member.LastReadAt.Value < readAt)
+        {
+            member.LastReadAt = readAt;
+            _context.ConversationMembers.Update(member);
+            await _context.SaveChangesAsync();
+        }
+    }
+
+    public async Task MarkConversationUnreadAsync(Guid conversationId, Guid messageId, Guid userId)
+    {
+        var member = await _context.ConversationMembers
+            .FirstOrDefaultAsync(item => item.ConversationId == conversationId && item.UserId == userId);
+
+        if (member == null)
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        var message = await _context.ConversationMessages
+            .FirstOrDefaultAsync(item => item.Id == messageId && item.ConversationId == conversationId && !item.IsDeleted);
+
+        if (message == null)
+        {
+            throw new InvalidOperationException("Message not found");
+        }
+
+        member.LastReadAt = message.SentAt.AddTicks(-1);
+        _context.ConversationMembers.Update(member);
+        await _context.SaveChangesAsync();
     }
 
     public async Task<bool> CanAccessConversationAsync(Guid conversationId, Guid userId)
@@ -571,6 +638,13 @@ public class MeetingServiceImpl : IMeetingService
             throw new InvalidOperationException("Message or attachment is required");
         }
 
+        ConversationMessage? replyToMessage = null;
+        if (request.ReplyToMessageId.HasValue)
+        {
+            replyToMessage = await _context.ConversationMessages
+                .FirstOrDefaultAsync(item => item.Id == request.ReplyToMessageId.Value && item.ConversationId == conversationId && !item.IsDeleted);
+        }
+
         var message = new ConversationMessage
         {
             Id = Guid.NewGuid(),
@@ -582,6 +656,9 @@ public class MeetingServiceImpl : IMeetingService
             AttachmentUrl = request.AttachmentUrl,
             AttachmentContentType = request.AttachmentContentType,
             AttachmentSizeBytes = request.AttachmentSizeBytes,
+            ReplyToMessageId = replyToMessage?.Id,
+            ReplyToSenderName = replyToMessage?.SenderName,
+            ReplyToPreview = replyToMessage == null ? null : BuildReplyPreview(replyToMessage),
             SentAt = DateTime.UtcNow
         };
 
@@ -591,6 +668,60 @@ public class MeetingServiceImpl : IMeetingService
         _context.Conversations.Update(conversation);
         await _context.SaveChangesAsync();
         return message;
+    }
+
+    public async Task<ConversationMessage> ToggleConversationMessagePinAsync(Guid conversationId, Guid messageId, Guid userId)
+    {
+        var isMember = await _context.ConversationMembers
+            .AnyAsync(member => member.ConversationId == conversationId && member.UserId == userId);
+
+        if (!isMember)
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        var message = await _context.ConversationMessages
+            .Include(item => item.Reactions)
+            .FirstOrDefaultAsync(item => item.Id == messageId && item.ConversationId == conversationId && !item.IsDeleted);
+
+        if (message == null)
+        {
+            throw new InvalidOperationException("Message not found");
+        }
+
+        message.IsPinned = !message.IsPinned;
+        _context.ConversationMessages.Update(message);
+        await _context.SaveChangesAsync();
+        return message;
+    }
+
+    public async Task DeleteConversationMessageAsync(Guid conversationId, Guid messageId, Guid userId)
+    {
+        var message = await _context.ConversationMessages
+            .FirstOrDefaultAsync(item => item.Id == messageId && item.ConversationId == conversationId && !item.IsDeleted);
+
+        if (message == null)
+        {
+            throw new InvalidOperationException("Message not found");
+        }
+
+        if (message.SenderId != userId)
+        {
+            throw new UnauthorizedAccessException("Only the sender can delete this message");
+        }
+
+        message.IsDeleted = true;
+        _context.ConversationMessages.Update(message);
+
+        var latestMessageAt = await _context.ConversationMessages
+            .Where(item => item.ConversationId == conversationId && item.Id != messageId && !item.IsDeleted)
+            .MaxAsync(item => (DateTime?)item.SentAt);
+
+        var conversation = await _context.Conversations.FirstAsync(item => item.Id == conversationId);
+        conversation.UpdatedAt = latestMessageAt ?? DateTime.UtcNow;
+        _context.Conversations.Update(conversation);
+
+        await _context.SaveChangesAsync();
     }
 
     public async Task<ConversationMessage> UpdateConversationMessageAsync(Guid conversationId, Guid messageId, Guid userId, UpdateConversationMessageRequest request)
@@ -626,6 +757,131 @@ public class MeetingServiceImpl : IMeetingService
         return message;
     }
 
+    public async Task<List<ConversationMessageReaction>> ToggleConversationMessageReactionAsync(Guid conversationId, Guid messageId, Guid userId, string userName, ToggleConversationMessageReactionRequest request)
+    {
+        var emoji = (request.Emoji ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(emoji) || emoji.Length > 32)
+        {
+            throw new InvalidOperationException("Reaction is required");
+        }
+
+        var isMember = await _context.ConversationMembers
+            .AnyAsync(member => member.ConversationId == conversationId && member.UserId == userId);
+
+        if (!isMember)
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        var messageExists = await _context.ConversationMessages
+            .AnyAsync(message => message.Id == messageId && message.ConversationId == conversationId && !message.IsDeleted);
+
+        if (!messageExists)
+        {
+            throw new InvalidOperationException("Message not found");
+        }
+
+        var existingReaction = await _context.ConversationMessageReactions
+            .FirstOrDefaultAsync(reaction => reaction.ConversationMessageId == messageId && reaction.UserId == userId && reaction.Emoji == emoji);
+
+        if (existingReaction != null)
+        {
+            _context.ConversationMessageReactions.Remove(existingReaction);
+        }
+        else
+        {
+            _context.ConversationMessageReactions.Add(new ConversationMessageReaction
+            {
+                Id = Guid.NewGuid(),
+                ConversationMessageId = messageId,
+                UserId = userId,
+                UserName = userName,
+                Emoji = emoji,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        await _context.SaveChangesAsync();
+
+        return await _context.ConversationMessageReactions
+            .Where(reaction => reaction.ConversationMessageId == messageId)
+            .OrderBy(reaction => reaction.CreatedAt)
+            .ToListAsync();
+    }
+
+    public async Task<List<ScheduledConversationMessage>> GetScheduledConversationMessagesAsync(Guid conversationId, Guid userId)
+    {
+        var isMember = await _context.ConversationMembers
+            .AnyAsync(member => member.ConversationId == conversationId && member.UserId == userId);
+
+        if (!isMember)
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        return await _context.ScheduledConversationMessages
+            .Where(message => message.ConversationId == conversationId && message.SenderId == userId && message.Status == "Pending")
+            .OrderBy(message => message.ScheduledFor)
+            .ToListAsync();
+    }
+
+    public async Task<ScheduledConversationMessage> ScheduleConversationMessageAsync(Guid conversationId, Guid userId, string senderName, ScheduleConversationMessageRequest request)
+    {
+        var messageText = (request.Message ?? string.Empty).TrimEnd();
+        if (string.IsNullOrWhiteSpace(messageText))
+        {
+            throw new InvalidOperationException("Message is required");
+        }
+
+        var scheduledFor = request.ScheduledFor.Kind == DateTimeKind.Unspecified
+            ? DateTime.SpecifyKind(request.ScheduledFor, DateTimeKind.Local).ToUniversalTime()
+            : request.ScheduledFor.ToUniversalTime();
+
+        if (scheduledFor <= DateTime.UtcNow.AddSeconds(30))
+        {
+            throw new InvalidOperationException("Schedule time must be in the future");
+        }
+
+        var isMember = await _context.ConversationMembers
+            .AnyAsync(member => member.ConversationId == conversationId && member.UserId == userId);
+
+        if (!isMember)
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        var scheduledMessage = new ScheduledConversationMessage
+        {
+            Id = Guid.NewGuid(),
+            ConversationId = conversationId,
+            SenderId = userId,
+            SenderName = senderName,
+            Message = messageText,
+            ScheduledFor = scheduledFor,
+            CreatedAt = DateTime.UtcNow,
+            Status = "Pending"
+        };
+
+        _context.ScheduledConversationMessages.Add(scheduledMessage);
+        await _context.SaveChangesAsync();
+        return scheduledMessage;
+    }
+
+    public async Task CancelScheduledConversationMessageAsync(Guid conversationId, Guid scheduledMessageId, Guid userId)
+    {
+        var scheduledMessage = await _context.ScheduledConversationMessages
+            .FirstOrDefaultAsync(message => message.Id == scheduledMessageId && message.ConversationId == conversationId && message.SenderId == userId && message.Status == "Pending");
+
+        if (scheduledMessage == null)
+        {
+            throw new InvalidOperationException("Scheduled message not found");
+        }
+
+        scheduledMessage.Status = "Cancelled";
+        _context.ScheduledConversationMessages.Update(scheduledMessage);
+        await _context.SaveChangesAsync();
+    }
+
     private async Task AcceptPendingConversationInvitesAsync(Guid userId, string? userEmail, string userName)
     {
         if (string.IsNullOrWhiteSpace(userEmail))
@@ -657,7 +913,8 @@ public class MeetingServiceImpl : IMeetingService
                     UserId = userId,
                     UserEmail = userEmail.Trim(),
                     UserName = userName,
-                    JoinedAt = DateTime.UtcNow
+                    JoinedAt = DateTime.UtcNow,
+                    LastReadAt = DateTime.UtcNow
                 });
             }
 
@@ -713,6 +970,15 @@ public class MeetingServiceImpl : IMeetingService
             .Where(email => !string.IsNullOrWhiteSpace(email))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static string BuildReplyPreview(ConversationMessage message)
+    {
+        var preview = string.IsNullOrWhiteSpace(message.Message)
+            ? message.AttachmentFileName ?? "Attachment"
+            : message.Message.Trim();
+
+        return preview.Length <= 160 ? preview : $"{preview[..157]}...";
     }
 
     private static List<string> SplitAttendeeEmails(string? attendeeEmails)

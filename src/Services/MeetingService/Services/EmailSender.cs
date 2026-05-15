@@ -13,8 +13,8 @@ public class EmailOptions
     public bool UseSsl { get; set; } = true;
     public string Username { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
-    public string FromEmail { get; set; } = "no-reply@meeting-platform.local";
-    public string FromName { get; set; } = "Online Meeting Platform";
+    public string FromEmail { get; set; } = "no-reply@samvaad.local";
+    public string FromName { get; set; } = "Samvaad";
 }
 
 public interface IEmailSender

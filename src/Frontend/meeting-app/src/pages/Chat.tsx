@@ -10,9 +10,11 @@ import {
   leaveConversation,
   notifyUserStatusChanged,
   onConversationMessageReceived,
+  onConversationMessageReactionUpdated,
   onConversationMessageUpdated,
   onUserStatusChanged,
   sendConversationMessage,
+  sendConversationMessageReactionUpdated,
   sendConversationMessageUpdated,
   sendIncomingCall,
   startSignalR,
@@ -26,6 +28,7 @@ interface UserSummary {
   lastName: string;
   fullName?: string;
   profilePictureUrl?: string;
+  phoneNumber?: string;
   status?: string;
 }
 
@@ -45,8 +48,33 @@ interface ConversationMessage {
   attachmentUrl?: string;
   attachmentContentType?: string;
   attachmentSizeBytes?: number;
+  replyToMessageId?: string;
+  replyToSenderName?: string;
+  replyToPreview?: string;
   sentAt: string;
   editedAt?: string;
+  isPinned?: boolean;
+  reactions?: ConversationMessageReaction[];
+}
+
+interface ConversationMessageReaction {
+  id: string;
+  messageId: string;
+  userId: string;
+  userName: string;
+  emoji: string;
+  createdAt: string;
+}
+
+interface ScheduledConversationMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  message: string;
+  scheduledFor: string;
+  createdAt: string;
+  status: string;
 }
 
 interface ConversationInvite {
@@ -63,6 +91,7 @@ interface Conversation {
   members: ConversationMember[];
   invites?: ConversationInvite[];
   lastMessage?: ConversationMessage;
+  unreadCount?: number;
   createdAt: string;
   updatedAt?: string;
 }
@@ -92,6 +121,25 @@ function formatConversationDate(value?: string) {
     day: '2-digit',
     year: 'numeric',
   }).format(new Date(value));
+}
+
+function formatScheduledDate(value?: string) {
+  if (!value) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function toDateTimeLocalValue(date: Date) {
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60000);
+  return local.toISOString().slice(0, 16);
 }
 
 function isEmail(value: string) {
@@ -134,8 +182,57 @@ function describeLastMessage(message: ConversationMessage | undefined, memberCou
   return message.message;
 }
 
+function getMessagePreview(message: ConversationMessage) {
+  if (message.message.trim()) {
+    return message.message.trim().replace(/\s+/g, ' ').slice(0, 140);
+  }
+
+  if (message.attachmentFileName) {
+    return `Shared ${message.attachmentFileName}`;
+  }
+
+  return 'Message';
+}
+
+function formatUnreadCount(count?: number) {
+  const unreadCount = count || 0;
+  return unreadCount > 99 ? '99+' : unreadCount.toString();
+}
+
+function sortConversationsByActivity(items: Conversation[]) {
+  return [...items].sort((a, b) => {
+    const first = Date.parse(a.lastMessage?.sentAt || a.updatedAt || a.createdAt || '');
+    const second = Date.parse(b.lastMessage?.sentAt || b.updatedAt || b.createdAt || '');
+    return (Number.isNaN(second) ? 0 : second) - (Number.isNaN(first) ? 0 : first);
+  });
+}
+
 function isImageAttachment(message: ConversationMessage) {
   return !!message.attachmentUrl && !!message.attachmentContentType?.startsWith('image/');
+}
+
+const QUICK_REACTIONS = ['👍', '❤️', '😆', '😮'];
+const EXTRA_REACTIONS = ['👏', '🔥', '🎉', '🙏', '💡', '✅'];
+
+function summarizeReactions(reactions?: ConversationMessageReaction[]) {
+  const summary = new Map<string, ConversationMessageReaction[]>();
+  (reactions || []).forEach((reaction) => {
+    const items = summary.get(reaction.emoji) || [];
+    items.push(reaction);
+    summary.set(reaction.emoji, items);
+  });
+  return Array.from(summary.entries());
+}
+
+function normalizeReaction(data: any): ConversationMessageReaction {
+  return {
+    id: data.id || data.Id,
+    messageId: data.messageId || data.MessageId,
+    userId: data.userId || data.UserId,
+    userName: data.userName || data.UserName,
+    emoji: data.emoji || data.Emoji,
+    createdAt: data.createdAt || data.CreatedAt,
+  };
 }
 
 function stripCodeFence(value: string) {
@@ -242,11 +339,135 @@ function XIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+function SmilePlusIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M14.5 19.2A8.2 8.2 0 1 1 19.2 14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M8.5 10h.01M13.5 10h.01M8.8 14.2c1.1 1.1 2.9 1.1 4 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M18 15v6M15 18h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function MoreHorizontalIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M5 12h.01M12 12h.01M19 12h.01" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ReplyIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M10 8 5 13l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 13h9a5 5 0 0 1 5 5v1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ForwardIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="m14 8 5 5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 19v-1a5 5 0 0 1 5-5h9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function LinkIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M9.5 14.5 14.5 9.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M10.5 7.5 12 6a4 4 0 0 1 5.7 5.7l-1.5 1.5M13.5 16.5 12 18a4 4 0 0 1-5.7-5.7l1.5-1.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function TrashIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M5 7h14M10 11v6M14 11v6M9 7l.7-2h4.6L15 7M7 7l1 13h8l1-13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PinIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="m14 4 6 6-3 1-4 4v4l-2 2-2-6-6-2 2-2h4l4-4 1-3Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function UnreadIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M4 6.5h16v11H4z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="m4.5 7 7.5 6 7.5-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M18 5h3v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function TranslateIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M4 5h9M8.5 5v2.5M11.5 19l4-9 4 9M13 16h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M11.5 8.5c-.9 2.7-2.9 5.2-6.5 6.5M6.2 9.5c1.1 1.8 2.8 3.5 5.3 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ClockIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function VideoCallIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M4.5 7.5A2.5 2.5 0 0 1 7 5h6.5A2.5 2.5 0 0 1 16 7.5v9a2.5 2.5 0 0 1-2.5 2.5H7a2.5 2.5 0 0 1-2.5-2.5v-9Z" fill="currentColor" />
+      <path d="m16 10 4-2.5v9L16 14v-4Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PhoneCallIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M7.2 4.5 9.7 7c.7.7.8 1.8.2 2.6l-1 1.3c1 2 2.5 3.5 4.5 4.5l1.3-1c.8-.6 1.9-.5 2.6.2l2.5 2.5c.5.5.6 1.3.2 1.9-.8 1.2-2.2 1.8-3.6 1.4-6.2-1.5-11-6.3-12.5-12.5-.3-1.4.2-2.8 1.4-3.6.6-.4 1.4-.3 1.9.2Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PeoplePlusIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M9.5 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM3.5 20a6 6 0 0 1 12 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M17 8.5a3 3 0 1 1-1.2 5.8M18.5 16v5M16 18.5h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SearchIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M10.8 18.1a7.3 7.3 0 1 0 0-14.6 7.3 7.3 0 0 0 0 14.6ZM16 16l4.5 4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export default function Chat() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const quickGroupInputRef = useRef<HTMLInputElement | null>(null);
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
   const accounts = useAuthStore((state) => state.accounts);
@@ -273,12 +494,28 @@ export default function Chat() {
   const [sending, setSending] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [newChatOpen, setNewChatOpen] = useState(false);
+  const [quickGroupOpen, setQuickGroupOpen] = useState(false);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const [quickGroupQuery, setQuickGroupQuery] = useState('');
+  const [quickGroupSelectedUsers, setQuickGroupSelectedUsers] = useState<UserSummary[]>([]);
+  const [quickGroupStatus, setQuickGroupStatus] = useState('');
+  const [creatingQuickGroup, setCreatingQuickGroup] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
   const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'photos'>('chat');
   const [startingCall, setStartingCall] = useState<'audio' | 'video' | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const [editSaving, setEditSaving] = useState(false);
+  const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
+  const [reactingMessageId, setReactingMessageId] = useState<string | null>(null);
+  const [messageMenuId, setMessageMenuId] = useState<string | null>(null);
+  const [replyingToMessage, setReplyingToMessage] = useState<ConversationMessage | null>(null);
+  const [messageActionStatus, setMessageActionStatus] = useState('');
+  const [translationMessageId, setTranslationMessageId] = useState<string | null>(null);
+  const [scheduledMessages, setScheduledMessages] = useState<ScheduledConversationMessage[]>([]);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleFor, setScheduleFor] = useState(() => toDateTimeLocalValue(new Date(Date.now() + 15 * 60000)));
+  const [scheduling, setScheduling] = useState(false);
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -296,6 +533,15 @@ export default function Chat() {
     && !inviteEmails.some((email) => email.toLowerCase() === normalizedQuery)
     && !users.some((item) => item.email.toLowerCase() === normalizedQuery);
   const recipientCount = selectedUserIds.length + inviteEmails.length;
+  const quickGroupEmail = quickGroupQuery.trim();
+  const quickGroupCanInviteEmail = isEmail(quickGroupEmail)
+    && !quickGroupSelectedUsers.some((item) => item.email.toLowerCase() === quickGroupEmail.toLowerCase())
+    && !users.some((item) => item.email.toLowerCase() === quickGroupEmail.toLowerCase());
+  const quickGroupCanCreate = quickGroupSelectedUsers.length > 0 || quickGroupCanInviteEmail;
+  const quickGroupCandidates = users
+    .filter((item) => item.id !== user?.id)
+    .filter((item) => !quickGroupSelectedUsers.some((selected) => selected.id === item.id))
+    .slice(0, 5);
 
   const getOtherMember = (conversation: Conversation) => conversation.members.find((member) => member.userId !== user?.id);
 
@@ -366,8 +612,19 @@ export default function Chat() {
 
   const refreshConversations = async () => {
     const response = await conversationAPI.getConversations();
-    setConversations(response.data);
+    setConversations(sortConversationsByActivity(response.data));
     return response.data as Conversation[];
+  };
+
+  const clearConversationUnread = (conversationId: string) => {
+    setConversations((items) => items.map((conversation) => (
+      conversation.id === conversationId ? { ...conversation, unreadCount: 0 } : conversation
+    )));
+  };
+
+  const markConversationRead = async (conversationId: string) => {
+    clearConversationUnread(conversationId);
+    await conversationAPI.markAsRead(conversationId).catch(() => undefined);
   };
 
   const selectedTitle = useMemo(() => {
@@ -398,7 +655,7 @@ export default function Chat() {
           userAPI.getProfile().catch(() => ({ data: user })),
         ]);
         setError('');
-        setConversations(conversationResponse.data);
+        setConversations(sortConversationsByActivity(conversationResponse.data));
         setUsers(userResponse.data);
         if (profileResponse.data) {
           setUser(profileResponse.data);
@@ -433,6 +690,7 @@ export default function Chat() {
     let cancelled = false;
     let unsubscribeConversationMessage: () => void = () => undefined;
     let unsubscribeConversationUpdate: () => void = () => undefined;
+    let unsubscribeConversationReactionUpdate: () => void = () => undefined;
 
     initializeSignalR(token);
     startSignalR()
@@ -467,7 +725,12 @@ export default function Chat() {
             attachmentUrl: data.attachmentUrl,
             attachmentContentType: data.attachmentContentType,
             attachmentSizeBytes: data.attachmentSizeBytes,
+            replyToMessageId: data.replyToMessageId || data.ReplyToMessageId,
+            replyToSenderName: data.replyToSenderName || data.ReplyToSenderName,
+            replyToPreview: data.replyToPreview || data.ReplyToPreview,
             sentAt: data.timestamp,
+            isPinned: Boolean(data.isPinned || data.IsPinned),
+            reactions: [],
           };
 
           setConversations((items) => {
@@ -477,11 +740,25 @@ export default function Chat() {
               return items;
             }
 
-            return items.map((conversation) => (
-              conversation.id === data.conversationId
-                ? { ...conversation, lastMessage: incoming, updatedAt: data.timestamp }
-                : conversation
-            ));
+            const isOpenConversation = selectedConversationId === data.conversationId;
+            const updated = items.map((conversation) => {
+              if (conversation.id !== data.conversationId) {
+                return conversation;
+              }
+
+              if (conversation.lastMessage?.id === incoming.id) {
+                return conversation;
+              }
+
+              return {
+                ...conversation,
+                lastMessage: incoming,
+                updatedAt: incoming.sentAt,
+                unreadCount: isOpenConversation ? 0 : (conversation.unreadCount || 0) + 1,
+              };
+            });
+
+            return sortConversationsByActivity(updated);
           });
 
           setMessages((items) => {
@@ -491,6 +768,10 @@ export default function Chat() {
 
             return [...items, incoming];
           });
+
+          if (selectedConversationId === data.conversationId) {
+            markConversationRead(data.conversationId).catch(() => undefined);
+          }
         });
         unsubscribeConversationUpdate = onConversationMessageUpdated((data) => {
           const messageId = data.id || data.Id;
@@ -534,6 +815,16 @@ export default function Chat() {
             };
           }));
         });
+        unsubscribeConversationReactionUpdate = onConversationMessageReactionUpdated((data) => {
+          const messageId = data.messageId || data.MessageId;
+          const reactions = data.reactions || data.Reactions || [];
+
+          if (!messageId) {
+            return;
+          }
+
+          updateMessageReactions(messageId, reactions.map(normalizeReaction));
+        });
       })
       .catch((err) => console.warn('Chat SignalR connection failed', err));
 
@@ -541,6 +832,7 @@ export default function Chat() {
       cancelled = true;
       unsubscribeConversationMessage();
       unsubscribeConversationUpdate();
+      unsubscribeConversationReactionUpdate();
     };
   }, [selectedConversationId, token, user, setUser]);
 
@@ -618,36 +910,71 @@ export default function Chat() {
   useEffect(() => {
     if (!selectedConversationId) {
       setMessages([]);
+      setScheduledMessages([]);
       return;
     }
 
     setActiveTab('chat');
     joinConversation(selectedConversationId).catch(() => undefined);
 
-    conversationAPI.getMessages(selectedConversationId)
-      .then((response) => setMessages(response.data))
+    const loadMessages = () => conversationAPI.getMessages(selectedConversationId)
+      .then((response) => {
+        setMessages(response.data);
+        clearConversationUnread(selectedConversationId);
+      })
       .catch(() => setError('Unable to load messages'));
+    const loadScheduledMessages = () => conversationAPI.getScheduledMessages(selectedConversationId)
+      .then((response) => setScheduledMessages(response.data))
+      .catch(() => undefined);
+
+    loadMessages();
+    loadScheduledMessages();
     setPendingFiles([]);
     setAttachmentStatus('');
     setIsDraggingAttachment(false);
     setEditingMessageId(null);
     setEditDraft('');
     setEditSaving(false);
+    setReactionPickerMessageId(null);
+    setMessageMenuId(null);
+    setReplyingToMessage(null);
+    setMessageActionStatus('');
+    setTranslationMessageId(null);
+    setHeaderMenuOpen(false);
+    setScheduleOpen(false);
+    setScheduleFor(toDateTimeLocalValue(new Date(Date.now() + 15 * 60000)));
+
+    const poll = window.setInterval(() => {
+      loadMessages();
+      loadScheduledMessages();
+    }, 15000);
 
     return () => {
+      window.clearInterval(poll);
       leaveConversation(selectedConversationId).catch(() => undefined);
     };
   }, [selectedConversationId]);
 
   useEffect(() => {
+    const query = quickGroupOpen ? quickGroupQuery : userQuery;
     const timer = window.setTimeout(() => {
-      userAPI.searchUsers(userQuery)
+      userAPI.searchUsers(query)
         .then((response) => setUsers(response.data))
         .catch(() => undefined);
     }, 250);
 
     return () => window.clearTimeout(timer);
-  }, [userQuery]);
+  }, [quickGroupOpen, quickGroupQuery, userQuery]);
+
+  useEffect(() => {
+    if (!quickGroupOpen) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      quickGroupInputRef.current?.focus();
+    });
+  }, [quickGroupOpen]);
 
   const createConversation = async () => {
     if (!user || recipientCount === 0) {
@@ -678,7 +1005,7 @@ export default function Chat() {
       });
       setConversations((items) => {
         const exists = items.some((conversation) => conversation.id === response.data.id);
-        return exists ? items : [response.data, ...items];
+        return exists ? items : [{ ...response.data, unreadCount: response.data.unreadCount || 0 }, ...items];
       });
       setSelectedConversationId(response.data.id);
       setSelectedUserIds([]);
@@ -694,15 +1021,95 @@ export default function Chat() {
     }
   };
 
+  const resetQuickGroupComposer = () => {
+    setQuickGroupOpen(false);
+    setQuickGroupQuery('');
+    setQuickGroupSelectedUsers([]);
+    setQuickGroupStatus('');
+    setCreatingQuickGroup(false);
+  };
+
+  const selectQuickGroupUser = (selectedUser: UserSummary) => {
+    setQuickGroupSelectedUsers((items) => (
+      items.some((item) => item.id === selectedUser.id) ? items : [...items, selectedUser]
+    ));
+    setQuickGroupQuery('');
+    setQuickGroupStatus('');
+  };
+
+  const createQuickGroupConversation = async () => {
+    if (!user || !quickGroupCanCreate || creatingQuickGroup) {
+      return;
+    }
+
+    const inviteEmailsToSend = quickGroupCanInviteEmail ? [quickGroupEmail] : [];
+    const titleParts = [
+      ...quickGroupSelectedUsers.map(displayUser),
+      ...inviteEmailsToSend,
+    ];
+    const groupName = titleParts.length > 0 ? titleParts.slice(0, 3).join(', ') : 'Group chat';
+
+    setCreatingQuickGroup(true);
+    setQuickGroupStatus('');
+
+    try {
+      const response = await conversationAPI.createConversation({
+        type: 'Group',
+        title: groupName,
+        members: [
+          {
+            userId: user.id,
+            userEmail: user.email,
+            userName: displayName,
+          },
+          ...quickGroupSelectedUsers.map((item) => ({
+            userId: item.id,
+            userEmail: item.email,
+            userName: displayUser(item),
+          })),
+        ],
+        inviteEmails: inviteEmailsToSend,
+      });
+
+      setConversations((items) => {
+        const exists = items.some((conversation) => conversation.id === response.data.id);
+        return exists ? items : [{ ...response.data, unreadCount: response.data.unreadCount || 0 }, ...items];
+      });
+      setSelectedConversationId(response.data.id);
+      setSearchParams({ conversationId: response.data.id });
+      resetQuickGroupComposer();
+    } catch (err: any) {
+      setQuickGroupStatus(err.response?.data || 'Unable to create group chat');
+      setCreatingQuickGroup(false);
+    }
+  };
+
   const appendSentMessage = (message: ConversationMessage) => {
     setMessages((items) => (
       items.some((item) => item.id === message.id) ? items : [...items, message]
     ));
-    setConversations((items) => items.map((conversation) => (
+    setConversations((items) => sortConversationsByActivity(items.map((conversation) => (
       conversation.id === message.conversationId
         ? { ...conversation, lastMessage: message, updatedAt: message.sentAt }
         : conversation
+    ))));
+  };
+
+  const updateMessageReactions = (messageId: string, reactions: ConversationMessageReaction[]) => {
+    setMessages((items) => items.map((item) => (
+      item.id === messageId ? { ...item, reactions } : item
     )));
+    setConversations((items) => items.map((conversation) => {
+      const lastMessage = conversation.lastMessage;
+      if (!lastMessage || lastMessage.id !== messageId) {
+        return conversation;
+      }
+
+      return {
+        ...conversation,
+        lastMessage: { ...lastMessage, reactions },
+      };
+    }));
   };
 
   const notifyConversationMessage = async (message: ConversationMessage) => {
@@ -725,6 +1132,13 @@ export default function Chat() {
             attachmentSizeBytes: message.attachmentSizeBytes,
           }
         : undefined,
+      message.replyToMessageId
+        ? {
+            replyToMessageId: message.replyToMessageId,
+            replyToSenderName: message.replyToSenderName,
+            replyToPreview: message.replyToPreview,
+          }
+        : undefined,
     );
   };
 
@@ -744,9 +1158,25 @@ export default function Chat() {
     );
   };
 
+  const notifyConversationReactionUpdated = async (messageId: string, reactions: ConversationMessageReaction[]) => {
+    if (!user || !selectedConversation) {
+      return;
+    }
+
+    await sendConversationMessageReactionUpdated(
+      selectedConversation.id,
+      messageId,
+      reactions,
+      selectedConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
+    );
+  };
+
   const startEditingMessage = (message: ConversationMessage) => {
     setEditingMessageId(message.id);
     setEditDraft(message.message);
+    setReactionPickerMessageId(null);
+    setMessageMenuId(null);
+    setReplyingToMessage(null);
     setError('');
   };
 
@@ -764,6 +1194,105 @@ export default function Chat() {
         ? { ...conversation, lastMessage: { ...conversation.lastMessage, ...message }, updatedAt: message.editedAt || conversation.updatedAt }
         : conversation
     )));
+  };
+
+  const startReplyMessage = (message: ConversationMessage) => {
+    setReplyingToMessage(message);
+    setMessageMenuId(null);
+    setReactionPickerMessageId(null);
+    setMessageActionStatus('');
+    window.requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+    });
+  };
+
+  const forwardMessage = (message: ConversationMessage) => {
+    const preview = getMessagePreview(message);
+    setMessageDraft((current) => {
+      const forwarded = `Forwarded from ${message.senderName}:\n${preview}`;
+      return current.trim() ? `${current}\n\n${forwarded}` : forwarded;
+    });
+    setMessageMenuId(null);
+    setReactionPickerMessageId(null);
+    setMessageActionStatus('');
+    window.requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+    });
+  };
+
+  const copyMessageLink = async (message: ConversationMessage) => {
+    const link = `${window.location.origin}/chat?conversationId=${message.conversationId}&messageId=${message.id}`;
+    setMessageMenuId(null);
+    try {
+      await navigator.clipboard.writeText(link);
+      setMessageActionStatus('Message link copied.');
+    } catch {
+      setMessageActionStatus(link);
+    }
+  };
+
+  const deleteConversationMessage = async (message: ConversationMessage) => {
+    if (!selectedConversation || message.senderId !== user?.id) {
+      return;
+    }
+
+    setMessageMenuId(null);
+    try {
+      await conversationAPI.deleteMessage(selectedConversation.id, message.id);
+      setMessages((items) => items.filter((item) => item.id !== message.id));
+      setConversations((items) => items.map((conversation) => {
+        if (conversation.id !== selectedConversation.id || conversation.lastMessage?.id !== message.id) {
+          return conversation;
+        }
+
+        return { ...conversation, lastMessage: undefined };
+      }));
+      setMessageActionStatus('Message deleted.');
+      refreshConversations().catch(() => undefined);
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to delete message');
+    }
+  };
+
+  const togglePinMessage = async (message: ConversationMessage) => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    setMessageMenuId(null);
+    try {
+      const response = await conversationAPI.togglePin(selectedConversation.id, message.id);
+      const updatedMessage = response.data as ConversationMessage;
+      applyEditedMessage(updatedMessage);
+      setMessageActionStatus(updatedMessage.isPinned ? 'Message pinned for everyone.' : 'Message unpinned.');
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to update pinned message');
+    }
+  };
+
+  const markMessageUnread = async (message: ConversationMessage) => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    setMessageMenuId(null);
+    try {
+      await conversationAPI.markMessageUnread(selectedConversation.id, message.id);
+      setConversations((items) => items.map((conversation) => (
+        conversation.id === selectedConversation.id
+          ? { ...conversation, unreadCount: Math.max(1, conversation.unreadCount || 0) }
+          : conversation
+      )));
+      setMessageActionStatus('Marked as unread.');
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to mark message unread');
+    }
+  };
+
+  const showTranslationPanel = (message: ConversationMessage) => {
+    setTranslationMessageId((current) => (current === message.id ? null : message.id));
+    setMessageMenuId(null);
+    setMessageActionStatus('');
   };
 
   const saveEditedMessage = async (message: ConversationMessage) => {
@@ -796,6 +1325,89 @@ export default function Chat() {
       setError(err.response?.data || 'Unable to edit message');
     } finally {
       setEditSaving(false);
+    }
+  };
+
+  const editLastOwnMessage = () => {
+    if (messageDraft.trim() || editingMessageId) {
+      return false;
+    }
+
+    const lastOwnMessage = [...messages].reverse().find((message) => message.senderId === user?.id && !!message.message);
+    if (lastOwnMessage) {
+      startEditingMessage(lastOwnMessage);
+      return true;
+    }
+
+    return false;
+  };
+
+  const toggleReaction = async (message: ConversationMessage, emoji: string) => {
+    if (!user || !selectedConversation || reactingMessageId) {
+      return;
+    }
+
+    setReactingMessageId(message.id);
+    try {
+      const response = await conversationAPI.toggleReaction(selectedConversation.id, message.id, { emoji });
+      const reactions = (response.data || []).map(normalizeReaction);
+      updateMessageReactions(message.id, reactions);
+      setReactionPickerMessageId(null);
+      await notifyConversationReactionUpdated(message.id, reactions);
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to update reaction');
+    } finally {
+      setReactingMessageId(null);
+    }
+  };
+
+  const scheduleMessage = async () => {
+    if (!selectedConversation || scheduling) {
+      return;
+    }
+
+    const text = messageDraft.replace(/\s+$/, '');
+    if (!text.trim()) {
+      setError('Type a message before scheduling it');
+      return;
+    }
+
+    const scheduledDate = new Date(scheduleFor);
+    if (Number.isNaN(scheduledDate.getTime())) {
+      setError('Choose a valid schedule time');
+      return;
+    }
+
+    setScheduling(true);
+    try {
+      const response = await conversationAPI.scheduleMessage(selectedConversation.id, {
+        message: text,
+        scheduledFor: scheduledDate.toISOString(),
+      });
+      setScheduledMessages((items) => [...items, response.data].sort((left, right) => (
+        new Date(left.scheduledFor).getTime() - new Date(right.scheduledFor).getTime()
+      )));
+      setMessageDraft('');
+      setScheduleOpen(false);
+      setScheduleFor(toDateTimeLocalValue(new Date(Date.now() + 15 * 60000)));
+      setError('');
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to schedule message');
+    } finally {
+      setScheduling(false);
+    }
+  };
+
+  const cancelScheduledMessage = async (scheduledMessageId: string) => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    try {
+      await conversationAPI.cancelScheduledMessage(selectedConversation.id, scheduledMessageId);
+      setScheduledMessages((items) => items.filter((item) => item.id !== scheduledMessageId));
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to cancel scheduled message');
     }
   };
 
@@ -914,6 +1526,7 @@ export default function Chat() {
     const shouldRestoreFocus = document.activeElement === messageInputRef.current;
     const text = messageDraft.replace(/\s+$/, '');
     const filesToSend = pendingFiles;
+    const replyTarget = replyingToMessage;
     if (!text.trim() && filesToSend.length === 0) {
       return;
     }
@@ -921,6 +1534,7 @@ export default function Chat() {
     setMessageDraft('');
     setPendingFiles([]);
     setAttachmentStatus('');
+    setReplyingToMessage(null);
     setSending(true);
 
     try {
@@ -929,6 +1543,7 @@ export default function Chat() {
           senderId: user.id,
           senderName: displayName,
           message: text,
+          replyToMessageId: replyTarget?.id,
         });
         appendSentMessage(response.data);
         await notifyConversationMessage(response.data);
@@ -941,6 +1556,9 @@ export default function Chat() {
         formData.append('senderName', displayName);
         formData.append('message', index === 0 ? text : '');
         formData.append('file', file);
+        if (replyTarget?.id && index === 0) {
+          formData.append('replyToMessageId', replyTarget.id);
+        }
 
         const response = await conversationAPI.uploadAttachment(selectedConversation.id, formData);
         appendSentMessage(response.data);
@@ -950,6 +1568,7 @@ export default function Chat() {
       setError(err.response?.data || 'Unable to send message or attachment');
       setMessageDraft(text);
       setPendingFiles(filesToSend);
+      setReplyingToMessage(replyTarget);
     } finally {
       setSending(false);
       if (shouldRestoreFocus) {
@@ -1035,6 +1654,8 @@ export default function Chat() {
     const title = getConversationTitle(conversation);
     const active = selectedConversationId === conversation.id;
     const preview = describeLastMessage(conversation.lastMessage, conversation.members.length);
+    const unreadCount = conversation.unreadCount || 0;
+    const hasUnread = unreadCount > 0 && !active;
 
     return (
       <button
@@ -1042,9 +1663,15 @@ export default function Chat() {
         onClick={() => {
           setSelectedConversationId(conversation.id);
           setSearchParams({ conversationId: conversation.id });
+          setHeaderMenuOpen(false);
+          setMessageMenuId(null);
         }}
         className={`group mx-3 flex w-[calc(100%-1.5rem)] items-center gap-3 rounded-md px-3 py-3 text-left transition ${
-          active ? 'bg-white shadow-md ring-1 ring-slate-200' : 'hover:bg-white/70'
+          active
+            ? 'bg-white shadow-md ring-1 ring-slate-200'
+            : hasUnread
+              ? 'bg-white shadow-md ring-1 ring-indigo-200'
+              : 'hover:bg-white/70'
         }`}
       >
         <UserAvatar
@@ -1057,12 +1684,22 @@ export default function Chat() {
         />
         <span className="min-w-0 flex-1">
           <span className="flex items-center justify-between gap-2">
-            <span className="truncate text-sm font-semibold text-slate-800">{title}</span>
-            <span className="shrink-0 text-xs text-slate-500">
-              {formatConversationDate(conversation.lastMessage?.sentAt || conversation.updatedAt || conversation.createdAt)}
+            <span className={`truncate text-sm ${hasUnread ? 'font-bold text-slate-950' : 'font-semibold text-slate-800'}`}>{title}</span>
+            <span className="flex shrink-0 items-center gap-2">
+              <span className={`text-xs ${hasUnread ? 'font-semibold text-indigo-700' : 'text-slate-500'}`}>
+                {formatConversationDate(conversation.lastMessage?.sentAt || conversation.updatedAt || conversation.createdAt)}
+              </span>
+              {hasUnread && (
+                <span
+                  className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-indigo-600 px-1.5 text-[11px] font-bold leading-none text-white shadow-sm"
+                  aria-label={`${unreadCount} unread message${unreadCount === 1 ? '' : 's'}`}
+                >
+                  {formatUnreadCount(unreadCount)}
+                </span>
+              )}
             </span>
           </span>
-          <span className="mt-1 block truncate text-sm text-slate-500">
+          <span className={`mt-1 block truncate text-sm ${hasUnread ? 'font-semibold text-slate-800' : 'text-slate-500'}`}>
             {conversation.lastMessage?.senderId === user?.id ? 'You: ' : ''}{preview}
           </span>
         </span>
@@ -1093,8 +1730,8 @@ export default function Chat() {
         />
       )}
     >
-      <div className="grid h-full min-h-0 grid-cols-[minmax(300px,360px)_minmax(0,1fr)] gap-4 bg-slate-100 p-4">
-        <aside className="flex min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-slate-200 shadow-sm">
+      <div className="grid h-full min-h-0 grid-cols-[minmax(300px,360px)_minmax(0,1fr)] gap-4 overflow-hidden bg-slate-100 p-4">
+        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-slate-200 shadow-sm">
           <div className="px-4 py-4">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-xl font-semibold text-slate-900">Chats</h2>
@@ -1167,7 +1804,7 @@ export default function Chat() {
           </div>
         </aside>
 
-        <section className="relative flex min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+        <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
           <header className="flex min-h-[72px] items-center justify-between gap-4 border-b border-slate-200 px-6">
             <div className="flex min-w-0 flex-1 items-center gap-3">
               {selectedConversation && (
@@ -1203,20 +1840,218 @@ export default function Chat() {
               <button
                 onClick={() => startInstantCall('video')}
                 disabled={!selectedConversation || !!startingCall}
-                className="rounded-md px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:text-slate-400 disabled:hover:bg-transparent"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-indigo-700 hover:bg-indigo-50 disabled:text-slate-400 disabled:hover:bg-transparent"
+                title="Start video call"
+                aria-label="Start video call"
               >
-                {startingCall === 'video' ? 'Starting...' : 'Video'}
+                <VideoCallIcon className="h-5 w-5" />
               </button>
               <button
                 onClick={() => startInstantCall('audio')}
                 disabled={!selectedConversation || !!startingCall}
-                className="rounded-md px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:text-slate-400 disabled:hover:bg-transparent"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-indigo-700 hover:bg-indigo-50 disabled:text-slate-400 disabled:hover:bg-transparent"
+                title="Start audio call"
+                aria-label="Start audio call"
               >
-                {startingCall === 'audio' ? 'Starting...' : 'Call'}
+                <PhoneCallIcon className="h-5 w-5" />
               </button>
-              <button onClick={() => setNewChatOpen(true)} className="rounded-md px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Add</button>
-              <button onClick={() => setChatSearch('')} className="rounded-md px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Search</button>
-              <button className="rounded-md px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">More</button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuickGroupOpen((open) => !open);
+                    setHeaderMenuOpen(false);
+                    setQuickGroupStatus('');
+                  }}
+                  className={`inline-flex h-9 w-9 items-center justify-center rounded-md text-indigo-700 hover:bg-indigo-50 ${quickGroupOpen ? 'bg-indigo-50' : ''}`}
+                  title="Start a group chat"
+                  aria-label="Start a group chat"
+                  aria-expanded={quickGroupOpen}
+                >
+                  <PeoplePlusIcon className="h-5 w-5" />
+                </button>
+
+                {quickGroupOpen && (
+                  <div className="absolute right-0 top-12 z-40 w-[min(540px,calc(100vw-2rem))] rounded-md border border-slate-200 bg-white p-5 text-left shadow-2xl">
+                    <p className="text-base font-medium text-slate-700">Start a group chat</p>
+                    <div className="mt-2 rounded-md border-b-2 border-indigo-500 bg-slate-100 px-3 py-2">
+                      <input
+                        ref={quickGroupInputRef}
+                        value={quickGroupQuery}
+                        onChange={(event) => {
+                          setQuickGroupQuery(event.target.value);
+                          setQuickGroupStatus('');
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            if (quickGroupCandidates.length > 0 && !quickGroupCanInviteEmail) {
+                              selectQuickGroupUser(quickGroupCandidates[0]);
+                              return;
+                            }
+
+                            createQuickGroupConversation();
+                          }
+
+                          if (event.key === 'Escape') {
+                            event.preventDefault();
+                            resetQuickGroupComposer();
+                          }
+                        }}
+                        placeholder="Enter name, email or phone number"
+                        className="w-full border-0 bg-transparent px-0 py-0 text-base text-slate-900 outline-none placeholder:text-slate-500"
+                      />
+                    </div>
+
+                    {quickGroupSelectedUsers.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {quickGroupSelectedUsers.map((selectedUser) => (
+                          <span key={selectedUser.id} className="inline-flex max-w-full items-center gap-2 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-800 ring-1 ring-indigo-100">
+                            <span className="truncate">{displayUser(selectedUser)}</span>
+                            <button
+                              type="button"
+                              onClick={() => setQuickGroupSelectedUsers((items) => items.filter((item) => item.id !== selectedUser.id))}
+                              className="font-bold text-indigo-500 hover:text-indigo-900"
+                              aria-label={`Remove ${displayUser(selectedUser)}`}
+                            >
+                              x
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {(quickGroupQuery.trim() || quickGroupCanInviteEmail) && (
+                      <div className="mt-3 max-h-48 overflow-y-auto rounded-md border border-slate-200 bg-white">
+                        {quickGroupCandidates.length > 0 ? (
+                          quickGroupCandidates.map((candidate) => (
+                            <button
+                              key={candidate.id}
+                              type="button"
+                              onClick={() => selectQuickGroupUser(candidate)}
+                              className="flex w-full items-center gap-3 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                            >
+                              <UserAvatar
+                                displayName={displayUser(candidate)}
+                                email={candidate.email}
+                                profilePictureUrl={candidate.profilePictureUrl}
+                                status={getUserStatus(candidate.id)}
+                                showStatus
+                                size="sm"
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate font-semibold text-slate-900">{displayUser(candidate)}</span>
+                                <span className="block truncate text-xs text-slate-500">{candidate.email}{candidate.phoneNumber ? ` - ${candidate.phoneNumber}` : ''}</span>
+                              </span>
+                            </button>
+                          ))
+                        ) : (
+                          <p className="px-3 py-2 text-sm text-slate-500">
+                            {quickGroupCanInviteEmail ? `Invite ${quickGroupEmail} by email` : 'No matching people found.'}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {quickGroupStatus && <p className="mt-3 text-sm font-medium text-red-600">{quickGroupStatus}</p>}
+
+                    <div className="mt-5 flex justify-end gap-3">
+                      <button
+                        type="button"
+                        onClick={resetQuickGroupComposer}
+                        className="min-w-32 rounded-md border border-slate-300 bg-white px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={createQuickGroupConversation}
+                        disabled={!quickGroupCanCreate || creatingQuickGroup}
+                        className="min-w-32 rounded-md bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400"
+                      >
+                        {creatingQuickGroup ? 'Creating...' : 'Create'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setChatSearch('');
+                  setHeaderMenuOpen(false);
+                }}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-600 hover:bg-slate-100"
+                title="Search chats"
+                aria-label="Search chats"
+              >
+                <SearchIcon className="h-5 w-5" />
+              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHeaderMenuOpen((open) => !open);
+                    setQuickGroupOpen(false);
+                  }}
+                  className={`inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-600 hover:bg-slate-100 ${headerMenuOpen ? 'bg-slate-100' : ''}`}
+                  title="More"
+                  aria-label="More"
+                  aria-expanded={headerMenuOpen}
+                >
+                  <MoreHorizontalIcon className="h-5 w-5" />
+                </button>
+                {headerMenuOpen && (
+                  <div className="absolute right-0 top-11 z-40 w-56 overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm text-slate-700 shadow-xl">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewChatOpen(true);
+                        setHeaderMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                    >
+                      <PencilIcon className="h-4 w-4 text-slate-500" />
+                      New chat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQuickGroupOpen(true);
+                        setHeaderMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                    >
+                      <PeoplePlusIcon className="h-4 w-4 text-slate-500" />
+                      Start a group chat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('files');
+                        setHeaderMenuOpen(false);
+                      }}
+                      disabled={!selectedConversation}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <PaperclipIcon className="h-4 w-4 text-slate-500" />
+                      View files
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('photos');
+                        setHeaderMenuOpen(false);
+                      }}
+                      disabled={!selectedConversation}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <ImageIcon className="h-4 w-4 text-slate-500" />
+                      View photos
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </header>
 
@@ -1231,7 +2066,7 @@ export default function Chat() {
             onDragOver={handleDragOver}
             onDragLeave={() => setIsDraggingAttachment(false)}
             onDrop={handleDrop}
-            className="min-h-0 flex-1 overflow-y-auto bg-white px-6 py-6"
+            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-white px-6 py-6"
           >
             {!selectedConversation ? (
               <div className="flex h-full items-center justify-center text-sm text-slate-500">Choose a chat or start a new one.</div>
@@ -1270,8 +2105,9 @@ export default function Chat() {
                   const isMine = message.senderId === user?.id;
                   const isEditing = editingMessageId === message.id;
                   const canEdit = isMine && !!message.message;
+                  const reactionGroups = summarizeReactions(message.reactions);
                   return (
-                    <div key={message.id} className={`flex w-full gap-3 ${isMine ? 'justify-end' : 'justify-start'}`}>
+                    <div key={message.id} className={`group relative flex w-full gap-3 pt-3 ${isMine ? 'justify-end' : 'justify-start'}`}>
                       {!isMine && (
                         <div className="pt-5">
                           <UserAvatar
@@ -1284,7 +2120,145 @@ export default function Chat() {
                         </div>
                       )}
                       <div className={`flex min-w-0 max-w-[72%] flex-col lg:max-w-[680px] ${isMine ? 'items-end' : 'items-start'}`}>
+                        {!isEditing && (
+                          <div className={`pointer-events-none absolute -top-1 z-20 flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-700 opacity-0 shadow-lg transition group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 ${isMine ? 'right-0' : 'left-14'}`}>
+                            {QUICK_REACTIONS.map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => toggleReaction(message, emoji)}
+                                disabled={reactingMessageId === message.id}
+                                className="flex h-8 w-8 items-center justify-center rounded text-lg hover:bg-slate-100 disabled:opacity-50"
+                                title={`React ${emoji}`}
+                                aria-label={`React ${emoji}`}
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={() => setReactionPickerMessageId((current) => (current === message.id ? null : message.id))}
+                                className="flex h-8 w-8 items-center justify-center rounded hover:bg-slate-100"
+                                title="More reactions"
+                                aria-label="More reactions"
+                              >
+                                <SmilePlusIcon className="h-5 w-5" />
+                              </button>
+                              {reactionPickerMessageId === message.id && (
+                                <div className={`absolute top-10 z-30 flex rounded-md border border-slate-200 bg-white p-1 shadow-lg ${isMine ? 'right-0' : 'left-0'}`}>
+                                  {EXTRA_REACTIONS.map((emoji) => (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      onClick={() => toggleReaction(message, emoji)}
+                                      disabled={reactingMessageId === message.id}
+                                      className="flex h-8 w-8 items-center justify-center rounded text-lg hover:bg-slate-100 disabled:opacity-50"
+                                      title={`React ${emoji}`}
+                                      aria-label={`React ${emoji}`}
+                                    >
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <span className="mx-1 h-6 w-px bg-slate-200" />
+                            {canEdit && (
+                              <button
+                                type="button"
+                                onClick={() => startEditingMessage(message)}
+                                className="flex h-8 w-8 items-center justify-center rounded hover:bg-slate-100"
+                                title="Edit message"
+                                aria-label="Edit message"
+                              >
+                                <PencilIcon className="h-5 w-5" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMessageMenuId((current) => (current === message.id ? null : message.id));
+                                setReactionPickerMessageId(null);
+                              }}
+                              className="flex h-8 w-8 items-center justify-center rounded hover:bg-slate-100"
+                              title="More options"
+                              aria-label="More options"
+                              aria-expanded={messageMenuId === message.id}
+                            >
+                              <MoreHorizontalIcon className="h-5 w-5" />
+                            </button>
+                            {messageMenuId === message.id && (
+                              <div className={`absolute top-10 z-50 w-56 overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm text-slate-700 shadow-2xl ${isMine ? 'right-0' : 'left-0'}`}>
+                                <button
+                                  type="button"
+                                  onClick={() => startReplyMessage(message)}
+                                  className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                                >
+                                  <ReplyIcon className="h-4 w-4 text-slate-500" />
+                                  Reply
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => forwardMessage(message)}
+                                  className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                                >
+                                  <ForwardIcon className="h-4 w-4 text-slate-500" />
+                                  Forward
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => copyMessageLink(message)}
+                                  className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                                >
+                                  <LinkIcon className="h-4 w-4 text-slate-500" />
+                                  Copy link
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => togglePinMessage(message)}
+                                  className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                                >
+                                  <PinIcon className="h-4 w-4 text-slate-500" />
+                                  {message.isPinned ? 'Unpin for everyone' : 'Pin for everyone'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => markMessageUnread(message)}
+                                  className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                                >
+                                  <UnreadIcon className="h-4 w-4 text-slate-500" />
+                                  Mark as unread
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => showTranslationPanel(message)}
+                                  className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                                >
+                                  <TranslateIcon className="h-4 w-4 text-slate-500" />
+                                  Translation
+                                </button>
+                                {isMine && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteConversationMessage(message)}
+                                    className="flex w-full items-center gap-3 px-3 py-2 text-left text-red-600 hover:bg-red-50"
+                                  >
+                                    <TrashIcon className="h-4 w-4" />
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <div className={`mb-1 flex max-w-full items-center gap-2 text-xs text-slate-500 ${isMine ? 'justify-end' : 'justify-start'}`}>
+                          {message.isPinned && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-100">
+                              <PinIcon className="h-3 w-3" />
+                              Pinned
+                            </span>
+                          )}
                           {!isMine && <span className="truncate font-medium text-slate-600">{message.senderName}</span>}
                           <span className="shrink-0">{formatMessageTime(message.sentAt)}</span>
                           {message.editedAt && <span className="shrink-0">Edited</span>}
@@ -1336,6 +2310,18 @@ export default function Chat() {
                             </div>
                           ) : (
                             <>
+                              {message.replyToPreview && (
+                                <button
+                                  type="button"
+                                  onClick={() => setMessageActionStatus(`Replying to ${message.replyToSenderName || 'a message'}`)}
+                                  className={`mb-2 block max-w-full rounded-md border-l-4 px-3 py-2 text-left text-xs ${
+                                    isMine ? 'border-white/70 bg-white/10 text-indigo-50' : 'border-indigo-400 bg-white text-slate-600'
+                                  }`}
+                                >
+                                  <span className="block truncate font-semibold">{message.replyToSenderName || 'Reply'}</span>
+                                  <span className="block truncate">{message.replyToPreview}</span>
+                                </button>
+                              )}
                               {message.message && <FormattedMessage message={message.message} isMine={isMine} />}
                             </>
                           )}
@@ -1361,16 +2347,35 @@ export default function Chat() {
                             </div>
                           )}
                         </div>
-                        {canEdit && !isEditing && (
-                          <button
-                            type="button"
-                            onClick={() => startEditingMessage(message)}
-                            className={`mt-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-indigo-700 ${isMine ? 'self-end' : 'self-start'}`}
-                            title="Edit message"
-                            aria-label="Edit message"
-                          >
-                            <PencilIcon className="h-4 w-4" />
-                          </button>
+                        {reactionGroups.length > 0 && (
+                          <div className={`mt-1 flex flex-wrap gap-1 ${isMine ? 'justify-end' : 'justify-start'}`}>
+                            {reactionGroups.map(([emoji, reactions]) => {
+                              const reactedByMe = reactions.some((reaction) => reaction.userId === user?.id);
+                              return (
+                                <button
+                                  key={emoji}
+                                  type="button"
+                                  onClick={() => toggleReaction(message, emoji)}
+                                  disabled={reactingMessageId === message.id}
+                                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs shadow-sm ${
+                                    reactedByMe
+                                      ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                                  }`}
+                                  title={reactions.map((reaction) => reaction.userName).join(', ')}
+                                  aria-label={`${reactions.length} reaction${reactions.length === 1 ? '' : 's'} ${emoji}`}
+                                >
+                                  <span>{emoji}</span>
+                                  <span>{reactions.length}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {translationMessageId === message.id && (
+                          <div className={`mt-2 max-w-full rounded-md border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-800 shadow-sm ${isMine ? 'text-right' : 'text-left'}`}>
+                            Translation is ready for the selected message once language support is connected.
+                          </div>
                         )}
                       </div>
                     </div>
@@ -1380,7 +2385,59 @@ export default function Chat() {
             )}
           </main>
 
-          <footer className="border-t border-slate-200 bg-white px-8 py-4">
+          <footer className="max-h-[42vh] shrink-0 overflow-y-auto overflow-x-hidden border-t border-slate-200 bg-white px-8 py-4">
+            {messageActionStatus && (
+              <div className="mx-auto mb-3 flex max-w-5xl items-center justify-between gap-3 rounded-md bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 ring-1 ring-emerald-100">
+                <span className="min-w-0 break-all">{messageActionStatus}</span>
+                <button
+                  type="button"
+                  onClick={() => setMessageActionStatus('')}
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-emerald-700 hover:bg-white"
+                  title="Dismiss"
+                  aria-label="Dismiss message"
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+            {scheduledMessages.length > 0 && (
+              <div className="mx-auto mb-3 flex max-w-5xl flex-wrap gap-2">
+                {scheduledMessages.map((message) => (
+                  <span key={message.id} className="inline-flex max-w-full items-center gap-2 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs text-slate-700 ring-1 ring-amber-100">
+                    <ClockIcon className="h-4 w-4 shrink-0 text-amber-600" />
+                    <span className="max-w-[280px] truncate">{message.message}</span>
+                    <span className="shrink-0 font-medium text-amber-700">{formatScheduledDate(message.scheduledFor)}</span>
+                    <button
+                      type="button"
+                      onClick={() => cancelScheduledMessage(message.id)}
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-white hover:text-red-600"
+                      title="Cancel scheduled message"
+                      aria-label="Cancel scheduled message"
+                    >
+                      <XIcon className="h-3.5 w-3.5" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {replyingToMessage && (
+              <div className="mx-auto mb-3 flex max-w-5xl items-start gap-3 rounded-md border-l-4 border-indigo-500 bg-indigo-50 px-3 py-2">
+                <ReplyIcon className="mt-0.5 h-4 w-4 shrink-0 text-indigo-700" />
+                <div className="min-w-0 flex-1 text-sm">
+                  <p className="truncate font-semibold text-indigo-900">Replying to {replyingToMessage.senderName}</p>
+                  <p className="truncate text-indigo-700">{getMessagePreview(replyingToMessage)}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReplyingToMessage(null)}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-indigo-700 hover:bg-white"
+                  title="Cancel reply"
+                  aria-label="Cancel reply"
+                >
+                  <XIcon className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             {pendingFiles.length > 0 && (
               <div className="mb-3 flex flex-wrap gap-2">
                 {pendingFiles.map((file, index) => (
@@ -1401,6 +2458,34 @@ export default function Chat() {
               </div>
             )}
             {attachmentStatus && <p className="mb-3 text-sm font-medium text-amber-700">{attachmentStatus}</p>}
+            {scheduleOpen && (
+              <div className="mx-auto mb-3 flex max-w-5xl flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                <ClockIcon className="h-5 w-5 text-amber-700" />
+                <input
+                  type="datetime-local"
+                  value={scheduleFor}
+                  onChange={(event) => setScheduleFor(event.target.value)}
+                  className="rounded-md border border-amber-200 bg-white px-2 py-1.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-amber-200"
+                />
+                <button
+                  type="button"
+                  onClick={scheduleMessage}
+                  disabled={scheduling || !selectedConversation || !messageDraft.trim()}
+                  className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {scheduling ? 'Scheduling...' : 'Schedule'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScheduleOpen(false)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-600 hover:bg-white"
+                  title="Close scheduler"
+                  aria-label="Close scheduler"
+                >
+                  <XIcon className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             <div className="mx-auto flex max-w-5xl items-end gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 shadow-sm">
               <input
                 ref={fileInputRef}
@@ -1419,6 +2504,13 @@ export default function Chat() {
                 value={messageDraft}
                 onChange={(event) => setMessageDraft(event.target.value)}
                 onKeyDown={(event) => {
+                  if (event.key === 'ArrowUp' && !event.shiftKey && event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0) {
+                    if (editLastOwnMessage()) {
+                      event.preventDefault();
+                    }
+                    return;
+                  }
+
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
                     sendMessage();
@@ -1473,6 +2565,16 @@ export default function Chat() {
                 aria-label="Attach image"
               >
                 <ImageIcon className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setScheduleOpen((open) => !open)}
+                disabled={!selectedConversation || sending}
+                className={`inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-slate-100 disabled:opacity-50 ${scheduleOpen ? 'bg-amber-50 text-amber-700' : 'text-slate-500'}`}
+                title="Schedule message"
+                aria-label="Schedule message"
+              >
+                <ClockIcon className="h-5 w-5" />
               </button>
               <button
                 type="button"

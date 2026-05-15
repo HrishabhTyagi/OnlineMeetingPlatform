@@ -160,11 +160,35 @@ export const conversationAPI = {
   getMessages: (conversationId: string) =>
     apiClient.get(`/conversations/${conversationId}/messages`),
 
+  markAsRead: (conversationId: string) =>
+    apiClient.post(`/conversations/${conversationId}/read`),
+
   sendMessage: (conversationId: string, data: any) =>
     apiClient.post(`/conversations/${conversationId}/messages`, data),
 
   updateMessage: (conversationId: string, messageId: string, data: any) =>
     apiClient.put(`/conversations/${conversationId}/messages/${messageId}`, data),
+
+  deleteMessage: (conversationId: string, messageId: string) =>
+    apiClient.delete(`/conversations/${conversationId}/messages/${messageId}`),
+
+  togglePin: (conversationId: string, messageId: string) =>
+    apiClient.post(`/conversations/${conversationId}/messages/${messageId}/pin`),
+
+  markMessageUnread: (conversationId: string, messageId: string) =>
+    apiClient.post(`/conversations/${conversationId}/messages/${messageId}/unread`),
+
+  toggleReaction: (conversationId: string, messageId: string, data: any) =>
+    apiClient.post(`/conversations/${conversationId}/messages/${messageId}/reactions`, data),
+
+  getScheduledMessages: (conversationId: string) =>
+    apiClient.get(`/conversations/${conversationId}/scheduled-messages`),
+
+  scheduleMessage: (conversationId: string, data: any) =>
+    apiClient.post(`/conversations/${conversationId}/scheduled-messages`, data),
+
+  cancelScheduledMessage: (conversationId: string, scheduledMessageId: string) =>
+    apiClient.delete(`/conversations/${conversationId}/scheduled-messages/${scheduledMessageId}`),
 
   uploadAttachment: (conversationId: string, data: FormData) =>
     apiClient.post(`/conversations/${conversationId}/messages/attachments`, data),

@@ -52,6 +52,11 @@ builder.Services.AddAuthentication(options =>
 });
 
 builder.Services.AddScoped<IMeetingService, MeetingServiceImpl>();
+builder.Services.AddHostedService<ScheduledConversationMessageDispatcher>();
+builder.Services.AddHttpClient("NotificationService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["NotificationService:BaseUrl"] ?? "http://localhost:5003");
+});
 builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 

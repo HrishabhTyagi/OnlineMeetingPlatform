@@ -1,10 +1,10 @@
-# Online Meeting Platform - Service Launcher with Docker Support
+# Samvaad - Service Launcher with Docker Support
 # Stops existing local app processes, verifies Docker Compose services, then starts the platform.
 
 $ErrorActionPreference = "Continue"
 
 Write-Host "================================================" -ForegroundColor Cyan
-Write-Host "Online Meeting Platform - Service Launcher" -ForegroundColor Cyan
+Write-Host "Samvaad - Service Launcher" -ForegroundColor Cyan
 Write-Host "With Docker & Local Services Support" -ForegroundColor Cyan
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""

@@ -1360,7 +1360,7 @@ export default function Dashboard() {
   return (
     <AppShell
       active="calendar"
-      title="Meeting Platform"
+      title="Samvaad"
       subtitle="Calendar"
       actions={(
         <ProfileStatusMenu
@@ -1380,7 +1380,7 @@ export default function Dashboard() {
         />
       )}
     >
-      <div className="h-full overflow-y-auto bg-slate-100 px-6 py-5">
+      <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden bg-slate-100 px-6 py-5">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
             <button

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import BrandMark from '../components/BrandMark';
 import { UserAvatar, UserStatusBadge } from '../components/UserStatus';
 import { meetingAPI, userAPI } from '../services/api';
 import { useMeetingStore } from '../store/meetingStore';
@@ -186,9 +187,12 @@ export default function CreateMeeting() {
     <div className="min-h-screen bg-slate-100 text-slate-950">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <div>
-            <p className="text-sm font-medium text-blue-700">Calendar</p>
-            <h1 className="text-2xl font-semibold text-slate-950">New meeting</h1>
+          <div className="flex items-center gap-4">
+            <BrandMark showName={false} markClassName="h-11 w-11" />
+            <div>
+              <p className="text-sm font-medium text-blue-700">Samvaad calendar</p>
+              <h1 className="text-2xl font-semibold text-slate-950">New meeting</h1>
+            </div>
           </div>
           <button
             onClick={() => navigate('/dashboard')}

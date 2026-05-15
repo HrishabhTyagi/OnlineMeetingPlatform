@@ -18,7 +18,9 @@ public class MeetingDbContext : DbContext
     public DbSet<Conversation> Conversations { get; set; } = null!;
     public DbSet<ConversationMember> ConversationMembers { get; set; } = null!;
     public DbSet<ConversationMessage> ConversationMessages { get; set; } = null!;
+    public DbSet<ConversationMessageReaction> ConversationMessageReactions { get; set; } = null!;
     public DbSet<ConversationInvite> ConversationInvites { get; set; } = null!;
+    public DbSet<ScheduledConversationMessage> ScheduledConversationMessages { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -94,6 +96,7 @@ public class MeetingDbContext : DbContext
             entity.HasMany(e => e.Members).WithOne(m => m.Conversation).HasForeignKey(m => m.ConversationId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.Messages).WithOne(m => m.Conversation).HasForeignKey(m => m.ConversationId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.Invites).WithOne(i => i.Conversation).HasForeignKey(i => i.ConversationId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.ScheduledMessages).WithOne(s => s.Conversation).HasForeignKey(s => s.ConversationId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<ConversationMember>(entity =>
@@ -113,7 +116,31 @@ public class MeetingDbContext : DbContext
             entity.Property(e => e.AttachmentFileName).HasMaxLength(260);
             entity.Property(e => e.AttachmentUrl).HasColumnType("text");
             entity.Property(e => e.AttachmentContentType).HasMaxLength(255);
+            entity.Property(e => e.ReplyToSenderName).HasMaxLength(255);
+            entity.Property(e => e.ReplyToPreview).HasColumnType("text");
             entity.Property(e => e.SentAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.IsPinned).HasDefaultValue(false);
+            entity.HasIndex(e => e.ReplyToMessageId);
+            entity.HasMany(e => e.Reactions).WithOne(r => r.Message).HasForeignKey(r => r.ConversationMessageId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ConversationMessageReaction>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.UserName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.Emoji).IsRequired().HasMaxLength(32);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.ConversationMessageId, e.UserId, e.Emoji }).IsUnique();
+        });
+
+        modelBuilder.Entity<ScheduledConversationMessage>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.SenderName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.Message).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(32);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.ConversationId, e.SenderId, e.Status, e.ScheduledFor });
         });
 
         modelBuilder.Entity<ConversationInvite>(entity =>

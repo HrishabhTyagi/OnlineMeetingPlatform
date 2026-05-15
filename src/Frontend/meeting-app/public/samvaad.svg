@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="samvaad-mark" x1="10" y1="8" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4f46e5"/>
+      <stop offset="0.55" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#14b8a6"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#samvaad-mark)"/>
+  <path d="M10 35.6 19.6 26l8.6 8.6a5.5 5.5 0 0 0 7.8 0l1.4-1.4" fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M54 35.6 44.4 26l-9.6 9.6a4.1 4.1 0 0 1-5.8 0l-1.6-1.6 8.2-8.2a6.1 6.1 0 0 1 8.6 0l2 1.8" fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m22 36.2 9.8 9.8a3.7 3.7 0 0 0 5.2 0l6-6M28.4 42.8l2.4 2.4M36.8 40.4l2.8 2.8" fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 29.4 14.6 22M56 29.4 49.4 22" fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round"/>
+</svg>

@@ -187,6 +187,7 @@ public class ConversationDto
     public List<ConversationMemberDto> Members { get; set; } = new();
     public List<ConversationInviteDto> Invites { get; set; } = new();
     public ConversationMessageDto? LastMessage { get; set; }
+    public int UnreadCount { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
 }
@@ -202,8 +203,36 @@ public class ConversationMessageDto
     public string? AttachmentUrl { get; set; }
     public string? AttachmentContentType { get; set; }
     public long? AttachmentSizeBytes { get; set; }
+    public Guid? ReplyToMessageId { get; set; }
+    public string? ReplyToSenderName { get; set; }
+    public string? ReplyToPreview { get; set; }
     public DateTime SentAt { get; set; }
     public DateTime? EditedAt { get; set; }
+    public bool IsPinned { get; set; }
+    public List<ConversationMessageReactionDto> Reactions { get; set; } = new();
+}
+
+public class ConversationMessageReactionDto
+{
+    public Guid Id { get; set; }
+    public Guid MessageId { get; set; }
+    public Guid UserId { get; set; }
+    public string UserName { get; set; } = string.Empty;
+    public string Emoji { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+}
+
+public class ScheduledConversationMessageDto
+{
+    public Guid Id { get; set; }
+    public Guid ConversationId { get; set; }
+    public Guid SenderId { get; set; }
+    public string SenderName { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public DateTime ScheduledFor { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? SentAt { get; set; }
+    public string Status { get; set; } = string.Empty;
 }
 
 public class CreateConversationRequest
@@ -223,6 +252,7 @@ public class SendConversationMessageRequest
     public string? AttachmentUrl { get; set; }
     public string? AttachmentContentType { get; set; }
     public long? AttachmentSizeBytes { get; set; }
+    public Guid? ReplyToMessageId { get; set; }
 }
 
 public class SendConversationAttachmentRequest
@@ -230,10 +260,22 @@ public class SendConversationAttachmentRequest
     public Guid SenderId { get; set; }
     public string SenderName { get; set; } = string.Empty;
     public string? Message { get; set; }
+    public Guid? ReplyToMessageId { get; set; }
     public IFormFile? File { get; set; }
 }
 
 public class UpdateConversationMessageRequest
 {
     public string Message { get; set; } = string.Empty;
+}
+
+public class ToggleConversationMessageReactionRequest
+{
+    public string Emoji { get; set; } = string.Empty;
+}
+
+public class ScheduleConversationMessageRequest
+{
+    public string Message { get; set; } = string.Empty;
+    public DateTime ScheduledFor { get; set; }
 }

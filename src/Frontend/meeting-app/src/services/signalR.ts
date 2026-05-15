@@ -236,6 +236,11 @@ export const sendConversationMessage = async (
     attachmentContentType?: string;
     attachmentSizeBytes?: number;
   },
+  reply?: {
+    replyToMessageId?: string;
+    replyToSenderName?: string;
+    replyToPreview?: string;
+  },
 ) => {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     await connection.invoke(
@@ -250,6 +255,9 @@ export const sendConversationMessage = async (
       attachment?.attachmentUrl || null,
       attachment?.attachmentContentType || null,
       attachment?.attachmentSizeBytes || null,
+      reply?.replyToMessageId || null,
+      reply?.replyToSenderName || null,
+      reply?.replyToPreview || null,
     );
   }
 };
@@ -295,6 +303,23 @@ export const sendConversationMessageUpdated = async (
       senderName,
       message,
       editedAt,
+      recipientUserIds,
+    );
+  }
+};
+
+export const sendConversationMessageReactionUpdated = async (
+  conversationId: string,
+  messageId: string,
+  reactions: any[],
+  recipientUserIds: string[],
+) => {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    await connection.invoke(
+      'SendConversationMessageReactionUpdated',
+      conversationId,
+      messageId,
+      reactions,
       recipientUserIds,
     );
   }
@@ -422,6 +447,17 @@ export const onConversationMessageUpdated = (callback: (data: any) => void) => {
     connection.on('ConversationMessageUpdated', callback);
     return () => {
       connection?.off('ConversationMessageUpdated', callback);
+    };
+  }
+
+  return () => undefined;
+};
+
+export const onConversationMessageReactionUpdated = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.on('ConversationMessageReactionUpdated', callback);
+    return () => {
+      connection?.off('ConversationMessageReactionUpdated', callback);
     };
   }
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { resolveApiAssetUrl } from '../services/api';
+import { SAMVAAD_THEMES, useSamvaadTheme } from './ThemeProvider';
 
 export type UserStatus = 'Available' | 'Busy' | 'DoNotDisturb' | 'BeRightBack' | 'Away' | 'Offline';
 
@@ -220,6 +221,7 @@ export function ProfileStatusMenu({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const normalized = normalizeStatus(status);
+  const { theme, setTheme } = useSamvaadTheme();
 
   useEffect(() => {
     if (!open) {
@@ -392,6 +394,42 @@ export function ProfileStatusMenu({
               </div>
             </div>
           )}
+
+          <div className="mt-5 border-t border-slate-100 pt-3">
+            <div className="px-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Appearance</p>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2 px-3">
+              {SAMVAAD_THEMES.map((option) => {
+                const selected = option.id === theme;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setTheme(option.id)}
+                    className={`rounded-md border px-3 py-2 text-left transition ${
+                      selected
+                        ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                    aria-pressed={selected}
+                  >
+                    <span className="mb-2 flex items-center gap-1.5">
+                      {option.swatches.map((color) => (
+                        <span
+                          key={color}
+                          className="h-4 w-4 rounded-full border border-slate-200"
+                          style={{ backgroundColor: color }}
+                        />
+                      ))}
+                    </span>
+                    <span className="block text-sm font-semibold text-slate-900">{option.label}</span>
+                    <span className="mt-0.5 block text-xs leading-snug text-slate-500">{option.description}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
           <div className="mt-5 border-t border-slate-100 pt-2">
             <div className="flex items-center justify-between px-4 py-2 text-base">

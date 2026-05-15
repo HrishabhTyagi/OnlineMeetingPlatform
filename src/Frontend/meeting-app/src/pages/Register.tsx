@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import BrandMark from '../components/BrandMark';
 import { authAPI } from '../services/api';
 import { useAuthStore } from '../store/authStore';
 
@@ -66,9 +67,12 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center">
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-indigo-600 via-violet-600 to-teal-500 px-4">
       <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
-        <h2 className="text-3xl font-bold mb-6 text-center text-gray-800">Create Account</h2>
+        <div className="mb-6 flex flex-col items-center gap-3 text-center">
+          <BrandMark markClassName="h-12 w-12" nameClassName="text-3xl font-bold text-slate-900" />
+          <h2 className="text-xl font-semibold text-gray-800">Create account</h2>
+        </div>
 
         {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">{error}</div>}
 

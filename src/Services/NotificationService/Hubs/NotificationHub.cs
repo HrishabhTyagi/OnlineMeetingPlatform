@@ -118,7 +118,10 @@ public class NotificationHub : Hub
         string? attachmentFileName = null,
         string? attachmentUrl = null,
         string? attachmentContentType = null,
-        long? attachmentSizeBytes = null)
+        long? attachmentSizeBytes = null,
+        string? replyToMessageId = null,
+        string? replyToSenderName = null,
+        string? replyToPreview = null)
     {
         if (string.IsNullOrWhiteSpace(message) && string.IsNullOrWhiteSpace(attachmentUrl))
         {
@@ -136,6 +139,9 @@ public class NotificationHub : Hub
             AttachmentUrl = attachmentUrl,
             AttachmentContentType = attachmentContentType,
             AttachmentSizeBytes = attachmentSizeBytes,
+            ReplyToMessageId = replyToMessageId,
+            ReplyToSenderName = replyToSenderName,
+            ReplyToPreview = replyToPreview,
             Timestamp = DateTime.UtcNow
         };
 
@@ -177,6 +183,35 @@ public class NotificationHub : Hub
         foreach (var recipientUserId in recipientUserIds.Distinct())
         {
             await Clients.Group($"user_{recipientUserId}").SendAsync("ConversationMessageUpdated", payload);
+        }
+    }
+
+    public record ConversationReactionPayload(string Id, string MessageId, string UserId, string UserName, string Emoji, DateTime CreatedAt);
+
+    public async Task SendConversationMessageReactionUpdated(
+        string conversationId,
+        string messageId,
+        List<ConversationReactionPayload> reactions,
+        List<string> recipientUserIds)
+    {
+        if (string.IsNullOrWhiteSpace(messageId))
+        {
+            return;
+        }
+
+        var payload = new
+        {
+            ConversationId = conversationId,
+            MessageId = messageId,
+            Reactions = reactions,
+            Timestamp = DateTime.UtcNow
+        };
+
+        await Clients.OthersInGroup($"conversation_{conversationId}").SendAsync("ConversationMessageReactionUpdated", payload);
+
+        foreach (var recipientUserId in recipientUserIds.Distinct())
+        {
+            await Clients.Group($"user_{recipientUserId}").SendAsync("ConversationMessageReactionUpdated", payload);
         }
     }
 
