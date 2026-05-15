@@ -1,10 +1,13 @@
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 
 #nullable disable
 
 namespace MeetingService.Data.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(MeetingDbContext))]
+    [Migration("20260515065000_ConversationMessageAttachments")]
     public partial class ConversationMessageAttachments : Migration
     {
         /// <inheritdoc />

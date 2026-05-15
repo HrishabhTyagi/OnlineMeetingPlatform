@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState, type DragEvent, type SVGProps } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import AppShell from '../components/AppShell';
 import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus } from '../components/UserStatus';
 import { conversationAPI, meetingAPI, resolveApiAssetUrl, userAPI } from '../services/api';
 import {
@@ -9,8 +10,11 @@ import {
   leaveConversation,
   notifyUserStatusChanged,
   onConversationMessageReceived,
+  onConversationMessageUpdated,
   onUserStatusChanged,
   sendConversationMessage,
+  sendConversationMessageUpdated,
+  sendIncomingCall,
   startSignalR,
 } from '../services/signalR';
 import { useAuthStore } from '../store/authStore';
@@ -42,6 +46,7 @@ interface ConversationMessage {
   attachmentContentType?: string;
   attachmentSizeBytes?: number;
   sentAt: string;
+  editedAt?: string;
 }
 
 interface ConversationInvite {
@@ -185,9 +190,63 @@ function FormattedMessage({ message, isMine }: { message: string; isMine: boolea
   );
 }
 
+function PaperclipIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M21 11.5 12.1 20.4a6 6 0 0 1-8.5-8.5l9.3-9.3a4 4 0 1 1 5.7 5.7L9.2 17.7a2 2 0 0 1-2.8-2.8l8.5-8.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ImageIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M5 5h14v14H5z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="m8 16 3.2-3.2 2.5 2.5L16 13l3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 9.2h.01" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SendIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="m4 5 16 7-16 7 3-7-3-7Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M7 12h13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PencilIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="m4 20 4.4-1 10.4-10.4a2.1 2.1 0 0 0-3-3L5.4 16 4 20Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m14.5 7.1 2.4 2.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CheckIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="m5 12.5 4.2 4.2L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function XIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="m7 7 10 10M17 7 7 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export default function Chat() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
   const accounts = useAuthStore((state) => state.accounts);
@@ -217,6 +276,9 @@ export default function Chat() {
   const [chatSearch, setChatSearch] = useState('');
   const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'photos'>('chat');
   const [startingCall, setStartingCall] = useState<'audio' | 'video' | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -227,6 +289,7 @@ export default function Chat() {
   }, [user]);
 
   const selectedConversation = conversations.find((conversation) => conversation.id === selectedConversationId) || null;
+  const requestedConversationId = searchParams.get('conversationId');
   const selectedPeople = users.filter((item) => selectedUserIds.includes(item.id));
   const normalizedQuery = userQuery.trim().toLowerCase();
   const canAddEmailInvite = isEmail(userQuery)
@@ -340,7 +403,8 @@ export default function Chat() {
         if (profileResponse.data) {
           setUser(profileResponse.data);
         }
-        setSelectedConversationId(conversationResponse.data[0]?.id || null);
+        const requestedConversation = conversationResponse.data.find((conversation: Conversation) => conversation.id === requestedConversationId);
+        setSelectedConversationId(requestedConversation?.id || conversationResponse.data[0]?.id || null);
       } catch {
         setError('Unable to load chats');
       } finally {
@@ -352,13 +416,31 @@ export default function Chat() {
   }, [navigate, user?.id, setUser]);
 
   useEffect(() => {
+    if (!requestedConversationId || selectedConversationId === requestedConversationId) {
+      return;
+    }
+
+    if (conversations.some((conversation) => conversation.id === requestedConversationId)) {
+      setSelectedConversationId(requestedConversationId);
+    }
+  }, [conversations, requestedConversationId, selectedConversationId]);
+
+  useEffect(() => {
     if (!token || !user) {
       return;
     }
 
+    let cancelled = false;
+    let unsubscribeConversationMessage: () => void = () => undefined;
+    let unsubscribeConversationUpdate: () => void = () => undefined;
+
     initializeSignalR(token);
     startSignalR()
       .then(async () => {
+        if (cancelled) {
+          return;
+        }
+
         await joinUserNotifications(user.id);
         onUserStatusChanged((data) => {
           setStatusOverrides((items) => ({ ...items, [data.userId]: data.status }));
@@ -370,7 +452,7 @@ export default function Chat() {
             setUser({ ...user, status: data.status });
           }
         });
-        onConversationMessageReceived((data) => {
+        unsubscribeConversationMessage = onConversationMessageReceived((data) => {
           if (data.senderId === user.id) {
             return;
           }
@@ -410,8 +492,56 @@ export default function Chat() {
             return [...items, incoming];
           });
         });
+        unsubscribeConversationUpdate = onConversationMessageUpdated((data) => {
+          const messageId = data.id || data.Id;
+          const conversationId = data.conversationId || data.ConversationId;
+          const messageText = data.message ?? data.Message ?? '';
+          const editedAt = data.editedAt || data.EditedAt || data.timestamp || data.Timestamp;
+          const senderId = data.senderId || data.SenderId;
+          const senderName = data.senderName || data.SenderName;
+
+          if (!messageId || !conversationId) {
+            return;
+          }
+
+          setMessages((items) => items.map((item) => (
+            item.id === messageId
+              ? {
+                  ...item,
+                  conversationId,
+                  senderId: senderId || item.senderId,
+                  senderName: senderName || item.senderName,
+                  message: messageText,
+                  editedAt,
+                }
+              : item
+          )));
+
+          setConversations((items) => items.map((conversation) => {
+            const lastMessage = conversation.lastMessage;
+            if (!lastMessage || lastMessage.id !== messageId) {
+              return conversation;
+            }
+
+            return {
+              ...conversation,
+              lastMessage: {
+                ...lastMessage,
+                message: messageText,
+                editedAt,
+              },
+              updatedAt: editedAt || conversation.updatedAt,
+            };
+          }));
+        });
       })
       .catch((err) => console.warn('Chat SignalR connection failed', err));
+
+    return () => {
+      cancelled = true;
+      unsubscribeConversationMessage();
+      unsubscribeConversationUpdate();
+    };
   }, [selectedConversationId, token, user, setUser]);
 
   const handleStatusChange = async (status: UserStatus) => {
@@ -500,6 +630,9 @@ export default function Chat() {
     setPendingFiles([]);
     setAttachmentStatus('');
     setIsDraggingAttachment(false);
+    setEditingMessageId(null);
+    setEditDraft('');
+    setEditSaving(false);
 
     return () => {
       leaveConversation(selectedConversationId).catch(() => undefined);
@@ -595,11 +728,86 @@ export default function Chat() {
     );
   };
 
+  const notifyConversationMessageEdited = async (message: ConversationMessage) => {
+    if (!user || !selectedConversation || !message.editedAt) {
+      return;
+    }
+
+    await sendConversationMessageUpdated(
+      selectedConversation.id,
+      message.id,
+      user.id,
+      displayName,
+      message.message,
+      message.editedAt,
+      selectedConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
+    );
+  };
+
+  const startEditingMessage = (message: ConversationMessage) => {
+    setEditingMessageId(message.id);
+    setEditDraft(message.message);
+    setError('');
+  };
+
+  const cancelEditingMessage = () => {
+    setEditingMessageId(null);
+    setEditDraft('');
+  };
+
+  const applyEditedMessage = (message: ConversationMessage) => {
+    setMessages((items) => items.map((item) => (
+      item.id === message.id ? { ...item, ...message } : item
+    )));
+    setConversations((items) => items.map((conversation) => (
+      conversation.lastMessage?.id === message.id
+        ? { ...conversation, lastMessage: { ...conversation.lastMessage, ...message }, updatedAt: message.editedAt || conversation.updatedAt }
+        : conversation
+    )));
+  };
+
+  const saveEditedMessage = async (message: ConversationMessage) => {
+    if (!user || !selectedConversation || editSaving) {
+      return;
+    }
+
+    const nextMessage = editDraft.replace(/\s+$/, '');
+    if (!nextMessage.trim()) {
+      setError('Message is required');
+      return;
+    }
+
+    if (nextMessage === message.message) {
+      cancelEditingMessage();
+      return;
+    }
+
+    setEditSaving(true);
+    try {
+      const response = await conversationAPI.updateMessage(selectedConversation.id, message.id, {
+        message: nextMessage,
+      });
+      const updatedMessage = response.data as ConversationMessage;
+      applyEditedMessage(updatedMessage);
+      cancelEditingMessage();
+      setError('');
+      await notifyConversationMessageEdited(updatedMessage);
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to edit message');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   const startInstantCall = async (mode: 'audio' | 'video') => {
     if (!user || !selectedConversation || startingCall) {
       setError('Select a chat before starting a call');
       return;
     }
+
+    const callRecipientUserIds = selectedConversation.members
+      .filter((member) => member.userId !== user.id)
+      .map((member) => member.userId);
 
     const attendeeEmails = Array.from(new Set([
       ...selectedConversation.members
@@ -655,6 +863,15 @@ export default function Chat() {
       });
       appendSentMessage(messageResponse.data);
       await notifyConversationMessage(messageResponse.data);
+      await sendIncomingCall(
+        selectedConversation.id,
+        meetingId,
+        user.id,
+        displayName,
+        mode,
+        callUrl,
+        callRecipientUserIds,
+      ).catch(() => undefined);
       navigate(`/meeting/${meetingId}?call=${mode}&autojoin=1`);
     } catch (err: any) {
       setError(err.response?.data?.message || err.response?.data || `Unable to start ${callLabel}`);
@@ -694,6 +911,7 @@ export default function Chat() {
       return;
     }
 
+    const shouldRestoreFocus = document.activeElement === messageInputRef.current;
     const text = messageDraft.replace(/\s+$/, '');
     const filesToSend = pendingFiles;
     if (!text.trim() && filesToSend.length === 0) {
@@ -734,6 +952,11 @@ export default function Chat() {
       setPendingFiles(filesToSend);
     } finally {
       setSending(false);
+      if (shouldRestoreFocus) {
+        window.requestAnimationFrame(() => {
+          messageInputRef.current?.focus();
+        });
+      }
     }
   };
 
@@ -816,7 +1039,10 @@ export default function Chat() {
     return (
       <button
         key={conversation.id}
-        onClick={() => setSelectedConversationId(conversation.id)}
+        onClick={() => {
+          setSelectedConversationId(conversation.id);
+          setSearchParams({ conversationId: conversation.id });
+        }}
         className={`group mx-3 flex w-[calc(100%-1.5rem)] items-center gap-3 rounded-md px-3 py-3 text-left transition ${
           active ? 'bg-white shadow-md ring-1 ring-slate-200' : 'hover:bg-white/70'
         }`}
@@ -845,54 +1071,40 @@ export default function Chat() {
   };
 
   return (
-    <div className="h-screen overflow-hidden bg-slate-200 text-slate-950">
-      <div className="grid h-full grid-cols-[58px_minmax(280px,370px)_minmax(0,1fr)]">
-        <nav className="flex flex-col items-center gap-2 border-r border-slate-300 bg-slate-100 py-3">
-          <button className="flex h-9 w-9 items-center justify-center rounded-md bg-indigo-600 text-sm font-bold text-white shadow-sm" title="Meeting Platform">
-            T
-          </button>
-          <button className="mt-3 flex h-10 w-10 items-center justify-center rounded-md bg-indigo-100 text-xs font-semibold text-indigo-700" title="Chat">
-            Chat
-          </button>
-          <button onClick={() => navigate('/dashboard')} className="flex h-10 w-10 items-center justify-center rounded-md text-xs font-semibold text-slate-600 hover:bg-white" title="Calendar">
-            Cal
-          </button>
-          <button onClick={() => navigate('/create-meeting')} className="flex h-10 w-10 items-center justify-center rounded-md text-xs font-semibold text-slate-600 hover:bg-white" title="Meet">
-            Meet
-          </button>
-          <button onClick={() => setNewChatOpen(true)} className="flex h-10 w-10 items-center justify-center rounded-md text-xs font-semibold text-slate-600 hover:bg-white" title="People">
-            New
-          </button>
-          <div className="mt-auto">
-            <ProfileStatusMenu
-              displayName={displayName}
-              currentUserId={user?.id}
-              email={user?.email}
-              profilePictureUrl={user?.profilePictureUrl}
-              status={user?.status}
-              accounts={accounts.map((account) => account.user)}
-              avatarUploading={avatarUploading}
-              onChange={handleStatusChange}
-              onSwitchAccount={handleSwitchAccount}
-              onAddAccount={() => navigate('/login?addAccount=1')}
-              onAvatarChange={handleAvatarChange}
-              onAvatarRemove={handleAvatarRemove}
-              onSignOut={handleSignOut}
-            />
-          </div>
-        </nav>
-
-        <aside className="flex min-w-0 flex-col border-r border-slate-300 bg-slate-200">
+    <AppShell
+      active="chat"
+      title="Chat"
+      subtitle="Messages"
+      actions={(
+        <ProfileStatusMenu
+          displayName={displayName}
+          currentUserId={user?.id}
+          email={user?.email}
+          profilePictureUrl={user?.profilePictureUrl}
+          status={user?.status}
+          accounts={accounts.map((account) => account.user)}
+          avatarUploading={avatarUploading}
+          onChange={handleStatusChange}
+          onSwitchAccount={handleSwitchAccount}
+          onAddAccount={() => navigate('/login?addAccount=1')}
+          onAvatarChange={handleAvatarChange}
+          onAvatarRemove={handleAvatarRemove}
+          onSignOut={handleSignOut}
+        />
+      )}
+    >
+      <div className="grid h-full min-h-0 grid-cols-[minmax(300px,360px)_minmax(0,1fr)] gap-4 bg-slate-100 p-4">
+        <aside className="flex min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-slate-200 shadow-sm">
           <div className="px-4 py-4">
             <div className="flex items-center justify-between gap-3">
-              <h1 className="text-2xl font-semibold text-slate-900">Chat</h1>
+              <h2 className="text-xl font-semibold text-slate-900">Chats</h2>
               <div className="flex gap-2">
                 <button
                   type="button"
                   className="rounded-md bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:bg-slate-50"
                   onClick={() => setChatSearch('')}
                 >
-                  Filter
+                  Clear
                 </button>
                 <button
                   type="button"
@@ -914,7 +1126,7 @@ export default function Chat() {
               onClick={() => setNewChatOpen(true)}
               className="mt-4 flex w-full items-center gap-3 rounded-md px-3 py-3 text-left hover:bg-white/70"
             >
-              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-lg font-semibold text-amber-700">Req</span>
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-sm font-semibold text-amber-700">Req</span>
               <span className="font-semibold text-slate-700">{pendingRequestCount || 0} requests</span>
             </button>
           </div>
@@ -950,14 +1162,14 @@ export default function Chat() {
               onClick={() => setNewChatOpen(true)}
               className="w-full rounded-md bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
             >
-              Invite to Teams
+              Start a chat
             </button>
           </div>
         </aside>
 
-        <section className="relative m-3 ml-0 flex min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
-          <header className="flex min-h-[64px] items-center justify-between border-b border-slate-200 px-5">
-            <div className="flex min-w-0 items-center gap-3">
+        <section className="relative flex min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+          <header className="flex min-h-[72px] items-center justify-between gap-4 border-b border-slate-200 px-6">
+            <div className="flex min-w-0 flex-1 items-center gap-3">
               {selectedConversation && (
                 <UserAvatar
                   displayName={selectedTitle}
@@ -987,7 +1199,7 @@ export default function Chat() {
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <button
                 onClick={() => startInstantCall('video')}
                 disabled={!selectedConversation || !!startingCall}
@@ -1019,7 +1231,7 @@ export default function Chat() {
             onDragOver={handleDragOver}
             onDragLeave={() => setIsDraggingAttachment(false)}
             onDrop={handleDrop}
-            className="min-h-0 flex-1 overflow-y-auto bg-white px-8 py-6"
+            className="min-h-0 flex-1 overflow-y-auto bg-white px-6 py-6"
           >
             {!selectedConversation ? (
               <div className="flex h-full items-center justify-center text-sm text-slate-500">Choose a chat or start a new one.</div>
@@ -1053,48 +1265,112 @@ export default function Chat() {
             ) : messages.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-slate-500">Start the conversation.</div>
             ) : (
-              <div className="mx-auto max-w-5xl space-y-5">
+              <div className="w-full space-y-4">
                 {messages.map((message) => {
                   const isMine = message.senderId === user?.id;
+                  const isEditing = editingMessageId === message.id;
+                  const canEdit = isMine && !!message.message;
                   return (
-                    <div key={message.id} className={`flex items-end gap-2 ${isMine ? 'justify-end' : 'justify-start'}`}>
+                    <div key={message.id} className={`flex w-full gap-3 ${isMine ? 'justify-end' : 'justify-start'}`}>
                       {!isMine && (
-                        <UserAvatar
-                          displayName={message.senderName}
-                          profilePictureUrl={getUserAvatar(message.senderId)}
-                          status={getUserStatus(message.senderId)}
-                          showStatus
-                          size="sm"
-                        />
+                        <div className="pt-5">
+                          <UserAvatar
+                            displayName={message.senderName}
+                            profilePictureUrl={getUserAvatar(message.senderId)}
+                            status={getUserStatus(message.senderId)}
+                            showStatus
+                            size="sm"
+                          />
+                        </div>
                       )}
-                      {!isMine && (
-                        <span className="self-start pt-1 text-xs text-slate-500">{message.senderName}</span>
-                      )}
-                      <div className={`max-w-[620px] rounded-md px-4 py-3 text-sm shadow-sm ${
-                        isMine ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-900'
-                      }`}>
-                        <div className={`mb-1 text-xs ${isMine ? 'text-indigo-100' : 'text-slate-500'}`}>{formatMessageTime(message.sentAt)}</div>
-                        {message.message && <FormattedMessage message={message.message} isMine={isMine} />}
-                        {message.attachmentUrl && (
-                          <div className={`mt-3 overflow-hidden rounded-md border ${isMine ? 'border-white/20 bg-white/10' : 'border-slate-200 bg-white'}`}>
-                            {isImageAttachment(message) && (
-                              <img src={resolveApiAssetUrl(message.attachmentUrl)} alt={message.attachmentFileName || 'Attachment'} className="max-h-64 w-full object-cover" />
-                            )}
-                            <div className="px-3 py-2">
-                              <p className="break-words text-sm font-semibold">{message.attachmentFileName || 'Attachment'}</p>
-                              <p className={`mt-1 text-xs ${isMine ? 'text-indigo-50' : 'text-slate-500'}`}>
-                                {[message.attachmentContentType, formatFileSize(message.attachmentSizeBytes)].filter(Boolean).join(' - ') || 'File'}
-                              </p>
-                              <button
-                                onClick={() => downloadAttachment(message)}
-                                className={`mt-2 rounded-md px-3 py-1.5 text-xs font-semibold ${
-                                  isMine ? 'bg-white text-indigo-700 hover:bg-indigo-50' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
-                                }`}
-                              >
-                                Download
-                              </button>
+                      <div className={`flex min-w-0 max-w-[72%] flex-col lg:max-w-[680px] ${isMine ? 'items-end' : 'items-start'}`}>
+                        <div className={`mb-1 flex max-w-full items-center gap-2 text-xs text-slate-500 ${isMine ? 'justify-end' : 'justify-start'}`}>
+                          {!isMine && <span className="truncate font-medium text-slate-600">{message.senderName}</span>}
+                          <span className="shrink-0">{formatMessageTime(message.sentAt)}</span>
+                          {message.editedAt && <span className="shrink-0">Edited</span>}
+                        </div>
+                        <div className={`max-w-full rounded-md px-4 py-2.5 text-sm shadow-sm ${
+                          isMine ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-900'
+                        }`}>
+                          {isEditing ? (
+                            <div className="w-[min(520px,70vw)] max-w-full space-y-2">
+                              <textarea
+                                value={editDraft}
+                                onChange={(event) => setEditDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' && !event.shiftKey) {
+                                    event.preventDefault();
+                                    saveEditedMessage(message);
+                                  }
+
+                                  if (event.key === 'Escape') {
+                                    event.preventDefault();
+                                    cancelEditingMessage();
+                                  }
+                                }}
+                                rows={Math.min(6, Math.max(2, editDraft.split('\n').length))}
+                                autoFocus
+                                className="max-h-48 w-full resize-none rounded-md border border-white/30 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-2 ring-transparent focus:ring-white/60"
+                              />
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={cancelEditingMessage}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-white/15 text-white hover:bg-white/25"
+                                  title="Cancel edit"
+                                  aria-label="Cancel edit"
+                                >
+                                  <XIcon className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => saveEditedMessage(message)}
+                                  disabled={editSaving || !editDraft.trim()}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-white text-indigo-700 hover:bg-indigo-50 disabled:opacity-50"
+                                  title="Save edit"
+                                  aria-label="Save edit"
+                                >
+                                  <CheckIcon className="h-4 w-4" />
+                                </button>
+                              </div>
                             </div>
-                          </div>
+                          ) : (
+                            <>
+                              {message.message && <FormattedMessage message={message.message} isMine={isMine} />}
+                            </>
+                          )}
+                          {message.attachmentUrl && (
+                            <div className={`mt-3 min-w-[220px] overflow-hidden rounded-md border ${isMine ? 'border-white/20 bg-white/10' : 'border-slate-200 bg-white'}`}>
+                              {isImageAttachment(message) && (
+                                <img src={resolveApiAssetUrl(message.attachmentUrl)} alt={message.attachmentFileName || 'Attachment'} className="max-h-64 w-full object-cover" />
+                              )}
+                              <div className="px-3 py-2">
+                                <p className="break-words text-sm font-semibold">{message.attachmentFileName || 'Attachment'}</p>
+                                <p className={`mt-1 text-xs ${isMine ? 'text-indigo-50' : 'text-slate-500'}`}>
+                                  {[message.attachmentContentType, formatFileSize(message.attachmentSizeBytes)].filter(Boolean).join(' - ') || 'File'}
+                                </p>
+                                <button
+                                  onClick={() => downloadAttachment(message)}
+                                  className={`mt-2 rounded-md px-3 py-1.5 text-xs font-semibold ${
+                                    isMine ? 'bg-white text-indigo-700 hover:bg-indigo-50' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  Download
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        {canEdit && !isEditing && (
+                          <button
+                            type="button"
+                            onClick={() => startEditingMessage(message)}
+                            className={`mt-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-indigo-700 ${isMine ? 'self-end' : 'self-start'}`}
+                            title="Edit message"
+                            aria-label="Edit message"
+                          >
+                            <PencilIcon className="h-4 w-4" />
+                          </button>
                         )}
                       </div>
                     </div>
@@ -1111,8 +1387,14 @@ export default function Chat() {
                   <span key={fileKey(file)} className="inline-flex max-w-full items-center gap-2 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs text-slate-700 ring-1 ring-indigo-100">
                     <span className="truncate">{file.name}</span>
                     <span className="shrink-0 text-slate-400">{formatFileSize(file.size)}</span>
-                    <button type="button" onClick={() => removePendingFile(index)} className="shrink-0 font-semibold text-slate-500 hover:text-red-600">
-                      Remove
+                    <button
+                      type="button"
+                      onClick={() => removePendingFile(index)}
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-white hover:text-red-600"
+                      title="Remove file"
+                      aria-label={`Remove ${file.name}`}
+                    >
+                      <XIcon className="h-3.5 w-3.5" />
                     </button>
                   </span>
                 ))}
@@ -1133,6 +1415,7 @@ export default function Chat() {
                 }}
               />
               <textarea
+                ref={messageInputRef}
                 value={messageDraft}
                 onChange={(event) => setMessageDraft(event.target.value)}
                 onKeyDown={(event) => {
@@ -1156,22 +1439,50 @@ export default function Chat() {
                   }
                 }}
                 rows={Math.min(5, Math.max(1, messageDraft.split('\n').length))}
-                disabled={!selectedConversation || sending}
+                disabled={!selectedConversation}
+                readOnly={sending}
                 placeholder={selectedConversation ? 'Type a message' : 'Select a chat first'}
-                className="max-h-36 min-w-0 flex-1 resize-none border-0 px-1 py-1 text-sm outline-none disabled:bg-white"
+                className="max-h-36 min-w-0 flex-1 resize-none border-0 px-1 py-1 text-sm outline-none disabled:bg-white read-only:text-slate-500"
               />
-              <button type="button" onClick={() => fileInputRef.current?.click()} disabled={!selectedConversation || sending} className="rounded-md px-2 py-1 text-sm font-semibold text-slate-500 hover:bg-slate-100 disabled:opacity-50">
-                Attach
-              </button>
-              <button type="button" onClick={() => fileInputRef.current?.click()} disabled={!selectedConversation || sending} className="rounded-md px-2 py-1 text-sm font-semibold text-slate-500 hover:bg-slate-100 disabled:opacity-50">
-                Image
+              <button
+                type="button"
+                onClick={() => {
+                  if (fileInputRef.current) {
+                    fileInputRef.current.accept = '';
+                    fileInputRef.current.click();
+                  }
+                }}
+                disabled={!selectedConversation || sending}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                title="Attach file"
+                aria-label="Attach file"
+              >
+                <PaperclipIcon className="h-5 w-5" />
               </button>
               <button
+                type="button"
+                onClick={() => {
+                  if (fileInputRef.current) {
+                    fileInputRef.current.accept = 'image/*';
+                    fileInputRef.current.click();
+                  }
+                }}
+                disabled={!selectedConversation || sending}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                title="Attach image"
+                aria-label="Attach image"
+              >
+                <ImageIcon className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
                 onClick={sendMessage}
                 disabled={!selectedConversation || sending || (!messageDraft.trim() && pendingFiles.length === 0)}
-                className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+                title={sending ? 'Sending' : 'Send message'}
+                aria-label={sending ? 'Sending' : 'Send message'}
               >
-                {sending ? 'Sending...' : 'Send'}
+                <SendIcon className="h-5 w-5" />
               </button>
             </div>
           </footer>
@@ -1308,6 +1619,6 @@ export default function Chat() {
           </section>
         </div>
       )}
-    </div>
+    </AppShell>
   );
 }

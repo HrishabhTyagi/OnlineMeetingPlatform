@@ -147,6 +147,72 @@ public class NotificationHub : Hub
         }
     }
 
+    public async Task SendConversationMessageUpdated(
+        string conversationId,
+        string messageId,
+        string senderId,
+        string senderName,
+        string message,
+        DateTime editedAt,
+        List<string> recipientUserIds)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        var payload = new
+        {
+            Id = messageId,
+            ConversationId = conversationId,
+            SenderId = senderId,
+            SenderName = senderName,
+            Message = message.TrimEnd(),
+            EditedAt = editedAt,
+            Timestamp = DateTime.UtcNow
+        };
+
+        await Clients.OthersInGroup($"conversation_{conversationId}").SendAsync("ConversationMessageUpdated", payload);
+
+        foreach (var recipientUserId in recipientUserIds.Distinct())
+        {
+            await Clients.Group($"user_{recipientUserId}").SendAsync("ConversationMessageUpdated", payload);
+        }
+    }
+
+    public async Task SendIncomingCall(
+        string conversationId,
+        string meetingId,
+        string callerUserId,
+        string callerName,
+        string callType,
+        string joinUrl,
+        List<string> recipientUserIds)
+    {
+        if (string.IsNullOrWhiteSpace(meetingId) || string.IsNullOrWhiteSpace(joinUrl))
+        {
+            return;
+        }
+
+        var payload = new
+        {
+            ConversationId = conversationId,
+            MeetingId = meetingId,
+            CallerUserId = callerUserId,
+            CallerName = callerName,
+            CallType = string.Equals(callType, "video", StringComparison.OrdinalIgnoreCase) ? "video" : "audio",
+            JoinUrl = joinUrl,
+            Timestamp = DateTime.UtcNow
+        };
+
+        foreach (var recipientUserId in recipientUserIds
+            .Where(id => !string.IsNullOrWhiteSpace(id) && id != callerUserId)
+            .Distinct())
+        {
+            await Clients.Group($"user_{recipientUserId}").SendAsync("IncomingCall", payload);
+        }
+    }
+
     public async Task SendWebRtcOffer(string meetingId, string senderUserId, string targetUserId, string sdp)
     {
         await Clients.OthersInGroup($"meeting_{meetingId}").SendAsync("WebRtcOffer", new

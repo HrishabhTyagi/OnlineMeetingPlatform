@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import AppShell from '../components/AppShell';
 import { ProfileStatusMenu, UserAvatar, UserStatus, UserStatusBadge } from '../components/UserStatus';
 import { meetingAPI, userAPI } from '../services/api';
 import { initializeSignalR, joinUserNotifications, notifyUserStatusChanged, onMeetingInvite, startSignalR } from '../services/signalR';
@@ -1357,34 +1358,29 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-950">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <div>
-            <p className="text-sm font-medium text-blue-700">Calendar</p>
-            <h1 className="text-2xl font-semibold text-slate-950">Meeting Platform</h1>
-          </div>
-          <div className="flex items-center gap-3">
-            <ProfileStatusMenu
-              displayName={displayName}
-              currentUserId={user?.id}
-              email={user?.email}
-              profilePictureUrl={user?.profilePictureUrl}
-              status={user?.status}
-              accounts={accounts.map((account) => account.user)}
-              avatarUploading={avatarUploading}
-              onChange={handleStatusChange}
-              onSwitchAccount={handleSwitchAccount}
-              onAddAccount={() => navigate('/login?addAccount=1')}
-              onAvatarChange={handleAvatarChange}
-              onAvatarRemove={handleAvatarRemove}
-              onSignOut={handleLogout}
-            />
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl px-4 py-6">
+    <AppShell
+      active="calendar"
+      title="Meeting Platform"
+      subtitle="Calendar"
+      actions={(
+        <ProfileStatusMenu
+          displayName={displayName}
+          currentUserId={user?.id}
+          email={user?.email}
+          profilePictureUrl={user?.profilePictureUrl}
+          status={user?.status}
+          accounts={accounts.map((account) => account.user)}
+          avatarUploading={avatarUploading}
+          onChange={handleStatusChange}
+          onSwitchAccount={handleSwitchAccount}
+          onAddAccount={() => navigate('/login?addAccount=1')}
+          onAvatarChange={handleAvatarChange}
+          onAvatarRemove={handleAvatarRemove}
+          onSignOut={handleLogout}
+        />
+      )}
+    >
+      <div className="h-full overflow-y-auto bg-slate-100 px-6 py-5">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
             <button
@@ -1590,7 +1586,7 @@ export default function Dashboard() {
             ))}
           </div>
         )}
-      </main>
+      </div>
 
       {quickScheduleForm && (
         <QuickScheduleModal
@@ -1630,6 +1626,6 @@ export default function Dashboard() {
           onCancelMeeting={cancelSelectedMeeting}
         />
       )}
-    </div>
+    </AppShell>
   );
 }

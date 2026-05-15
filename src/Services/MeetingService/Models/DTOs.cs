@@ -203,6 +203,7 @@ public class ConversationMessageDto
     public string? AttachmentContentType { get; set; }
     public long? AttachmentSizeBytes { get; set; }
     public DateTime SentAt { get; set; }
+    public DateTime? EditedAt { get; set; }
 }
 
 public class CreateConversationRequest
@@ -230,4 +231,9 @@ public class SendConversationAttachmentRequest
     public string SenderName { get; set; } = string.Empty;
     public string? Message { get; set; }
     public IFormFile? File { get; set; }
+}
+
+public class UpdateConversationMessageRequest
+{
+    public string Message { get; set; } = string.Empty;
 }

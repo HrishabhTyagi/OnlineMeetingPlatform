@@ -97,6 +97,38 @@ public class ConversationsController : ControllerBase
         }
     }
 
+    [HttpPut("{conversationId}/messages/{messageId}")]
+    public async Task<ActionResult<ConversationMessageDto>> UpdateMessage(Guid conversationId, Guid messageId, [FromBody] UpdateConversationMessageRequest request)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Message))
+        {
+            return BadRequest("Message is required");
+        }
+
+        try
+        {
+            var message = await _meetingService.UpdateConversationMessageAsync(conversationId, messageId, userId, request);
+            return Ok(MapMessageToDto(message));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(403, ex.Message);
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "Message is required")
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound("Message not found");
+        }
+    }
+
     [HttpPost("{conversationId}/messages/attachments")]
     [RequestSizeLimit(MaxAttachmentBytes)]
     [RequestFormLimits(MultipartBodyLengthLimit = MaxAttachmentBytes)]
@@ -261,7 +293,8 @@ public class ConversationsController : ControllerBase
             AttachmentUrl = message.AttachmentUrl,
             AttachmentContentType = message.AttachmentContentType,
             AttachmentSizeBytes = message.AttachmentSizeBytes,
-            SentAt = message.SentAt
+            SentAt = message.SentAt,
+            EditedAt = message.EditedAt
         };
     }
 }

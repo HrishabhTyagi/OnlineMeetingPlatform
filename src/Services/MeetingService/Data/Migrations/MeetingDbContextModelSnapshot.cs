@@ -136,6 +136,9 @@ namespace MeetingService.Data.Migrations
                     b.Property<Guid>("ConversationId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("EditedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("AttachmentContentType")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");

@@ -8,6 +8,8 @@ import CreateMeeting from './pages/CreateMeeting';
 import MeetingRoom from './pages/MeetingRoom';
 import Chat from './pages/Chat';
 import { useAuthStore } from './store/authStore';
+import IncomingCallRinger from './components/IncomingCallRinger';
+import ConversationMessageNotifier from './components/ConversationMessageNotifier';
 import './index.css';
 
 const queryClient = new QueryClient();
@@ -33,7 +35,13 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   useBlockBrowserBack();
 
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />;
+  return isAuthenticated ? (
+    <>
+      {children}
+      <ConversationMessageNotifier />
+      <IncomingCallRinger />
+    </>
+  ) : <Navigate to="/login" replace />;
 }
 
 function App() {

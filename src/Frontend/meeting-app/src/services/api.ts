@@ -163,6 +163,9 @@ export const conversationAPI = {
   sendMessage: (conversationId: string, data: any) =>
     apiClient.post(`/conversations/${conversationId}/messages`, data),
 
+  updateMessage: (conversationId: string, messageId: string, data: any) =>
+    apiClient.put(`/conversations/${conversationId}/messages/${messageId}`, data),
+
   uploadAttachment: (conversationId: string, data: FormData) =>
     apiClient.post(`/conversations/${conversationId}/messages/attachments`, data),
 

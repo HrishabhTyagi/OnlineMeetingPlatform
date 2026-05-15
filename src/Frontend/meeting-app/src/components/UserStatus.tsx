@@ -96,18 +96,20 @@ export function UserAvatar({
   }[size];
 
   return (
-    <span className={`relative flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-200 font-semibold text-slate-700 ${sizeClass}`}>
-      {getInitials(displayName, email)}
-      {imageUrl && (
-        <img
-          src={imageUrl}
-          alt=""
-          className="absolute inset-0 h-full w-full object-cover"
-          onError={(event) => {
-            event.currentTarget.style.display = 'none';
-          }}
-        />
-      )}
+    <span className={`relative flex shrink-0 items-center justify-center rounded-full font-semibold text-slate-700 ${sizeClass}`}>
+      <span className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-full bg-slate-200">
+        {getInitials(displayName, email)}
+        {imageUrl && (
+          <img
+            src={imageUrl}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover"
+            onError={(event) => {
+              event.currentTarget.style.display = 'none';
+            }}
+          />
+        )}
+      </span>
       {showStatus && (
         <span className={`absolute bottom-0 right-0 rounded-full ${dark ? 'border-slate-800' : 'border-white'} ${dotClass} ${statusDotClass(status)}`} />
       )}

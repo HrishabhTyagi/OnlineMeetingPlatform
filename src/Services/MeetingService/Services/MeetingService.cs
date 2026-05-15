@@ -30,6 +30,7 @@ public interface IMeetingService
     Task<Conversation> CreateConversationAsync(Guid creatorId, CreateConversationRequest request);
     Task<List<ConversationMessage>> GetConversationMessagesAsync(Guid conversationId, Guid userId);
     Task<ConversationMessage> AddConversationMessageAsync(Guid conversationId, SendConversationMessageRequest request);
+    Task<ConversationMessage> UpdateConversationMessageAsync(Guid conversationId, Guid messageId, Guid userId, UpdateConversationMessageRequest request);
     Task<bool> CanAccessConversationAsync(Guid conversationId, Guid userId);
 }
 
@@ -466,13 +467,17 @@ public class MeetingServiceImpl : IMeetingService
             if (members.Count == 2)
             {
                 var memberIds = members.Select(member => member.UserId).OrderBy(id => id).ToList();
+                var firstMemberId = memberIds[0];
+                var secondMemberId = memberIds[1];
                 var existing = await _context.Conversations
                     .Include(conversation => conversation.Members)
                     .Include(conversation => conversation.Invites)
                     .Include(conversation => conversation.Messages.Where(message => !message.IsDeleted).OrderByDescending(message => message.SentAt).Take(1))
                     .Where(conversation => conversation.Type == ConversationType.Direct)
                     .Where(conversation => conversation.Members.Count == 2)
-                    .FirstOrDefaultAsync(conversation => memberIds.All(id => conversation.Members.Any(member => member.UserId == id)));
+                    .Where(conversation => conversation.Members.Any(member => member.UserId == firstMemberId))
+                    .Where(conversation => conversation.Members.Any(member => member.UserId == secondMemberId))
+                    .FirstOrDefaultAsync();
 
                 if (existing != null)
                 {
@@ -584,6 +589,39 @@ public class MeetingServiceImpl : IMeetingService
         var conversation = await _context.Conversations.FirstAsync(item => item.Id == conversationId);
         conversation.UpdatedAt = message.SentAt;
         _context.Conversations.Update(conversation);
+        await _context.SaveChangesAsync();
+        return message;
+    }
+
+    public async Task<ConversationMessage> UpdateConversationMessageAsync(Guid conversationId, Guid messageId, Guid userId, UpdateConversationMessageRequest request)
+    {
+        var messageText = (request.Message ?? string.Empty).TrimEnd();
+        if (string.IsNullOrWhiteSpace(messageText))
+        {
+            throw new InvalidOperationException("Message is required");
+        }
+
+        var message = await _context.ConversationMessages
+            .FirstOrDefaultAsync(item => item.Id == messageId && item.ConversationId == conversationId && !item.IsDeleted);
+
+        if (message == null)
+        {
+            throw new InvalidOperationException("Message not found");
+        }
+
+        if (message.SenderId != userId)
+        {
+            throw new UnauthorizedAccessException("Only the sender can edit this message");
+        }
+
+        message.Message = messageText;
+        message.EditedAt = DateTime.UtcNow;
+        _context.ConversationMessages.Update(message);
+
+        var conversation = await _context.Conversations.FirstAsync(item => item.Id == conversationId);
+        conversation.UpdatedAt = message.EditedAt;
+        _context.Conversations.Update(conversation);
+
         await _context.SaveChangesAsync();
         return message;
     }

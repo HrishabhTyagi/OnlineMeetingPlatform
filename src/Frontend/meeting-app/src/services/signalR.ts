@@ -4,6 +4,7 @@ const NOTIFICATION_HUB_URL = 'http://localhost:5000/hubs/notifications';
 
 let connection: signalR.HubConnection | null = null;
 let activeToken: string | null = null;
+let startPromise: Promise<signalR.HubConnection | null> | null = null;
 
 export const initializeSignalR = (token: string) => {
   if (connection && activeToken === token) {
@@ -13,6 +14,7 @@ export const initializeSignalR = (token: string) => {
   if (connection && activeToken !== token) {
     connection.stop().catch(() => undefined);
     connection = null;
+    startPromise = null;
   }
 
   activeToken = token;
@@ -47,8 +49,21 @@ export const startSignalR = async () => {
     return null;
   }
 
+  if (connection.state === signalR.HubConnectionState.Connected) {
+    return connection;
+  }
+
+  if (startPromise) {
+    return startPromise;
+  }
+
   if (connection.state === signalR.HubConnectionState.Disconnected) {
-    await connection.start();
+    startPromise = connection.start()
+      .then(() => connection)
+      .finally(() => {
+        startPromise = null;
+      });
+    return startPromise;
   }
 
   return connection;
@@ -59,6 +74,7 @@ export const disconnectSignalR = async () => {
     await connection.stop();
     connection = null;
     activeToken = null;
+    startPromise = null;
   }
 };
 
@@ -238,6 +254,52 @@ export const sendConversationMessage = async (
   }
 };
 
+export const sendIncomingCall = async (
+  conversationId: string,
+  meetingId: string,
+  callerUserId: string,
+  callerName: string,
+  callType: 'audio' | 'video',
+  joinUrl: string,
+  recipientUserIds: string[],
+) => {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    await connection.invoke(
+      'SendIncomingCall',
+      conversationId,
+      meetingId,
+      callerUserId,
+      callerName,
+      callType,
+      joinUrl,
+      recipientUserIds,
+    );
+  }
+};
+
+export const sendConversationMessageUpdated = async (
+  conversationId: string,
+  messageId: string,
+  senderId: string,
+  senderName: string,
+  message: string,
+  editedAt: string,
+  recipientUserIds: string[],
+) => {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    await connection.invoke(
+      'SendConversationMessageUpdated',
+      conversationId,
+      messageId,
+      senderId,
+      senderName,
+      message,
+      editedAt,
+      recipientUserIds,
+    );
+  }
+};
+
 export const notifyUserStatusChanged = async (
   userId: string,
   userName: string,
@@ -339,9 +401,31 @@ export const onLobbyDecisionReceived = (callback: (data: any) => void) => {
 
 export const onConversationMessageReceived = (callback: (data: any) => void) => {
   if (connection) {
-    connection.off('ConversationMessageReceived');
     connection.on('ConversationMessageReceived', callback);
+    return () => {
+      connection?.off('ConversationMessageReceived', callback);
+    };
   }
+
+  return () => undefined;
+};
+
+export const onIncomingCall = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.off('IncomingCall');
+    connection.on('IncomingCall', callback);
+  }
+};
+
+export const onConversationMessageUpdated = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.on('ConversationMessageUpdated', callback);
+    return () => {
+      connection?.off('ConversationMessageUpdated', callback);
+    };
+  }
+
+  return () => undefined;
 };
 
 export const onUserStatusChanged = (callback: (data: any) => void) => {

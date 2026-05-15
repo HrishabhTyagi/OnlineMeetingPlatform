@@ -187,6 +187,7 @@ public class ConversationMessage
     public string? AttachmentContentType { get; set; }
     public long? AttachmentSizeBytes { get; set; }
     public DateTime SentAt { get; set; } = DateTime.UtcNow;
+    public DateTime? EditedAt { get; set; }
     public bool IsDeleted { get; set; }
 
     public Conversation Conversation { get; set; } = null!;
