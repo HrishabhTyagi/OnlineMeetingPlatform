@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus } from '../components/UserStatus';
-import { conversationAPI, userAPI } from '../services/api';
+import { conversationAPI, resolveApiAssetUrl, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinConversation,
@@ -77,6 +77,18 @@ function formatMessageTime(value?: string) {
   }).format(new Date(value));
 }
 
+function formatConversationDate(value?: string) {
+  if (!value) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  }).format(new Date(value));
+}
+
 function isEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
@@ -115,6 +127,10 @@ function describeLastMessage(message: ConversationMessage | undefined, memberCou
   }
 
   return message.message;
+}
+
+function isImageAttachment(message: ConversationMessage) {
+  return !!message.attachmentUrl && !!message.attachmentContentType?.startsWith('image/');
 }
 
 function stripCodeFence(value: string) {
@@ -197,6 +213,9 @@ export default function Chat() {
   const [isDraggingAttachment, setIsDraggingAttachment] = useState(false);
   const [sending, setSending] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  const [chatSearch, setChatSearch] = useState('');
+  const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'photos'>('chat');
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -213,6 +232,44 @@ export default function Chat() {
     && !inviteEmails.some((email) => email.toLowerCase() === normalizedQuery)
     && !users.some((item) => item.email.toLowerCase() === normalizedQuery);
   const recipientCount = selectedUserIds.length + inviteEmails.length;
+
+  const getOtherMember = (conversation: Conversation) => conversation.members.find((member) => member.userId !== user?.id);
+
+  const getConversationTitle = (conversation: Conversation) => {
+    const otherMember = getOtherMember(conversation);
+    if (conversation.type === 'Group') {
+      return conversation.title || 'Group chat';
+    }
+
+    return otherMember?.userName
+      || conversation.invites?.find((invite) => !invite.hasAccepted)?.email
+      || 'Direct chat';
+  };
+
+  const filteredConversations = useMemo(() => {
+    const query = chatSearch.trim().toLowerCase();
+    if (!query) {
+      return conversations;
+    }
+
+    return conversations.filter((conversation) => {
+      const title = getConversationTitle(conversation).toLowerCase();
+      const memberMatch = conversation.members.some((member) => (
+        member.userName.toLowerCase().includes(query)
+        || member.userEmail.toLowerCase().includes(query)
+      ));
+      const inviteMatch = conversation.invites?.some((invite) => invite.email.toLowerCase().includes(query));
+      return title.includes(query) || memberMatch || inviteMatch;
+    });
+  }, [chatSearch, conversations, user?.id]);
+
+  const pinnedConversations = filteredConversations.slice(0, 1);
+  const recentConversations = filteredConversations.slice(1);
+  const pendingRequestCount = conversations.reduce((count, conversation) => (
+    count + (conversation.invites || []).filter((invite) => !invite.hasAccepted).length
+  ), 0);
+  const selectedFiles = messages.filter((message) => message.attachmentUrl);
+  const selectedPhotos = selectedFiles.filter(isImageAttachment);
 
   const getUserStatus = (userId?: string) => {
     if (!userId) {
@@ -433,6 +490,7 @@ export default function Chat() {
       return;
     }
 
+    setActiveTab('chat');
     joinConversation(selectedConversationId).catch(() => undefined);
 
     conversationAPI.getMessages(selectedConversationId)
@@ -494,6 +552,7 @@ export default function Chat() {
       setGroupTitle('');
       setUserQuery('');
       setError('');
+      setNewChatOpen(false);
       setRequestStatus('Request sent. Chat is ready.');
     } catch (err: any) {
       setError(err.response?.data || 'Unable to create chat');
@@ -679,15 +738,63 @@ export default function Chat() {
     setRequestStatus('');
   };
 
+  const renderConversationButton = (conversation: Conversation) => {
+    const otherMember = getOtherMember(conversation);
+    const title = getConversationTitle(conversation);
+    const active = selectedConversationId === conversation.id;
+    const preview = describeLastMessage(conversation.lastMessage, conversation.members.length);
+
+    return (
+      <button
+        key={conversation.id}
+        onClick={() => setSelectedConversationId(conversation.id)}
+        className={`group mx-3 flex w-[calc(100%-1.5rem)] items-center gap-3 rounded-md px-3 py-3 text-left transition ${
+          active ? 'bg-white shadow-md ring-1 ring-slate-200' : 'hover:bg-white/70'
+        }`}
+      >
+        <UserAvatar
+          displayName={title}
+          email={otherMember?.userEmail}
+          profilePictureUrl={conversation.type === 'Direct' ? getUserAvatar(otherMember?.userId) : undefined}
+          status={conversation.type === 'Direct' ? getUserStatus(otherMember?.userId) : undefined}
+          showStatus={conversation.type === 'Direct'}
+          size="lg"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center justify-between gap-2">
+            <span className="truncate text-sm font-semibold text-slate-800">{title}</span>
+            <span className="shrink-0 text-xs text-slate-500">
+              {formatConversationDate(conversation.lastMessage?.sentAt || conversation.updatedAt || conversation.createdAt)}
+            </span>
+          </span>
+          <span className="mt-1 block truncate text-sm text-slate-500">
+            {conversation.lastMessage?.senderId === user?.id ? 'You: ' : ''}{preview}
+          </span>
+        </span>
+      </button>
+    );
+  };
+
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-950">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <div>
-            <p className="text-sm font-medium text-blue-700">Chat</p>
-            <h1 className="text-2xl font-semibold">Messages</h1>
-          </div>
-          <div className="flex items-center gap-2">
+    <div className="h-screen overflow-hidden bg-slate-200 text-slate-950">
+      <div className="grid h-full grid-cols-[58px_minmax(280px,370px)_minmax(0,1fr)]">
+        <nav className="flex flex-col items-center gap-2 border-r border-slate-300 bg-slate-100 py-3">
+          <button className="flex h-9 w-9 items-center justify-center rounded-md bg-indigo-600 text-sm font-bold text-white shadow-sm" title="Meeting Platform">
+            T
+          </button>
+          <button className="mt-3 flex h-10 w-10 items-center justify-center rounded-md bg-indigo-100 text-xs font-semibold text-indigo-700" title="Chat">
+            Chat
+          </button>
+          <button onClick={() => navigate('/dashboard')} className="flex h-10 w-10 items-center justify-center rounded-md text-xs font-semibold text-slate-600 hover:bg-white" title="Calendar">
+            Cal
+          </button>
+          <button onClick={() => navigate('/create-meeting')} className="flex h-10 w-10 items-center justify-center rounded-md text-xs font-semibold text-slate-600 hover:bg-white" title="Meet">
+            Meet
+          </button>
+          <button onClick={() => setNewChatOpen(true)} className="flex h-10 w-10 items-center justify-center rounded-md text-xs font-semibold text-slate-600 hover:bg-white" title="People">
+            New
+          </button>
+          <div className="mt-auto">
             <ProfileStatusMenu
               displayName={displayName}
               currentUserId={user?.id}
@@ -703,166 +810,235 @@ export default function Chat() {
               onAvatarRemove={handleAvatarRemove}
               onSignOut={handleSignOut}
             />
-            <button onClick={() => navigate('/dashboard')} className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-              Calendar
+          </div>
+        </nav>
+
+        <aside className="flex min-w-0 flex-col border-r border-slate-300 bg-slate-200">
+          <div className="px-4 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <h1 className="text-2xl font-semibold text-slate-900">Chat</h1>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="rounded-md bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:bg-slate-50"
+                  onClick={() => setChatSearch('')}
+                >
+                  Filter
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:bg-slate-50"
+                  onClick={() => setNewChatOpen(true)}
+                >
+                  New
+                </button>
+              </div>
+            </div>
+            <input
+              value={chatSearch}
+              onChange={(event) => setChatSearch(event.target.value)}
+              placeholder="Search chats"
+              className="mt-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500"
+            />
+            <button
+              type="button"
+              onClick={() => setNewChatOpen(true)}
+              className="mt-4 flex w-full items-center gap-3 rounded-md px-3 py-3 text-left hover:bg-white/70"
+            >
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-lg font-semibold text-amber-700">Req</span>
+              <span className="font-semibold text-slate-700">{pendingRequestCount || 0} requests</span>
             </button>
           </div>
-        </div>
-      </header>
 
-      <main className="mx-auto grid max-w-7xl gap-4 px-4 py-5 lg:grid-cols-[300px_minmax(0,1fr)_320px]">
-        <section className="rounded-md border border-slate-200 bg-white">
-          <div className="border-b border-slate-200 p-4">
-            <h2 className="font-semibold">Chats</h2>
-          </div>
-          <div className="max-h-[calc(100vh-180px)] overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto pb-4">
             {loading ? (
-              <p className="p-4 text-sm text-slate-500">Loading chats...</p>
-            ) : conversations.length === 0 ? (
-              <p className="p-4 text-sm text-slate-500">No chats yet.</p>
-            ) : (
-              conversations.map((conversation) => {
-                const otherMember = conversation.members.find((member) => member.userId !== user?.id);
-                const title = conversation.type === 'Group'
-                  ? conversation.title || 'Group chat'
-                  : otherMember?.userName
-                    || conversation.invites?.find((invite) => !invite.hasAccepted)?.email
-                    || 'Direct chat';
-                return (
-                  <button
-                    key={conversation.id}
-                    onClick={() => setSelectedConversationId(conversation.id)}
-                    className={`w-full border-b border-slate-100 px-4 py-3 text-left hover:bg-slate-50 ${
-                      selectedConversationId === conversation.id ? 'bg-blue-50' : ''
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <UserAvatar
-                          displayName={title}
-                          email={otherMember?.userEmail}
-                          profilePictureUrl={conversation.type === 'Direct' ? getUserAvatar(otherMember?.userId) : undefined}
-                          status={conversation.type === 'Direct' ? getUserStatus(otherMember?.userId) : undefined}
-                          showStatus={conversation.type === 'Direct'}
-                          size="sm"
-                        />
-                        <p className="truncate text-sm font-semibold">{title}</p>
-                      </div>
-                      <span className="text-xs text-slate-400">{formatMessageTime(conversation.lastMessage?.sentAt || conversation.updatedAt)}</span>
-                    </div>
-                    <p className="mt-1 truncate text-sm text-slate-500">{describeLastMessage(conversation.lastMessage, conversation.members.length)}</p>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </section>
-
-        <section
-          onDragOver={handleDragOver}
-          onDragLeave={() => setIsDraggingAttachment(false)}
-          onDrop={handleDrop}
-          className="relative flex min-h-[calc(100vh-150px)] flex-col rounded-md border border-slate-200 bg-white"
-        >
-          <div className="border-b border-slate-200 p-4">
-            <h2 className="font-semibold">{selectedTitle}</h2>
-            {selectedConversation && (
-              <div className="mt-1 flex flex-wrap gap-2">
-                {selectedConversation.members.map((member) => (
-                  <span key={member.userId} className="inline-flex items-center gap-1.5 text-sm text-slate-500">
-                    <UserAvatar
-                      displayName={member.userName}
-                      email={member.userEmail}
-                      profilePictureUrl={getUserAvatar(member.userId)}
-                      status={getUserStatus(member.userId)}
-                      showStatus
-                      size="sm"
-                    />
-                    {member.userName}
-                  </span>
-                ))}
-                {(selectedConversation.invites || [])
-                  .filter((invite) => !invite.hasAccepted)
-                  .map((invite) => (
-                    <span key={invite.id} className="text-sm text-slate-500">{invite.email} pending</span>
-                  ))}
+              <p className="px-4 py-3 text-sm text-slate-500">Loading chats...</p>
+            ) : filteredConversations.length === 0 ? (
+              <div className="mx-3 rounded-md bg-white px-4 py-5 text-sm text-slate-500">
+                No chats found.
               </div>
+            ) : (
+              <>
+                {pinnedConversations.length > 0 && (
+                  <div className="mb-3">
+                    <p className="px-4 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Pinned</p>
+                    {pinnedConversations.map(renderConversationButton)}
+                  </div>
+                )}
+                {recentConversations.length > 0 && (
+                  <div>
+                    <p className="px-4 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Recent</p>
+                    {recentConversations.map(renderConversationButton)}
+                  </div>
+                )}
+              </>
             )}
           </div>
+
+          <div className="border-t border-slate-300 p-3">
+            <button
+              type="button"
+              onClick={() => setNewChatOpen(true)}
+              className="w-full rounded-md bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+            >
+              Invite to Teams
+            </button>
+          </div>
+        </aside>
+
+        <section className="relative m-3 ml-0 flex min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+          <header className="flex min-h-[64px] items-center justify-between border-b border-slate-200 px-5">
+            <div className="flex min-w-0 items-center gap-3">
+              {selectedConversation && (
+                <UserAvatar
+                  displayName={selectedTitle}
+                  email={getOtherMember(selectedConversation)?.userEmail}
+                  profilePictureUrl={selectedConversation.type === 'Direct' ? getUserAvatar(getOtherMember(selectedConversation)?.userId) : undefined}
+                  status={selectedConversation.type === 'Direct' ? getUserStatus(getOtherMember(selectedConversation)?.userId) : undefined}
+                  showStatus={selectedConversation.type === 'Direct'}
+                  size="md"
+                />
+              )}
+              <div className="min-w-0">
+                <h2 className="truncate text-xl font-semibold text-slate-900">{selectedTitle}</h2>
+                {selectedConversation && (
+                  <div className="mt-1 flex gap-4 text-sm">
+                    {(['chat', 'files', 'photos'] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setActiveTab(tab)}
+                        className={`border-b-2 pb-2 capitalize ${
+                          activeTab === tab ? 'border-indigo-600 text-slate-950' : 'border-transparent text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        {tab}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => navigate('/create-meeting')} className="rounded-md px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Video</button>
+              <button onClick={() => navigate('/create-meeting')} className="rounded-md px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Call</button>
+              <button onClick={() => setNewChatOpen(true)} className="rounded-md px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Add</button>
+              <button onClick={() => setChatSearch('')} className="rounded-md px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Search</button>
+              <button className="rounded-md px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">More</button>
+            </div>
+          </header>
 
           {error && <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
           {isDraggingAttachment && selectedConversation && (
-            <div className="pointer-events-none absolute inset-x-4 bottom-24 top-24 z-20 flex items-center justify-center rounded-md border-2 border-dashed border-blue-400 bg-blue-50/90 text-sm font-semibold text-blue-800">
+            <div className="pointer-events-none absolute inset-x-4 bottom-24 top-24 z-20 flex items-center justify-center rounded-md border-2 border-dashed border-indigo-400 bg-indigo-50/90 text-sm font-semibold text-indigo-800">
               Drop files to share
             </div>
           )}
 
-          <div className="flex-1 space-y-3 overflow-y-auto bg-slate-50 p-4">
+          <main
+            onDragOver={handleDragOver}
+            onDragLeave={() => setIsDraggingAttachment(false)}
+            onDrop={handleDrop}
+            className="min-h-0 flex-1 overflow-y-auto bg-white px-8 py-6"
+          >
             {!selectedConversation ? (
-              <div className="flex h-full items-center justify-center text-sm text-slate-500">Choose or create a chat.</div>
+              <div className="flex h-full items-center justify-center text-sm text-slate-500">Choose a chat or start a new one.</div>
+            ) : activeTab === 'files' ? (
+              <div className="mx-auto max-w-3xl space-y-3">
+                {selectedFiles.length === 0 ? (
+                  <p className="text-sm text-slate-500">No files shared in this chat yet.</p>
+                ) : selectedFiles.map((message) => (
+                  <div key={message.id} className="flex items-center justify-between gap-3 rounded-md border border-slate-200 px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-900">{message.attachmentFileName || 'Attachment'}</p>
+                      <p className="text-xs text-slate-500">{message.senderName} - {formatFileSize(message.attachmentSizeBytes)}</p>
+                    </div>
+                    <button onClick={() => downloadAttachment(message)} className="rounded-md bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700">
+                      Download
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : activeTab === 'photos' ? (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {selectedPhotos.length === 0 ? (
+                  <p className="text-sm text-slate-500">No photos shared in this chat yet.</p>
+                ) : selectedPhotos.map((message) => (
+                  <button key={message.id} onClick={() => downloadAttachment(message)} className="overflow-hidden rounded-md border border-slate-200 bg-slate-50 text-left">
+                    <img src={resolveApiAssetUrl(message.attachmentUrl)} alt={message.attachmentFileName || 'Shared photo'} className="h-44 w-full object-cover" />
+                    <span className="block truncate px-3 py-2 text-xs text-slate-600">{message.attachmentFileName || 'Photo'}</span>
+                  </button>
+                ))}
+              </div>
             ) : messages.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-slate-500">Start the conversation.</div>
             ) : (
-              messages.map((message) => {
-                const isMine = message.senderId === user?.id;
-                return (
-                  <div key={message.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[75%] rounded-md px-3 py-2 text-sm ${isMine ? 'bg-blue-600 text-white' : 'bg-white text-slate-900 shadow-sm'}`}>
-                      <div className="mb-1 flex items-center justify-between gap-3 text-xs opacity-75">
-                        <span>{isMine ? 'You' : message.senderName}</span>
-                        <span>{formatMessageTime(message.sentAt)}</span>
-                      </div>
-                      {message.message && <FormattedMessage message={message.message} isMine={isMine} />}
-                      {message.attachmentUrl && (
-                        <div className={`mt-2 rounded-md border px-3 py-2 ${isMine ? 'border-white/30 bg-white/10' : 'border-slate-200 bg-slate-50'}`}>
-                          <p className="break-words text-sm font-semibold">{message.attachmentFileName || 'Attachment'}</p>
-                          <p className={`mt-1 text-xs ${isMine ? 'text-blue-50' : 'text-slate-500'}`}>
-                            {[message.attachmentContentType, formatFileSize(message.attachmentSizeBytes)].filter(Boolean).join(' - ') || 'File'}
-                          </p>
-                          <button
-                            onClick={() => downloadAttachment(message)}
-                            className={`mt-2 rounded-md px-3 py-1.5 text-xs font-semibold ${
-                              isMine
-                                ? 'bg-white text-blue-700 hover:bg-blue-50'
-                                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
-                            }`}
-                          >
-                            Download
-                          </button>
-                        </div>
+              <div className="mx-auto max-w-5xl space-y-5">
+                {messages.map((message) => {
+                  const isMine = message.senderId === user?.id;
+                  return (
+                    <div key={message.id} className={`flex items-end gap-2 ${isMine ? 'justify-end' : 'justify-start'}`}>
+                      {!isMine && (
+                        <UserAvatar
+                          displayName={message.senderName}
+                          profilePictureUrl={getUserAvatar(message.senderId)}
+                          status={getUserStatus(message.senderId)}
+                          showStatus
+                          size="sm"
+                        />
                       )}
+                      {!isMine && (
+                        <span className="self-start pt-1 text-xs text-slate-500">{message.senderName}</span>
+                      )}
+                      <div className={`max-w-[620px] rounded-md px-4 py-3 text-sm shadow-sm ${
+                        isMine ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-900'
+                      }`}>
+                        <div className={`mb-1 text-xs ${isMine ? 'text-indigo-100' : 'text-slate-500'}`}>{formatMessageTime(message.sentAt)}</div>
+                        {message.message && <FormattedMessage message={message.message} isMine={isMine} />}
+                        {message.attachmentUrl && (
+                          <div className={`mt-3 overflow-hidden rounded-md border ${isMine ? 'border-white/20 bg-white/10' : 'border-slate-200 bg-white'}`}>
+                            {isImageAttachment(message) && (
+                              <img src={resolveApiAssetUrl(message.attachmentUrl)} alt={message.attachmentFileName || 'Attachment'} className="max-h-64 w-full object-cover" />
+                            )}
+                            <div className="px-3 py-2">
+                              <p className="break-words text-sm font-semibold">{message.attachmentFileName || 'Attachment'}</p>
+                              <p className={`mt-1 text-xs ${isMine ? 'text-indigo-50' : 'text-slate-500'}`}>
+                                {[message.attachmentContentType, formatFileSize(message.attachmentSizeBytes)].filter(Boolean).join(' - ') || 'File'}
+                              </p>
+                              <button
+                                onClick={() => downloadAttachment(message)}
+                                className={`mt-2 rounded-md px-3 py-1.5 text-xs font-semibold ${
+                                  isMine ? 'bg-white text-indigo-700 hover:bg-indigo-50' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                                }`}
+                              >
+                                Download
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          <div className="border-t border-slate-200 p-4">
-            {pendingFiles.length > 0 && (
-              <div className="mb-3 space-y-2 rounded-md border border-blue-200 bg-blue-50 p-3">
-                <p className="text-xs font-semibold text-blue-900">Ready to send</p>
-                <div className="flex flex-wrap gap-2">
-                  {pendingFiles.map((file, index) => (
-                    <span key={fileKey(file)} className="inline-flex max-w-full items-center gap-2 rounded-md bg-white px-2.5 py-1.5 text-xs text-slate-700 ring-1 ring-blue-100">
-                      <span className="truncate">{file.name}</span>
-                      <span className="shrink-0 text-slate-400">{formatFileSize(file.size)}</span>
-                      <button
-                        type="button"
-                        onClick={() => removePendingFile(index)}
-                        className="shrink-0 font-semibold text-slate-500 hover:text-red-600"
-                      >
-                        Remove
-                      </button>
-                    </span>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             )}
-            {attachmentStatus && (
-              <p className="mb-3 text-sm font-medium text-amber-700">{attachmentStatus}</p>
+          </main>
+
+          <footer className="border-t border-slate-200 bg-white px-8 py-4">
+            {pendingFiles.length > 0 && (
+              <div className="mb-3 flex flex-wrap gap-2">
+                {pendingFiles.map((file, index) => (
+                  <span key={fileKey(file)} className="inline-flex max-w-full items-center gap-2 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs text-slate-700 ring-1 ring-indigo-100">
+                    <span className="truncate">{file.name}</span>
+                    <span className="shrink-0 text-slate-400">{formatFileSize(file.size)}</span>
+                    <button type="button" onClick={() => removePendingFile(index)} className="shrink-0 font-semibold text-slate-500 hover:text-red-600">
+                      Remove
+                    </button>
+                  </span>
+                ))}
+              </div>
             )}
-            <div className="flex items-end gap-2">
+            {attachmentStatus && <p className="mb-3 text-sm font-medium text-amber-700">{attachmentStatus}</p>}
+            <div className="mx-auto flex max-w-5xl items-end gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 shadow-sm">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -875,14 +1051,6 @@ export default function Chat() {
                   event.target.value = '';
                 }}
               />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!selectedConversation || sending}
-                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                Attach
-              </button>
               <textarea
                 value={messageDraft}
                 onChange={(event) => setMessageDraft(event.target.value)}
@@ -906,80 +1074,88 @@ export default function Chat() {
                     });
                   }
                 }}
-                rows={Math.min(6, Math.max(2, messageDraft.split('\n').length))}
+                rows={Math.min(5, Math.max(1, messageDraft.split('\n').length))}
                 disabled={!selectedConversation || sending}
-                placeholder={selectedConversation ? 'Type a message or drop files here' : 'Select a chat first'}
-                className="max-h-40 min-w-0 flex-1 resize-none rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 disabled:bg-slate-100"
+                placeholder={selectedConversation ? 'Type a message' : 'Select a chat first'}
+                className="max-h-36 min-w-0 flex-1 resize-none border-0 px-1 py-1 text-sm outline-none disabled:bg-white"
               />
+              <button type="button" onClick={() => fileInputRef.current?.click()} disabled={!selectedConversation || sending} className="rounded-md px-2 py-1 text-sm font-semibold text-slate-500 hover:bg-slate-100 disabled:opacity-50">
+                Attach
+              </button>
+              <button type="button" onClick={() => fileInputRef.current?.click()} disabled={!selectedConversation || sending} className="rounded-md px-2 py-1 text-sm font-semibold text-slate-500 hover:bg-slate-100 disabled:opacity-50">
+                Image
+              </button>
               <button
                 onClick={sendMessage}
                 disabled={!selectedConversation || sending || (!messageDraft.trim() && pendingFiles.length === 0)}
-                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
               >
                 {sending ? 'Sending...' : 'Send'}
               </button>
             </div>
-          </div>
+          </footer>
         </section>
+      </div>
 
-        <section className="rounded-md border border-slate-200 bg-white p-4">
-          <h2 className="font-semibold">New chat</h2>
-          <div className="mt-3 rounded-md border border-slate-300 bg-white p-1">
-            <button
-              onClick={() => {
-                setMode('direct');
-                setSelectedUserIds([]);
-                setInviteEmails([]);
-                setRequestStatus('');
-              }}
-              className={`rounded px-3 py-1.5 text-sm font-medium ${mode === 'direct' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
-            >
-              Direct
-            </button>
-            <button
-              onClick={() => {
-                setMode('group');
-                setSelectedUserIds([]);
-                setInviteEmails([]);
-                setRequestStatus('');
-              }}
-              className={`rounded px-3 py-1.5 text-sm font-medium ${mode === 'group' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
-            >
-              Group
-            </button>
-          </div>
-
-          {mode === 'group' && (
+      {newChatOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/30">
+          <section className="h-full w-full max-w-md overflow-y-auto bg-white p-5 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-slate-900">New chat</h2>
+              <button onClick={() => setNewChatOpen(false)} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">
+                Close
+              </button>
+            </div>
+            <div className="mt-4 rounded-md border border-slate-300 bg-white p-1">
+              <button
+                onClick={() => {
+                  setMode('direct');
+                  setSelectedUserIds([]);
+                  setInviteEmails([]);
+                  setRequestStatus('');
+                }}
+                className={`rounded px-3 py-1.5 text-sm font-medium ${mode === 'direct' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
+              >
+                Direct
+              </button>
+              <button
+                onClick={() => {
+                  setMode('group');
+                  setSelectedUserIds([]);
+                  setInviteEmails([]);
+                  setRequestStatus('');
+                }}
+                className={`rounded px-3 py-1.5 text-sm font-medium ${mode === 'group' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
+              >
+                Group
+              </button>
+            </div>
+            {mode === 'group' && (
+              <input
+                value={groupTitle}
+                onChange={(event) => setGroupTitle(event.target.value)}
+                placeholder="Group name"
+                className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+              />
+            )}
             <input
-              value={groupTitle}
-              onChange={(event) => setGroupTitle(event.target.value)}
-              placeholder="Group name"
-              className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+              value={userQuery}
+              onChange={(event) => setUserQuery(event.target.value)}
+              placeholder="Search people or type an email"
+              className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
             />
-          )}
 
-          <input
-            value={userQuery}
-            onChange={(event) => setUserQuery(event.target.value)}
-            placeholder="Search people"
-            className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-          />
-
-          <div className="mt-3 max-h-72 space-y-2 overflow-y-auto">
-            {users.length === 0 ? (
-              <div className="space-y-2">
-                <p className="text-sm text-slate-500">No registered users found.</p>
-                {canAddEmailInvite && (
-                  <button
-                    onClick={addEmailInvite}
-                    className="w-full rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-left text-sm font-medium text-blue-800 hover:bg-blue-100"
-                  >
-                    Add email invite: {userQuery.trim()}
-                  </button>
-                )}
-              </div>
-            ) : (
-              users.map((item) => {
+            <div className="mt-4 max-h-[48vh] space-y-2 overflow-y-auto">
+              {users.length === 0 ? (
+                <div className="space-y-2">
+                  <p className="text-sm text-slate-500">No registered users found.</p>
+                  {canAddEmailInvite && (
+                    <button onClick={addEmailInvite} className="w-full rounded-md border border-indigo-300 bg-indigo-50 px-3 py-2 text-left text-sm font-medium text-indigo-800 hover:bg-indigo-100">
+                      Add email invite: {userQuery.trim()}
+                    </button>
+                  )}
+                </div>
+              ) : users.map((item) => {
                 const isSelected = selectedUserIds.includes(item.id);
                 return (
                   <button
@@ -989,12 +1165,10 @@ export default function Chat() {
                       setRequestStatus('');
                     }}
                     className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
-                      isSelected
-                        ? 'border-blue-400 bg-blue-50 ring-1 ring-blue-200'
-                        : 'border-slate-200 hover:bg-slate-50'
+                      isSelected ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-200' : 'border-slate-200 hover:bg-slate-50'
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-3">
                         <UserAvatar
                           displayName={displayUser(item)}
@@ -1005,58 +1179,54 @@ export default function Chat() {
                           size="md"
                         />
                         <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium">{displayUser(item)}</p>
-                          <UserStatusBadge status={getUserStatus(item.id)} />
-                        </div>
-                        <p className="text-xs text-slate-500">{item.email}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="truncate font-medium">{displayUser(item)}</p>
+                            <UserStatusBadge status={getUserStatus(item.id)} />
+                          </div>
+                          <p className="truncate text-xs text-slate-500">{item.email}</p>
                         </div>
                       </div>
-                      <span className={`rounded px-2 py-1 text-xs font-semibold ${isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                      <span className={`rounded px-2 py-1 text-xs font-semibold ${isSelected ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
                         {isSelected ? 'Selected' : 'Select'}
                       </span>
                     </div>
                   </button>
                 );
-              })
+              })}
+            </div>
+
+            {selectedPeople.length > 0 && (
+              <div className="mt-3 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                Sending to {selectedPeople.map(displayUser).join(', ')}
+              </div>
             )}
-          </div>
+            {inviteEmails.length > 0 && (
+              <div className="mt-3 space-y-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <p className="font-semibold">Pending email invite{inviteEmails.length === 1 ? '' : 's'}</p>
+                {inviteEmails.map((email) => (
+                  <div key={email} className="flex items-center justify-between gap-2">
+                    <span className="truncate">{email}</span>
+                    <button onClick={() => setInviteEmails((items) => items.filter((item) => item !== email))} className="font-semibold text-amber-900 hover:underline">
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
 
-          {selectedPeople.length > 0 && (
-            <div className="mt-3 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              Sending to {selectedPeople.map(displayUser).join(', ')}
-            </div>
-          )}
-
-          {inviteEmails.length > 0 && (
-            <div className="mt-3 space-y-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              <p className="font-semibold">Pending email invite{inviteEmails.length === 1 ? '' : 's'}</p>
-              {inviteEmails.map((email) => (
-                <div key={email} className="flex items-center justify-between gap-2">
-                  <span className="truncate">{email}</span>
-                  <button
-                    onClick={() => setInviteEmails((items) => items.filter((item) => item !== email))}
-                    className="font-semibold text-amber-900 hover:underline"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <button
-            onClick={createConversation}
-            disabled={recipientCount === 0 || (mode === 'direct' && recipientCount !== 1)}
-            className="mt-4 w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-          >
-            {requestStatus === 'Sending request...' ? 'Sending...' : 'Send chat request'}
-          </button>
-          {requestStatus && requestStatus !== 'Sending request...' && (
-            <p className="mt-2 text-sm font-medium text-emerald-700">{requestStatus}</p>
-          )}
-        </section>
-      </main>
+            <button
+              onClick={createConversation}
+              disabled={recipientCount === 0 || (mode === 'direct' && recipientCount !== 1)}
+              className="mt-5 w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {requestStatus === 'Sending request...' ? 'Sending...' : 'Send chat request'}
+            </button>
+            {requestStatus && requestStatus !== 'Sending request...' && (
+              <p className="mt-2 text-sm font-medium text-emerald-700">{requestStatus}</p>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   );
 }
