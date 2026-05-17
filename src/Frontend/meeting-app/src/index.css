@@ -77,6 +77,10 @@
     border-color: var(--samvaad-focus-border) !important;
   }
 
+  [data-samvaad-theme='focus'] .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+    border-color: var(--samvaad-focus-border) !important;
+  }
+
   [data-samvaad-theme='focus'] input,
   [data-samvaad-theme='focus'] textarea,
   [data-samvaad-theme='focus'] select {

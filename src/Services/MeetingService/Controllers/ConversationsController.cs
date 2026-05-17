@@ -11,15 +11,15 @@ namespace MeetingService.Controllers;
 [Authorize]
 public class ConversationsController : ControllerBase
 {
-    private const long MaxAttachmentBytes = 50 * 1024 * 1024;
+    private const long MaxAttachmentRequestBytes = 512 * 1024 * 1024;
     private readonly IMeetingService _meetingService;
-    private readonly IWebHostEnvironment _environment;
+    private readonly IOrganizationStorageService _storageService;
     private readonly ILogger<ConversationsController> _logger;
 
-    public ConversationsController(IMeetingService meetingService, IWebHostEnvironment environment, ILogger<ConversationsController> logger)
+    public ConversationsController(IMeetingService meetingService, IOrganizationStorageService storageService, ILogger<ConversationsController> logger)
     {
         _meetingService = meetingService;
-        _environment = environment;
+        _storageService = storageService;
         _logger = logger;
     }
 
@@ -311,8 +311,8 @@ public class ConversationsController : ControllerBase
     }
 
     [HttpPost("{conversationId}/messages/attachments")]
-    [RequestSizeLimit(MaxAttachmentBytes)]
-    [RequestFormLimits(MultipartBodyLengthLimit = MaxAttachmentBytes)]
+    [RequestSizeLimit(MaxAttachmentRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaxAttachmentRequestBytes)]
     public async Task<ActionResult<ConversationMessageDto>> SendAttachment(Guid conversationId, [FromForm] SendConversationAttachmentRequest request)
     {
         if (!TryGetCurrentUserId(out var userId))
@@ -325,9 +325,11 @@ public class ConversationsController : ControllerBase
             return BadRequest("Attachment file is required");
         }
 
-        if (request.File.Length > MaxAttachmentBytes)
+        var organizationSettings = await _storageService.GetSettingsAsync();
+        var maxAttachmentBytes = (long)organizationSettings.MaxAttachmentMegabytes * 1024 * 1024;
+        if (request.File.Length > maxAttachmentBytes)
         {
-            return BadRequest("Attachment must be 50 MB or smaller");
+            return BadRequest($"Attachment must be {organizationSettings.MaxAttachmentMegabytes} MB or smaller");
         }
 
         if (!await _meetingService.CanAccessConversationAsync(conversationId, userId))
@@ -345,16 +347,7 @@ public class ConversationsController : ControllerBase
 
             var extension = Path.GetExtension(originalFileName);
             var storedFileName = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}{extension}";
-            var attachmentDirectory = Path.Combine(_environment.ContentRootPath, "ChatAttachments", conversationId.ToString());
-            Directory.CreateDirectory(attachmentDirectory);
-
-            var filePath = Path.Combine(attachmentDirectory, storedFileName);
-            await using (var stream = System.IO.File.Create(filePath))
-            {
-                await request.File.CopyToAsync(stream);
-            }
-
-            var attachmentUrl = $"/api/conversations/{conversationId}/attachments/{storedFileName}";
+            var storedFile = await _storageService.SaveAsync(OrganizationFileKind.ChatAttachment, conversationId, request.File, storedFileName);
             var contentType = string.IsNullOrWhiteSpace(request.File.ContentType)
                 ? "application/octet-stream"
                 : request.File.ContentType;
@@ -366,7 +359,7 @@ public class ConversationsController : ControllerBase
                 Message = request.Message ?? string.Empty,
                 ReplyToMessageId = request.ReplyToMessageId,
                 AttachmentFileName = originalFileName,
-                AttachmentUrl = attachmentUrl,
+                AttachmentUrl = storedFile.PublicUrl,
                 AttachmentContentType = contentType,
                 AttachmentSizeBytes = request.File.Length
             });
@@ -397,9 +390,8 @@ public class ConversationsController : ControllerBase
             return NotFound();
         }
 
-        var safeFileName = Path.GetFileName(fileName);
-        var filePath = Path.Combine(_environment.ContentRootPath, "ChatAttachments", conversationId.ToString(), safeFileName);
-        if (!System.IO.File.Exists(filePath))
+        var filePath = await _storageService.GetPhysicalPathAsync(OrganizationFileKind.ChatAttachment, conversationId, fileName);
+        if (filePath == null)
         {
             return NotFound();
         }
@@ -434,6 +426,7 @@ public class ConversationsController : ControllerBase
         return new ConversationDto
         {
             Id = conversation.Id,
+            OrganizationId = conversation.OrganizationId,
             Type = conversation.Type.ToString(),
             Title = conversation.Title,
             Members = conversation.Members
@@ -476,6 +469,7 @@ public class ConversationsController : ControllerBase
             ConversationId = message.ConversationId,
             SenderId = message.SenderId,
             SenderName = message.SenderName,
+            ClientMessageId = message.ClientMessageId,
             Message = message.Message,
             AttachmentFileName = message.AttachmentFileName,
             AttachmentUrl = message.AttachmentUrl,

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AppShell from '../components/AppShell';
+import CalendarSyncPanel from '../components/CalendarSyncPanel';
 import { ProfileStatusMenu, UserAvatar, UserStatus, UserStatusBadge } from '../components/UserStatus';
-import { meetingAPI, userAPI } from '../services/api';
+import { getMeetingJoinPath, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, userAPI } from '../services/api';
 import { initializeSignalR, joinUserNotifications, notifyUserStatusChanged, onMeetingInvite, startSignalR } from '../services/signalR';
 import { useAuthStore } from '../store/authStore';
 import { Meeting, useMeetingStore } from '../store/meetingStore';
@@ -160,7 +161,7 @@ function toEditMeetingForm(meeting: Meeting): EditMeetingForm {
 }
 
 function getJoinLink(meeting: Meeting) {
-  return meeting.meetingLink || `${window.location.origin}/meeting/${meeting.id}`;
+  return getMeetingJoinUrl(meeting.id, meeting.meetingLink);
 }
 
 function getRecordingLink(meeting: Meeting) {
@@ -246,7 +247,7 @@ function showBrowserMeetingNotification(meeting: Meeting) {
 
   notification.onclick = () => {
     window.focus();
-    window.location.href = meeting.meetingLink || `/meeting/${meeting.id}`;
+    window.location.href = getMeetingJoinUrl(meeting.id, meeting.meetingLink);
   };
 }
 
@@ -459,7 +460,7 @@ function QuickScheduleModal({
 }) {
   const startDate = new Date(`${form.date}T${form.startTime}`);
   const endDate = new Date(startDate.getTime() + Number(form.durationMinutes) * 60000);
-  const joinLink = createdMeeting?.meetingLink || (createdMeeting ? `${window.location.origin}/meeting/${createdMeeting.id}` : '');
+  const joinLink = createdMeeting ? getMeetingJoinUrl(createdMeeting.id, createdMeeting.meetingLink) : '';
   const attendees = parseAttendees(form.attendeeText);
 
   return (
@@ -1230,7 +1231,7 @@ export default function Dashboard() {
       return;
     }
 
-    const joinLink = quickCreatedMeeting.meetingLink || `${window.location.origin}/meeting/${quickCreatedMeeting.id}`;
+    const joinLink = getMeetingJoinUrl(quickCreatedMeeting.id, quickCreatedMeeting.meetingLink);
     try {
       await navigator.clipboard.writeText(joinLink);
       setQuickCopyStatus('Copied');
@@ -1384,13 +1385,13 @@ export default function Dashboard() {
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => navigate('/create-meeting')}
+              onClick={() => navigate(getOrganizationScopedPath('/create-meeting'))}
               className="rounded-md bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700"
             >
               New meeting
             </button>
             <button
-              onClick={() => navigate('/chat')}
+              onClick={() => navigate(getOrganizationScopedPath('/chat'))}
               className="rounded-md border border-slate-300 bg-white px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
             >
               Chat
@@ -1500,6 +1501,8 @@ export default function Dashboard() {
           )}
         </div>
 
+        <CalendarSyncPanel />
+
         {notices.length > 0 && (
           <div className="mb-6 space-y-2">
             {notices.map((notice, index) => (
@@ -1507,7 +1510,7 @@ export default function Dashboard() {
                 <span>{notice}</span>
                 {sortedMeetings[0] && (
                   <button
-                    onClick={() => navigate(`/meeting/${sortedMeetings[0].id}`)}
+                    onClick={() => navigate(getMeetingJoinPath(sortedMeetings[0].id))}
                     className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
                   >
                     Join
@@ -1573,7 +1576,7 @@ export default function Dashboard() {
           <div className="rounded-md border border-slate-200 bg-white py-12 text-center">
             <p className="mb-4 text-slate-500">You haven't created any meetings yet.</p>
             <button
-              onClick={() => navigate('/create-meeting')}
+              onClick={() => navigate(getOrganizationScopedPath('/create-meeting'))}
               className="rounded-md bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700"
             >
               Create your first meeting
@@ -1600,7 +1603,7 @@ export default function Dashboard() {
           onClose={closeQuickSchedule}
           onSubmit={submitQuickSchedule}
           onCopy={copyQuickJoinLink}
-          onJoin={(meeting) => navigate(`/meeting/${meeting.id}`)}
+          onJoin={(meeting) => navigate(getMeetingJoinPath(meeting.id))}
         />
       )}
       {selectedMeeting && meetingEditForm && (
@@ -1613,7 +1616,7 @@ export default function Dashboard() {
           error={meetingModalError}
           copyStatus={meetingCopyStatus}
           onClose={closeMeetingDetails}
-          onJoin={() => navigate(`/meeting/${selectedMeeting.id}`)}
+          onJoin={() => navigate(getMeetingJoinPath(selectedMeeting.id))}
           onCopy={copyMeetingJoinLink}
           onEdit={() => setMeetingEditMode(true)}
           onEditChange={updateMeetingEditForm}

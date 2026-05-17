@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import BrandMark from '../components/BrandMark';
-import { authAPI } from '../services/api';
+import { authAPI, getOrganizationScopedPath } from '../services/api';
 import { useAuthStore } from '../store/authStore';
 
 export default function Register() {
@@ -58,7 +58,7 @@ export default function Register() {
         data.token
       );
 
-      navigate('/dashboard', { replace: true });
+      navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
     } catch (err: any) {
       setError(err.response?.data?.message || 'Registration failed');
     } finally {

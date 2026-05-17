@@ -23,6 +23,7 @@ builder.Host.UseSerilog();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddDataProtection();
 
 builder.Services.AddDbContext<MeetingDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
@@ -51,13 +52,25 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IOrganizationTenantContext, OrganizationTenantContext>();
 builder.Services.AddScoped<IMeetingService, MeetingServiceImpl>();
+builder.Services.AddScoped<ITeamSpaceService, TeamSpaceService>();
+builder.Services.AddScoped<IOrganizationStorageService, OrganizationStorageService>();
+builder.Services.AddScoped<IExternalCalendarSyncService, ExternalCalendarSyncService>();
 builder.Services.AddHostedService<ScheduledConversationMessageDispatcher>();
+builder.Services.AddHostedService<OrganizationStorageRetentionWorker>();
+builder.Services.AddHttpClient("CalendarSync");
 builder.Services.AddHttpClient("NotificationService", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["NotificationService:BaseUrl"] ?? "http://localhost:5003");
 });
+builder.Services.AddHttpClient("OrganizationService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["OrganizationService:BaseUrl"] ?? "http://localhost:5004");
+});
 builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection("Email"));
+builder.Services.Configure<CalendarSyncOptions>(builder.Configuration.GetSection("CalendarSync"));
 builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 
 builder.Services.AddCors(options =>

@@ -4,6 +4,15 @@ export const API_BASE_URL = 'http://localhost:5000/api';
 export const API_ORIGIN = API_BASE_URL.replace(/\/api$/, '');
 const ACTIVE_ACCOUNT_ID_KEY = 'activeAuthAccountId';
 const ACCOUNTS_KEY = 'authAccounts';
+const ACTIVE_ORGANIZATION_KEY = 'samvaadActiveOrganization';
+
+export interface ActiveOrganization {
+  id: string;
+  name: string;
+  slug: string;
+  localAppUrl?: string;
+  primaryDomain?: string;
+}
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -42,6 +51,80 @@ function getStoredAuthToken() {
   return localStorage.getItem('authToken');
 }
 
+export function getActiveOrganization(): ActiveOrganization | null {
+  try {
+    const value = localStorage.getItem(ACTIVE_ORGANIZATION_KEY);
+    return value ? JSON.parse(value) as ActiveOrganization : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveOrganization(organization: ActiveOrganization) {
+  localStorage.setItem(ACTIVE_ORGANIZATION_KEY, JSON.stringify(organization));
+  window.dispatchEvent(new CustomEvent('samvaad-organization-changed', { detail: organization }));
+}
+
+export function clearActiveOrganization() {
+  localStorage.removeItem(ACTIVE_ORGANIZATION_KEY);
+  window.dispatchEvent(new CustomEvent('samvaad-organization-changed'));
+}
+
+export function getOrganizationScopedPath(path: string, organization = getActiveOrganization()) {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return organization?.slug
+    ? `/org/${encodeURIComponent(organization.slug)}${normalizedPath}`
+    : normalizedPath;
+}
+
+export function getOrganizationScopedUrl(path: string, organization = getActiveOrganization()) {
+  const origin = typeof window === 'undefined' ? 'http://localhost:5173' : window.location.origin;
+  return `${origin}${getOrganizationScopedPath(path, organization)}`;
+}
+
+function normalizeQuery(query = '') {
+  return query && !query.startsWith('?') ? `?${query}` : query;
+}
+
+function appendQuery(url: string, query = '') {
+  const normalizedQuery = normalizeQuery(query);
+  if (!normalizedQuery) {
+    return url;
+  }
+
+  const joiner = url.includes('?') ? '&' : '?';
+  return `${url}${joiner}${normalizedQuery.replace(/^\?/, '')}`;
+}
+
+export function getMeetingJoinPath(meetingId: string, query = '') {
+  const normalizedQuery = normalizeQuery(query);
+  return getOrganizationScopedPath(`/meeting/${meetingId}${normalizedQuery}`);
+}
+
+export function getMeetingJoinUrl(meetingId: string, meetingLink?: string | null, query = '') {
+  const organization = getActiveOrganization();
+  const normalizedQuery = normalizeQuery(query);
+  if (organization?.slug) {
+    return getOrganizationScopedUrl(`/meeting/${meetingId}${normalizedQuery}`, organization);
+  }
+
+  return meetingLink
+    ? appendQuery(meetingLink, normalizedQuery)
+    : getOrganizationScopedUrl(`/meeting/${meetingId}${normalizedQuery}`, organization);
+}
+
+function setHeader(config: any, name: string, value: string) {
+  if (typeof config.headers?.set === 'function') {
+    config.headers.set(name, value);
+    return;
+  }
+
+  config.headers = {
+    ...(config.headers || {}),
+    [name]: value,
+  };
+}
+
 // Add token to requests
 apiClient.interceptors.request.use((config) => {
   if (config.data instanceof FormData) {
@@ -50,8 +133,18 @@ apiClient.interceptors.request.use((config) => {
 
   const token = getStoredAuthToken();
   if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+    setHeader(config, 'Authorization', `Bearer ${token}`);
   }
+
+  const organization = getActiveOrganization();
+  if (organization?.id) {
+    setHeader(config, 'X-Organization-Id', organization.id);
+  }
+
+  if (organization?.slug) {
+    setHeader(config, 'X-Organization-Slug', organization.slug);
+  }
+
   return config;
 });
 
@@ -148,6 +241,69 @@ export const meetingAPI = {
 
   uploadRecording: (meetingId: string, data: FormData) =>
     apiClient.post(`/meetings/${meetingId}/recordings`, data),
+};
+
+export const organizationAPI = {
+  getCurrent: () =>
+    apiClient.get('/organizations/current'),
+
+  getBySlug: (slug: string) =>
+    apiClient.get(`/organizations/slug/${encodeURIComponent(slug)}`),
+
+  updateCurrent: (data: any) =>
+    apiClient.put('/organizations/current', data),
+
+  testStorage: () =>
+    apiClient.post('/organizations/current/storage/test'),
+};
+
+export const calendarAPI = {
+  getProviders: () =>
+    apiClient.get('/calendar-connections/providers'),
+
+  getConnections: () =>
+    apiClient.get('/calendar-connections'),
+
+  getAuthorizationUrl: (provider: string, redirectUri: string) =>
+    apiClient.post(`/calendar-connections/${encodeURIComponent(provider)}/authorize`, { redirectUri }),
+
+  completeConnection: (provider: string, code: string, redirectUri: string) =>
+    apiClient.post(`/calendar-connections/${encodeURIComponent(provider)}/callback`, { code, redirectUri }),
+
+  disconnect: (provider: string) =>
+    apiClient.delete(`/calendar-connections/${encodeURIComponent(provider)}`),
+};
+
+export const teamSpaceAPI = {
+  getTeams: () =>
+    apiClient.get('/team-spaces'),
+
+  getTeam: (teamId: string) =>
+    apiClient.get(`/team-spaces/${teamId}`),
+
+  createTeam: (data: any) =>
+    apiClient.post('/team-spaces', data),
+
+  addMembers: (teamId: string, data: any) =>
+    apiClient.post(`/team-spaces/${teamId}/members`, data),
+
+  createChannel: (teamId: string, data: any) =>
+    apiClient.post(`/team-spaces/${teamId}/channels`, data),
+
+  createTab: (channelId: string, data: any) =>
+    apiClient.post(`/team-spaces/channels/${channelId}/tabs`, data),
+
+  deleteTab: (tabId: string) =>
+    apiClient.delete(`/team-spaces/tabs/${tabId}`),
+
+  getFiles: (channelId: string) =>
+    apiClient.get(`/team-spaces/channels/${channelId}/files`),
+
+  getMeetings: (channelId: string) =>
+    apiClient.get(`/team-spaces/channels/${channelId}/meetings`),
+
+  createMeeting: (channelId: string, data: any) =>
+    apiClient.post(`/team-spaces/channels/${channelId}/meetings`, data),
 };
 
 export const conversationAPI = {

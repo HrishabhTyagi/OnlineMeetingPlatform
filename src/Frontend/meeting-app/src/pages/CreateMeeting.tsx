@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import BrandMark from '../components/BrandMark';
 import { UserAvatar, UserStatusBadge } from '../components/UserStatus';
-import { meetingAPI, userAPI } from '../services/api';
+import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, organizationAPI, userAPI } from '../services/api';
 import { useMeetingStore } from '../store/meetingStore';
 
 const durationOptions = [15, 30, 45, 60, 90, 120, 180];
@@ -120,6 +120,16 @@ export default function CreateMeeting() {
     userAPI.searchUsers()
       .then((response) => setKnownUsers(response.data))
       .catch(() => setKnownUsers([]));
+
+    organizationAPI.getCurrent()
+      .then((response) => {
+        setFormData((current) => ({
+          ...current,
+          lobbyEnabled: response.data.requireLobbyByDefault ?? current.lobbyEnabled,
+          allowRecording: response.data.enableRecordingByDefault ?? current.allowRecording,
+        }));
+      })
+      .catch(() => undefined);
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -168,8 +178,8 @@ export default function CreateMeeting() {
         isRecorded: formData.isRecorded,
       });
       addMeeting(response.data);
-      notifyMeetingCreated(response.data.title, response.data.meetingLink || `/meeting/${response.data.id}`);
-      navigate('/dashboard', { replace: true });
+      notifyMeetingCreated(response.data.title, getMeetingJoinUrl(response.data.id, response.data.meetingLink));
+      navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
     } catch (err: any) {
       setError(err.response?.data?.message || err.response?.data || 'Failed to create meeting');
     } finally {
@@ -195,7 +205,7 @@ export default function CreateMeeting() {
             </div>
           </div>
           <button
-            onClick={() => navigate('/dashboard')}
+            onClick={() => navigate(getOrganizationScopedPath('/dashboard'))}
             className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
             Close
@@ -413,7 +423,7 @@ export default function CreateMeeting() {
           <div className="flex justify-end gap-3 border-t border-slate-200 pt-5">
             <button
               type="button"
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate(getOrganizationScopedPath('/dashboard'))}
               className="rounded-md border border-slate-300 bg-white px-5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
               Cancel

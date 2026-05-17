@@ -34,9 +34,31 @@ public enum ConversationType
     Group
 }
 
+public enum TeamMemberRole
+{
+    Owner,
+    Member
+}
+
+public enum TeamChannelTabKind
+{
+    Link,
+    Notes,
+    Files,
+    Meetings
+}
+
+public enum ExternalCalendarProvider
+{
+    Google,
+    Outlook
+}
+
 public class Meeting
 {
     public Guid Id { get; set; }
+    public Guid? OrganizationId { get; set; }
+    public Guid? TeamChannelId { get; set; }
     public Guid OrganizerId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
@@ -71,6 +93,7 @@ public class Meeting
     public ICollection<MeetingInvite> Invites { get; set; } = new List<MeetingInvite>();
     public ICollection<LobbyRequest> LobbyRequests { get; set; } = new List<LobbyRequest>();
     public ICollection<MeetingReminder> Reminders { get; set; } = new List<MeetingReminder>();
+    public TeamChannel? TeamChannel { get; set; }
 }
 
 public class Participant
@@ -152,6 +175,7 @@ public class MeetingReminder
 public class Conversation
 {
     public Guid Id { get; set; }
+    public Guid? OrganizationId { get; set; }
     public ConversationType Type { get; set; } = ConversationType.Direct;
     public string? Title { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -182,6 +206,7 @@ public class ConversationMessage
     public Guid ConversationId { get; set; }
     public Guid SenderId { get; set; }
     public string SenderName { get; set; } = string.Empty;
+    public string? ClientMessageId { get; set; }
     public string Message { get; set; } = string.Empty;
     public string? AttachmentFileName { get; set; }
     public string? AttachmentUrl { get; set; }
@@ -238,4 +263,97 @@ public class ConversationInvite
     public DateTime? AcceptedAt { get; set; }
 
     public Conversation Conversation { get; set; } = null!;
+}
+
+public class TeamSpace
+{
+    public Guid Id { get; set; }
+    public Guid? OrganizationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public Guid OwnerUserId { get; set; }
+    public bool IsArchived { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAt { get; set; }
+
+    public ICollection<TeamSpaceMember> Members { get; set; } = new List<TeamSpaceMember>();
+    public ICollection<TeamChannel> Channels { get; set; } = new List<TeamChannel>();
+}
+
+public class TeamSpaceMember
+{
+    public Guid Id { get; set; }
+    public Guid TeamSpaceId { get; set; }
+    public Guid UserId { get; set; }
+    public string UserEmail { get; set; } = string.Empty;
+    public string UserName { get; set; } = string.Empty;
+    public TeamMemberRole Role { get; set; } = TeamMemberRole.Member;
+    public DateTime JoinedAt { get; set; } = DateTime.UtcNow;
+
+    public TeamSpace TeamSpace { get; set; } = null!;
+}
+
+public class TeamChannel
+{
+    public Guid Id { get; set; }
+    public Guid TeamSpaceId { get; set; }
+    public Guid ConversationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public int SortOrder { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAt { get; set; }
+
+    public TeamSpace TeamSpace { get; set; } = null!;
+    public Conversation Conversation { get; set; } = null!;
+    public ICollection<TeamChannelTab> Tabs { get; set; } = new List<TeamChannelTab>();
+    public ICollection<Meeting> Meetings { get; set; } = new List<Meeting>();
+}
+
+public class TeamChannelTab
+{
+    public Guid Id { get; set; }
+    public Guid TeamChannelId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public TeamChannelTabKind Kind { get; set; } = TeamChannelTabKind.Link;
+    public string? Url { get; set; }
+    public string? Content { get; set; }
+    public int SortOrder { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public TeamChannel TeamChannel { get; set; } = null!;
+}
+
+public class CalendarConnection
+{
+    public Guid Id { get; set; }
+    public Guid UserId { get; set; }
+    public ExternalCalendarProvider Provider { get; set; }
+    public string? AccountEmail { get; set; }
+    public string CalendarId { get; set; } = "primary";
+    public string AccessToken { get; set; } = string.Empty;
+    public string? RefreshToken { get; set; }
+    public DateTime ExpiresAtUtc { get; set; }
+    public bool IsEnabled { get; set; } = true;
+    public DateTime? LastSyncAt { get; set; }
+    public string? LastError { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class ExternalCalendarEvent
+{
+    public Guid Id { get; set; }
+    public Guid MeetingId { get; set; }
+    public Guid UserId { get; set; }
+    public ExternalCalendarProvider Provider { get; set; }
+    public string CalendarId { get; set; } = "primary";
+    public string ExternalEventId { get; set; } = string.Empty;
+    public string? HtmlLink { get; set; }
+    public DateTime LastSyncedAt { get; set; } = DateTime.UtcNow;
+    public string? LastError { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    public Meeting Meeting { get; set; } = null!;
 }

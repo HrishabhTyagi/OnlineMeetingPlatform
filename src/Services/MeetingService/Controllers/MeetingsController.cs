@@ -1,6 +1,8 @@
 using System.Security.Claims;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using MeetingService.Data;
 using MeetingService.Models;
 using MeetingService.Services;
 
@@ -11,14 +13,16 @@ namespace MeetingService.Controllers;
 [Authorize]
 public class MeetingsController : ControllerBase
 {
+    private readonly MeetingDbContext _context;
     private readonly IMeetingService _meetingService;
-    private readonly IWebHostEnvironment _environment;
+    private readonly IOrganizationStorageService _storageService;
     private readonly ILogger<MeetingsController> _logger;
 
-    public MeetingsController(IMeetingService meetingService, IWebHostEnvironment environment, ILogger<MeetingsController> logger)
+    public MeetingsController(MeetingDbContext context, IMeetingService meetingService, IOrganizationStorageService storageService, ILogger<MeetingsController> logger)
     {
+        _context = context;
         _meetingService = meetingService;
-        _environment = environment;
+        _storageService = storageService;
         _logger = logger;
     }
 
@@ -69,6 +73,70 @@ public class MeetingsController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error fetching user meetings");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpGet("organizations/{organizationId:guid}/usage")]
+    public async Task<ActionResult<OrganizationMeetingUsageDto>> GetOrganizationUsage(Guid organizationId)
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            var meetings = _context.Meetings.Where(meeting => meeting.OrganizationId == organizationId);
+            var conversationIds = _context.Conversations
+                .Where(conversation => conversation.OrganizationId == organizationId)
+                .Select(conversation => conversation.Id);
+            var conversationMessages = _context.ConversationMessages
+                .Where(message => conversationIds.Contains(message.ConversationId));
+
+            var totalMeetings = await meetings.CountAsync();
+            var upcomingMeetings = await meetings.CountAsync(meeting => meeting.IsActive && meeting.StartTime > now && meeting.Status == MeetingStatus.Scheduled);
+            var activeMeetings = await meetings.CountAsync(meeting => meeting.IsActive && meeting.Status == MeetingStatus.InProgress);
+            var recordedMeetings = await meetings.CountAsync(meeting => !string.IsNullOrWhiteSpace(meeting.RecordingUrl));
+            var meetingInvites = await _context.MeetingInvites.CountAsync(invite => invite.Meeting.OrganizationId == organizationId);
+            var participantJoins = await _context.Participants.CountAsync(participant => participant.Meeting.OrganizationId == organizationId);
+            var conversations = await _context.Conversations.CountAsync(conversation => conversation.OrganizationId == organizationId);
+            var directChatMessages = await conversationMessages.CountAsync();
+            var meetingChatMessages = await _context.MeetingChatMessages.CountAsync(message => message.Meeting.OrganizationId == organizationId);
+            var attachments = await conversationMessages.CountAsync(message => !string.IsNullOrWhiteSpace(message.AttachmentUrl));
+            var attachmentBytes = await conversationMessages
+                .Where(message => message.AttachmentSizeBytes.HasValue)
+                .SumAsync(message => message.AttachmentSizeBytes ?? 0);
+            var lastMeetingAt = await meetings
+                .OrderByDescending(meeting => meeting.CreatedAt)
+                .Select(meeting => (DateTime?)meeting.CreatedAt)
+                .FirstOrDefaultAsync();
+            var lastDirectMessageAt = await conversationMessages
+                .OrderByDescending(message => message.SentAt)
+                .Select(message => (DateTime?)message.SentAt)
+                .FirstOrDefaultAsync();
+            var lastMeetingMessageAt = await _context.MeetingChatMessages
+                .Where(message => message.Meeting.OrganizationId == organizationId)
+                .OrderByDescending(message => message.SentAt)
+                .Select(message => (DateTime?)message.SentAt)
+                .FirstOrDefaultAsync();
+
+            return Ok(new OrganizationMeetingUsageDto
+            {
+                OrganizationId = organizationId,
+                TotalMeetings = totalMeetings,
+                UpcomingMeetings = upcomingMeetings,
+                ActiveMeetings = activeMeetings,
+                RecordedMeetings = recordedMeetings,
+                MeetingInvites = meetingInvites,
+                ParticipantJoins = participantJoins,
+                Conversations = conversations,
+                ChatMessages = directChatMessages + meetingChatMessages,
+                Attachments = attachments,
+                AttachmentBytes = attachmentBytes,
+                LastMeetingAt = lastMeetingAt,
+                LastMessageAt = MaxDate(lastDirectMessageAt, lastMeetingMessageAt)
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching organization usage");
             return StatusCode(500, "An error occurred");
         }
     }
@@ -227,19 +295,16 @@ public class MeetingsController : ControllerBase
                 return BadRequest("Recording is not enabled for this meeting");
             }
 
-            var recordingDirectory = Path.Combine(_environment.ContentRootPath, "Recordings", id.ToString());
-            Directory.CreateDirectory(recordingDirectory);
-
-            var fileName = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}.webm";
-            var filePath = Path.Combine(recordingDirectory, fileName);
-
-            await using (var stream = System.IO.File.Create(filePath))
+            var organizationSettings = await _storageService.GetSettingsAsync();
+            var maxRecordingBytes = (long)organizationSettings.MaxRecordingMegabytes * 1024 * 1024;
+            if (recording.Length > maxRecordingBytes)
             {
-                await recording.CopyToAsync(stream);
+                return BadRequest($"Recording must be {organizationSettings.MaxRecordingMegabytes} MB or smaller");
             }
 
-            var recordingUrl = $"/api/meetings/{id}/recordings/{fileName}";
-            var updatedMeeting = await _meetingService.UpdateRecordingAsync(id, recordingUrl);
+            var fileName = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}.webm";
+            var storedFile = await _storageService.SaveAsync(OrganizationFileKind.Recording, id, recording, fileName);
+            var updatedMeeting = await _meetingService.UpdateRecordingAsync(id, storedFile.PublicUrl);
             return Ok(MapToDto(updatedMeeting));
         }
         catch (Exception ex)
@@ -251,11 +316,10 @@ public class MeetingsController : ControllerBase
 
     [HttpGet("{id}/recordings/{fileName}")]
     [AllowAnonymous]
-    public IActionResult GetRecording(Guid id, string fileName)
+    public async Task<IActionResult> GetRecording(Guid id, string fileName)
     {
-        var safeFileName = Path.GetFileName(fileName);
-        var filePath = Path.Combine(_environment.ContentRootPath, "Recordings", id.ToString(), safeFileName);
-        if (!System.IO.File.Exists(filePath))
+        var filePath = await _storageService.GetPhysicalPathAsync(OrganizationFileKind.Recording, id, fileName);
+        if (filePath == null)
         {
             return NotFound();
         }
@@ -268,6 +332,8 @@ public class MeetingsController : ControllerBase
         return new MeetingDto
         {
             Id = meeting.Id,
+            OrganizationId = meeting.OrganizationId,
+            TeamChannelId = meeting.TeamChannelId,
             OrganizerId = meeting.OrganizerId,
             Title = meeting.Title,
             Description = meeting.Description,
@@ -307,5 +373,20 @@ public class MeetingsController : ControllerBase
         return attendeeEmails
             .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
+    }
+
+    private static DateTime? MaxDate(DateTime? left, DateTime? right)
+    {
+        if (!left.HasValue)
+        {
+            return right;
+        }
+
+        if (!right.HasValue)
+        {
+            return left;
+        }
+
+        return left.Value >= right.Value ? left : right;
     }
 }

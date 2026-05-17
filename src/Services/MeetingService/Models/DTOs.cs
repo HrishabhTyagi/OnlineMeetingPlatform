@@ -4,6 +4,7 @@ namespace MeetingService.Models;
 
 public class CreateMeetingRequest
 {
+    public Guid? TeamChannelId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
     public DateTime StartTime { get; set; }
@@ -26,6 +27,7 @@ public class CreateMeetingRequest
 
 public class UpdateMeetingRequest
 {
+    public Guid? TeamChannelId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
     public DateTime StartTime { get; set; }
@@ -48,6 +50,8 @@ public class UpdateMeetingRequest
 public class MeetingDto
 {
     public Guid Id { get; set; }
+    public Guid? OrganizationId { get; set; }
+    public Guid? TeamChannelId { get; set; }
     public Guid OrganizerId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
@@ -74,6 +78,154 @@ public class MeetingDto
     public int MaxParticipants { get; set; }
     public int CurrentParticipants { get; set; }
     public DateTime CreatedAt { get; set; }
+}
+
+public class OrganizationMeetingUsageDto
+{
+    public Guid OrganizationId { get; set; }
+    public int TotalMeetings { get; set; }
+    public int UpcomingMeetings { get; set; }
+    public int ActiveMeetings { get; set; }
+    public int RecordedMeetings { get; set; }
+    public int MeetingInvites { get; set; }
+    public int ParticipantJoins { get; set; }
+    public int Conversations { get; set; }
+    public int ChatMessages { get; set; }
+    public int Attachments { get; set; }
+    public long AttachmentBytes { get; set; }
+    public DateTime? LastMeetingAt { get; set; }
+    public DateTime? LastMessageAt { get; set; }
+}
+
+public class TeamSpaceDto
+{
+    public Guid Id { get; set; }
+    public Guid? OrganizationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public Guid OwnerUserId { get; set; }
+    public bool IsArchived { get; set; }
+    public List<TeamMemberDto> Members { get; set; } = new();
+    public List<TeamChannelDto> Channels { get; set; } = new();
+    public DateTime CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
+public class TeamMemberDto
+{
+    public Guid UserId { get; set; }
+    public string UserEmail { get; set; } = string.Empty;
+    public string UserName { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
+}
+
+public class TeamChannelDto
+{
+    public Guid Id { get; set; }
+    public Guid TeamSpaceId { get; set; }
+    public Guid ConversationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public int SortOrder { get; set; }
+    public List<TeamChannelTabDto> Tabs { get; set; } = new();
+    public DateTime CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
+public class TeamChannelTabDto
+{
+    public Guid Id { get; set; }
+    public Guid TeamChannelId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string Kind { get; set; } = string.Empty;
+    public string? Url { get; set; }
+    public string? Content { get; set; }
+    public int SortOrder { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class TeamChannelFileDto
+{
+    public Guid MessageId { get; set; }
+    public Guid ConversationId { get; set; }
+    public string FileName { get; set; } = string.Empty;
+    public string? Url { get; set; }
+    public string? ContentType { get; set; }
+    public long? SizeBytes { get; set; }
+    public string SenderName { get; set; } = string.Empty;
+    public DateTime SentAt { get; set; }
+}
+
+public class CreateTeamSpaceRequest
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public List<ConversationMemberDto> Members { get; set; } = new();
+}
+
+public class CreateTeamChannelRequest
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+}
+
+public class AddTeamMembersRequest
+{
+    public List<ConversationMemberDto> Members { get; set; } = new();
+}
+
+public class CreateTeamChannelTabRequest
+{
+    public string Title { get; set; } = string.Empty;
+    public string Kind { get; set; } = "Link";
+    public string? Url { get; set; }
+    public string? Content { get; set; }
+}
+
+public class CreateChannelMeetingRequest
+{
+    public string Title { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public DateTime? StartTime { get; set; }
+    public int DurationMinutes { get; set; } = 60;
+}
+
+public class CalendarProviderConfigDto
+{
+    public string Provider { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public bool IsConfigured { get; set; }
+    public List<string> Scopes { get; set; } = new();
+}
+
+public class CalendarConnectionDto
+{
+    public Guid Id { get; set; }
+    public string Provider { get; set; } = string.Empty;
+    public string? AccountEmail { get; set; }
+    public string CalendarId { get; set; } = "primary";
+    public bool IsEnabled { get; set; }
+    public DateTime? LastSyncAt { get; set; }
+    public string? LastError { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+public class StartCalendarConnectionRequest
+{
+    public string RedirectUri { get; set; } = string.Empty;
+}
+
+public class CompleteCalendarConnectionRequest
+{
+    public string Code { get; set; } = string.Empty;
+    public string RedirectUri { get; set; } = string.Empty;
+}
+
+public class CalendarAuthorizationDto
+{
+    public string Provider { get; set; } = string.Empty;
+    public string AuthorizationUrl { get; set; } = string.Empty;
 }
 
 public class ParticipantDto
@@ -182,6 +334,7 @@ public class ConversationInviteDto
 public class ConversationDto
 {
     public Guid Id { get; set; }
+    public Guid? OrganizationId { get; set; }
     public string Type { get; set; } = string.Empty;
     public string? Title { get; set; }
     public List<ConversationMemberDto> Members { get; set; } = new();
@@ -198,6 +351,7 @@ public class ConversationMessageDto
     public Guid ConversationId { get; set; }
     public Guid SenderId { get; set; }
     public string SenderName { get; set; } = string.Empty;
+    public string? ClientMessageId { get; set; }
     public string Message { get; set; } = string.Empty;
     public string? AttachmentFileName { get; set; }
     public string? AttachmentUrl { get; set; }
@@ -247,6 +401,7 @@ public class SendConversationMessageRequest
 {
     public Guid SenderId { get; set; }
     public string SenderName { get; set; } = string.Empty;
+    public string? ClientMessageId { get; set; }
     public string Message { get; set; } = string.Empty;
     public string? AttachmentFileName { get; set; }
     public string? AttachmentUrl { get; set; }

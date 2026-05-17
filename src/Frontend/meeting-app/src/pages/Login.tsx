@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import BrandMark from '../components/BrandMark';
-import { authAPI } from '../services/api';
+import { authAPI, getOrganizationScopedPath } from '../services/api';
 import { useAuthStore } from '../store/authStore';
 
 export default function Login() {
@@ -50,7 +50,7 @@ export default function Login() {
         data.token
       );
 
-      navigate('/dashboard', { replace: true });
+      navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
     } catch (err: any) {
       setError(err.response?.data?.message || 'Login failed');
     } finally {
@@ -86,7 +86,7 @@ export default function Login() {
                   disabled={isCurrent}
                   onClick={() => {
                     switchAccount(account.user.id);
-                    navigate('/dashboard', { replace: true });
+                    navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
                   }}
                   className={`w-full rounded-md px-3 py-2 text-left text-sm ${
                     isCurrent ? 'bg-blue-50 text-blue-900' : 'bg-white text-gray-700 hover:bg-blue-50'
@@ -139,7 +139,7 @@ export default function Login() {
         {currentUser && (
           <button
             type="button"
-            onClick={() => navigate('/dashboard', { replace: true })}
+            onClick={() => navigate(getOrganizationScopedPath('/dashboard'), { replace: true })}
             className="mt-3 w-full text-sm font-semibold text-gray-600 hover:text-gray-900"
           >
             Back to current account

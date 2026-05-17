@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus, statusLabel } from '../components/UserStatus';
-import { meetingAPI, userAPI } from '../services/api';
+import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinMeetingGroup,
@@ -1234,7 +1234,7 @@ export default function MeetingRoom() {
 
   const handleLeave = async () => {
     if (!id || !currentParticipant) {
-      navigate('/dashboard', { replace: true });
+      navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
       return;
     }
 
@@ -1253,7 +1253,7 @@ export default function MeetingRoom() {
       await meetingAPI.leaveMeeting(id, currentParticipant.id);
       await notifyParticipantLeft(id, displayName);
     } finally {
-      navigate('/dashboard', { replace: true });
+      navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
     }
   };
 
@@ -1273,7 +1273,7 @@ export default function MeetingRoom() {
       }
     } finally {
       logout();
-      navigate(hadOtherAccounts ? '/dashboard' : '/login', { replace: true });
+      navigate(hadOtherAccounts ? getOrganizationScopedPath('/dashboard') : '/login', { replace: true });
     }
   };
 
@@ -1292,7 +1292,7 @@ export default function MeetingRoom() {
       }
     } finally {
       switchAccount(userId);
-      navigate('/dashboard', { replace: true });
+      navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
     }
   };
 
@@ -1518,7 +1518,7 @@ export default function MeetingRoom() {
   };
 
   const copyJoinLink = async () => {
-    const link = meeting?.meetingLink || window.location.href;
+    const link = meeting ? getMeetingJoinUrl(meeting.id, meeting.meetingLink) : window.location.href;
 
     try {
       await navigator.clipboard.writeText(link);
@@ -1565,7 +1565,7 @@ export default function MeetingRoom() {
           <h1 className="text-xl font-semibold text-slate-950">Meeting unavailable</h1>
           <p className="mt-2 text-sm text-slate-600">{error || 'This meeting could not be found.'}</p>
           <button
-            onClick={() => navigate('/dashboard')}
+            onClick={() => navigate(getOrganizationScopedPath('/dashboard'))}
             className="mt-5 rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
           >
             Back to calendar

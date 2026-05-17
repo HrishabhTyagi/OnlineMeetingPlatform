@@ -14,16 +14,20 @@ $projectRoot = "D:\Projects\OnlineMeetingPlatform"
 $gatewayPath = "$projectRoot\src\Gateway\ApiGateway"
 $userServicePath = "$projectRoot\src\Services\UserService"
 $meetingServicePath = "$projectRoot\src\Services\MeetingService"
+$organizationServicePath = "$projectRoot\src\Services\OrganizationService"
 $notificationServicePath = "$projectRoot\src\Services\NotificationService"
 $frontendPath = "$projectRoot\src\Frontend\meeting-app"
+$organizationAdminPath = "$projectRoot\src\Frontend\organization-admin"
 
 # Define ports
 $gatewayPort = 5000
 $userServicePort = 5001
 $meetingServicePort = 5002
 $notificationServicePort = 5003
+$organizationServicePort = 5004
 $frontendPort = 5173
-$localAppPorts = @($gatewayPort, $userServicePort, $meetingServicePort, $notificationServicePort, $frontendPort)
+$organizationAdminPort = 5174
+$localAppPorts = @($gatewayPort, $userServicePort, $meetingServicePort, $notificationServicePort, $organizationServicePort, $frontendPort, $organizationAdminPort)
 
 # Docker settings
 $dockerComposeFile = "$projectRoot\docker-compose.yml"
@@ -111,8 +115,8 @@ function Stop-ProjectProcesses {
             $_.ProcessId -ne $PID -and
             $_.CommandLine -match $escapedRoot -and
             (
-                $_.Name -in @("dotnet.exe", "node.exe", "npm.cmd", "powershell.exe", "pwsh.exe", "ApiGateway.exe", "UserService.exe", "MeetingService.exe", "NotificationService.exe") -or
-                $_.CommandLine -match "npm run dev|dotnet run|ApiGateway|UserService|MeetingService|NotificationService"
+                $_.Name -in @("dotnet.exe", "node.exe", "npm.cmd", "powershell.exe", "pwsh.exe", "ApiGateway.exe", "UserService.exe", "MeetingService.exe", "NotificationService.exe", "OrganizationService.exe") -or
+                $_.CommandLine -match "npm run dev|dotnet run|ApiGateway|UserService|MeetingService|NotificationService|OrganizationService"
             )
         }
 
@@ -272,6 +276,30 @@ function Start-Frontend {
     }
 }
 
+function Start-OrganizationAdmin {
+    Write-Host "Starting Organization Admin UI on port $organizationAdminPort..." -ForegroundColor Yellow
+
+    if (-not (Test-Path $organizationAdminPath)) {
+        Write-Host "Error: Organization Admin path not found: $organizationAdminPath" -ForegroundColor Red
+        return $false
+    }
+
+    try {
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$organizationAdminPath'; npm run dev" -WindowStyle Normal
+
+        if (Wait-ForPort -Port $organizationAdminPort -TimeoutSeconds 45) {
+            Write-Host "Organization Admin UI started at http://localhost:$organizationAdminPort" -ForegroundColor Green
+            return $true
+        }
+
+        Write-Host "Organization Admin UI was launched, but port $organizationAdminPort did not start listening in time." -ForegroundColor Yellow
+        return $false
+    } catch {
+        Write-Host "Error starting Organization Admin UI: $_" -ForegroundColor Red
+        return $false
+    }
+}
+
 Write-Host "Performing pre-flight checks..." -ForegroundColor Cyan
 Write-Host ""
 
@@ -297,9 +325,11 @@ Write-Host ""
 $allStarted = $true
 $allStarted = (Start-LocalService -ServiceName "API Gateway" -ServicePath $gatewayPath -Port $gatewayPort -StartCommand "dotnet run") -and $allStarted
 $allStarted = (Start-LocalService -ServiceName "User Service" -ServicePath $userServicePath -Port $userServicePort -StartCommand "dotnet run") -and $allStarted
+$allStarted = (Start-LocalService -ServiceName "Organization Service" -ServicePath $organizationServicePath -Port $organizationServicePort -StartCommand "dotnet run") -and $allStarted
 $allStarted = (Start-LocalService -ServiceName "Meeting Service" -ServicePath $meetingServicePath -Port $meetingServicePort -StartCommand "dotnet run") -and $allStarted
 $allStarted = (Start-LocalService -ServiceName "Notification Service" -ServicePath $notificationServicePath -Port $notificationServicePort -StartCommand "dotnet run") -and $allStarted
 $allStarted = (Start-Frontend) -and $allStarted
+$allStarted = (Start-OrganizationAdmin) -and $allStarted
 
 Write-Host ""
 Write-Host "================================================" -ForegroundColor Cyan
@@ -326,12 +356,15 @@ Write-Host "  API Gateway:          http://localhost:$gatewayPort" -ForegroundCo
 Write-Host "  User Service:         http://localhost:$userServicePort" -ForegroundColor Green
 Write-Host "  Meeting Service:      http://localhost:$meetingServicePort" -ForegroundColor Green
 Write-Host "  Notification Service: http://localhost:$notificationServicePort" -ForegroundColor Green
+Write-Host "  Organization Service: http://localhost:$organizationServicePort" -ForegroundColor Green
 Write-Host "  Frontend UI:          http://localhost:$frontendPort" -ForegroundColor Green
+Write-Host "  Organization Admin:   http://localhost:$organizationAdminPort" -ForegroundColor Green
 Write-Host "  Test Email Inbox:     http://localhost:8025" -ForegroundColor Green
 Write-Host ""
 
 Write-Host "Access Application:" -ForegroundColor Cyan
 Write-Host "  Web UI:               http://localhost:$frontendPort" -ForegroundColor Green
+Write-Host "  Organization Admin:   http://localhost:$organizationAdminPort" -ForegroundColor Green
 Write-Host "  Swagger API Docs:     http://localhost:$gatewayPort/swagger/index.html" -ForegroundColor Green
 Write-Host "  Test Email Inbox:     http://localhost:8025" -ForegroundColor Green
 Write-Host ""

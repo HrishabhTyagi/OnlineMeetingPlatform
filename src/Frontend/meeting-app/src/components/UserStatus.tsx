@@ -270,7 +270,7 @@ export function ProfileStatusMenu({
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-80 rounded-md border border-slate-200 bg-white py-3 text-slate-900 shadow-2xl">
+        <div className="absolute right-0 z-50 mt-2 max-h-[calc(100vh-7rem)] w-80 overflow-y-auto overscroll-contain rounded-md border border-slate-200 bg-white py-3 text-slate-900 shadow-2xl sm:max-h-[calc(100vh-6rem)]">
           <div className="flex items-center justify-between px-4">
             <p className="text-sm font-semibold">Personal</p>
             {onSignOut && (

@@ -7,6 +7,8 @@ import {
   onIncomingCall,
   startSignalR,
 } from '../services/signalR';
+import { getMeetingJoinPath, getOrganizationScopedPath } from '../services/api';
+import { readStoredMissedCalls, writeStoredMissedCalls, type StoredMissedCall } from '../services/activityFeed';
 
 interface IncomingCall {
   conversationId: string;
@@ -18,29 +20,8 @@ interface IncomingCall {
   timestamp: string;
 }
 
-interface MissedCall extends IncomingCall {
-  missedAt: string;
-}
-
 const RING_TIMEOUT_MS = 30_000;
 const MAX_MISSED_CALLS = 5;
-
-function missedCallStorageKey(userId: string) {
-  return `missedCalls:${userId}`;
-}
-
-function readStoredMissedCalls(userId: string): MissedCall[] {
-  try {
-    const value = localStorage.getItem(missedCallStorageKey(userId));
-    return value ? JSON.parse(value) as MissedCall[] : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeStoredMissedCalls(userId: string, calls: MissedCall[]) {
-  localStorage.setItem(missedCallStorageKey(userId), JSON.stringify(calls));
-}
 
 function normalizeIncomingCall(data: any): IncomingCall {
   return {
@@ -55,11 +36,12 @@ function normalizeIncomingCall(data: any): IncomingCall {
 }
 
 function resolveJoinPath(joinUrl: string, meetingId: string, callType: 'audio' | 'video') {
+  const fallbackQuery = `?call=${callType}&autojoin=1`;
   try {
     const url = new URL(joinUrl, window.location.origin);
-    return `${url.pathname}${url.search || `?call=${callType}&autojoin=1`}`;
+    return getMeetingJoinPath(meetingId, url.search || fallbackQuery);
   } catch {
-    return `/meeting/${meetingId}?call=${callType}&autojoin=1`;
+    return getMeetingJoinPath(meetingId, fallbackQuery);
   }
 }
 
@@ -77,17 +59,17 @@ export default function IncomingCallRinger() {
   const user = useAuthStore((state) => state.user);
   const token = useAuthStore((state) => state.token);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
-  const [missedCalls, setMissedCalls] = useState<MissedCall[]>([]);
+  const [missedCalls, setMissedCalls] = useState<StoredMissedCall[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  const persistMissedCalls = useCallback((nextCalls: MissedCall[]) => {
+  const persistMissedCalls = useCallback((nextCalls: StoredMissedCall[]) => {
     if (user?.id) {
       writeStoredMissedCalls(user.id, nextCalls);
     }
   }, [user?.id]);
 
   const addMissedCall = useCallback((call: IncomingCall) => {
-    const missedCall: MissedCall = {
+    const missedCall: StoredMissedCall = {
       ...call,
       missedAt: new Date().toISOString(),
     };
@@ -259,7 +241,7 @@ export default function IncomingCallRinger() {
               type="button"
               onClick={() => {
                 dismissMissedCall(call.meetingId);
-                navigate(`/chat?conversationId=${call.conversationId}`);
+                navigate(getOrganizationScopedPath(`/chat?conversationId=${call.conversationId}`));
               }}
               className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
             >

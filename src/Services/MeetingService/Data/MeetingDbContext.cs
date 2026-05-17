@@ -21,6 +21,12 @@ public class MeetingDbContext : DbContext
     public DbSet<ConversationMessageReaction> ConversationMessageReactions { get; set; } = null!;
     public DbSet<ConversationInvite> ConversationInvites { get; set; } = null!;
     public DbSet<ScheduledConversationMessage> ScheduledConversationMessages { get; set; } = null!;
+    public DbSet<TeamSpace> TeamSpaces { get; set; } = null!;
+    public DbSet<TeamSpaceMember> TeamSpaceMembers { get; set; } = null!;
+    public DbSet<TeamChannel> TeamChannels { get; set; } = null!;
+    public DbSet<TeamChannelTab> TeamChannelTabs { get; set; } = null!;
+    public DbSet<CalendarConnection> CalendarConnections { get; set; } = null!;
+    public DbSet<ExternalCalendarEvent> ExternalCalendarEvents { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -29,9 +35,11 @@ public class MeetingDbContext : DbContext
         modelBuilder.Entity<Meeting>(entity =>
         {
             entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.OrganizationId);
             entity.Property(e => e.Title).IsRequired().HasMaxLength(255);
             entity.Property(e => e.AttendeeEmails).HasColumnType("text");
             entity.Property(e => e.Location).HasMaxLength(255);
+            entity.HasIndex(e => e.TeamChannelId);
             entity.Property(e => e.IsOnlineMeeting).HasDefaultValue(true);
             entity.Property(e => e.LobbyEnabled).HasDefaultValue(true);
             entity.Property(e => e.AllowChat).HasDefaultValue(true);
@@ -47,6 +55,7 @@ public class MeetingDbContext : DbContext
             entity.HasMany(e => e.Invites).WithOne(i => i.Meeting).HasForeignKey(i => i.MeetingId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.LobbyRequests).WithOne(l => l.Meeting).HasForeignKey(l => l.MeetingId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.Reminders).WithOne(r => r.Meeting).HasForeignKey(r => r.MeetingId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.TeamChannel).WithMany(channel => channel.Meetings).HasForeignKey(e => e.TeamChannelId).OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<Participant>(entity =>
@@ -91,6 +100,7 @@ public class MeetingDbContext : DbContext
         modelBuilder.Entity<Conversation>(entity =>
         {
             entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.OrganizationId);
             entity.Property(e => e.Title).HasMaxLength(255);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.HasMany(e => e.Members).WithOne(m => m.Conversation).HasForeignKey(m => m.ConversationId).OnDelete(DeleteBehavior.Cascade);
@@ -112,6 +122,7 @@ public class MeetingDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.SenderName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.ClientMessageId).HasMaxLength(80);
             entity.Property(e => e.Message).IsRequired().HasColumnType("text");
             entity.Property(e => e.AttachmentFileName).HasMaxLength(260);
             entity.Property(e => e.AttachmentUrl).HasColumnType("text");
@@ -121,6 +132,9 @@ public class MeetingDbContext : DbContext
             entity.Property(e => e.SentAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.Property(e => e.IsPinned).HasDefaultValue(false);
             entity.HasIndex(e => e.ReplyToMessageId);
+            entity.HasIndex(e => new { e.ConversationId, e.SenderId, e.ClientMessageId })
+                .IsUnique()
+                .HasFilter("\"ClientMessageId\" IS NOT NULL");
             entity.HasMany(e => e.Reactions).WithOne(r => r.Message).HasForeignKey(r => r.ConversationMessageId).OnDelete(DeleteBehavior.Cascade);
         });
 
@@ -150,6 +164,77 @@ public class MeetingDbContext : DbContext
             entity.Property(e => e.InvitedByName).IsRequired().HasMaxLength(255);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.HasIndex(e => new { e.ConversationId, e.Email }).IsUnique();
+        });
+
+        modelBuilder.Entity<TeamSpace>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.OrganizationId);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(160);
+            entity.Property(e => e.Description).HasMaxLength(600);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasMany(e => e.Members).WithOne(member => member.TeamSpace).HasForeignKey(member => member.TeamSpaceId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.Channels).WithOne(channel => channel.TeamSpace).HasForeignKey(channel => channel.TeamSpaceId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TeamSpaceMember>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.UserEmail).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.UserName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.Role).HasConversion<string>().HasMaxLength(40);
+            entity.Property(e => e.JoinedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.TeamSpaceId, e.UserId }).IsUnique();
+        });
+
+        modelBuilder.Entity<TeamChannel>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(120);
+            entity.Property(e => e.Description).HasMaxLength(400);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.TeamSpaceId, e.Name }).IsUnique();
+            entity.HasOne(e => e.Conversation).WithMany().HasForeignKey(e => e.ConversationId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.Tabs).WithOne(tab => tab.TeamChannel).HasForeignKey(tab => tab.TeamChannelId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TeamChannelTab>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Title).IsRequired().HasMaxLength(120);
+            entity.Property(e => e.Kind).HasConversion<string>().HasMaxLength(40);
+            entity.Property(e => e.Url).HasColumnType("text");
+            entity.Property(e => e.Content).HasColumnType("text");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.TeamChannelId, e.SortOrder });
+        });
+
+        modelBuilder.Entity<CalendarConnection>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Provider).HasConversion<string>().HasMaxLength(40);
+            entity.Property(e => e.AccountEmail).HasMaxLength(255);
+            entity.Property(e => e.CalendarId).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.AccessToken).IsRequired().HasColumnType("text");
+            entity.Property(e => e.RefreshToken).HasColumnType("text");
+            entity.Property(e => e.LastError).HasColumnType("text");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.UserId, e.Provider }).IsUnique();
+        });
+
+        modelBuilder.Entity<ExternalCalendarEvent>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Provider).HasConversion<string>().HasMaxLength(40);
+            entity.Property(e => e.CalendarId).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.ExternalEventId).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.HtmlLink).HasColumnType("text");
+            entity.Property(e => e.LastError).HasColumnType("text");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.MeetingId, e.UserId, e.Provider }).IsUnique();
+            entity.HasOne(e => e.Meeting).WithMany().HasForeignKey(e => e.MeetingId).OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

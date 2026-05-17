@@ -30,7 +30,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("http://localhost:5173", "http://localhost:3000")
+        policy.WithOrigins("http://localhost:5173", "http://localhost:5174", "http://localhost:3000")
             .AllowAnyMethod()
             .AllowAnyHeader()
             .AllowCredentials();
@@ -48,6 +48,7 @@ if (app.Environment.IsDevelopment())
         options.SwaggerEndpoint("/swagger/services/user/swagger.json", "User Service");
         options.SwaggerEndpoint("/swagger/services/meeting/swagger.json", "Meeting Service");
         options.SwaggerEndpoint("/swagger/services/notification/swagger.json", "Notification Service");
+        options.SwaggerEndpoint("/swagger/services/organization/swagger.json", "Organization Service");
     });
 }
 

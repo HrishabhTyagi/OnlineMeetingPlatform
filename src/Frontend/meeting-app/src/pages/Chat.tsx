@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type SVGProps } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type SVGProps } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import AppShell from '../components/AppShell';
 import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus } from '../components/UserStatus';
-import { conversationAPI, meetingAPI, resolveApiAssetUrl, userAPI } from '../services/api';
+import { conversationAPI, getMeetingJoinPath, getMeetingJoinUrl, meetingAPI, resolveApiAssetUrl, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinConversation,
@@ -43,6 +43,7 @@ interface ConversationMessage {
   conversationId: string;
   senderId: string;
   senderName: string;
+  clientMessageId?: string;
   message: string;
   attachmentFileName?: string;
   attachmentUrl?: string;
@@ -55,6 +56,8 @@ interface ConversationMessage {
   editedAt?: string;
   isPinned?: boolean;
   reactions?: ConversationMessageReaction[];
+  deliveryStatus?: 'pending' | 'retrying' | 'failed' | 'sent';
+  deliveryError?: string;
 }
 
 interface ConversationMessageReaction {
@@ -94,6 +97,22 @@ interface Conversation {
   unreadCount?: number;
   createdAt: string;
   updatedAt?: string;
+}
+
+interface QueuedChatMessage {
+  clientMessageId: string;
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  message: string;
+  replyToMessageId?: string;
+  replyToSenderName?: string;
+  replyToPreview?: string;
+  createdAt: string;
+  attempts: number;
+  nextAttemptAt?: string;
+  status: 'pending' | 'retrying' | 'failed';
+  lastError?: string;
 }
 
 function displayUser(user: UserSummary) {
@@ -205,6 +224,95 @@ function sortConversationsByActivity(items: Conversation[]) {
     const second = Date.parse(b.lastMessage?.sentAt || b.updatedAt || b.createdAt || '');
     return (Number.isNaN(second) ? 0 : second) - (Number.isNaN(first) ? 0 : first);
   });
+}
+
+const CHAT_OUTBOX_KEY_PREFIX = 'samvaadChatOutbox';
+
+function getChatOutboxKey(userId: string) {
+  return `${CHAT_OUTBOX_KEY_PREFIX}:${userId}`;
+}
+
+function readQueuedChatMessages(userId?: string): QueuedChatMessage[] {
+  if (!userId) {
+    return [];
+  }
+
+  try {
+    const value = localStorage.getItem(getChatOutboxKey(userId));
+    const items = value ? JSON.parse(value) as QueuedChatMessage[] : [];
+    return Array.isArray(items)
+      ? items
+          .filter((item) => item.clientMessageId && item.conversationId && item.message)
+          .map((item) => ({ ...item, status: item.status === 'retrying' ? 'failed' : item.status }))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeQueuedChatMessages(userId: string | undefined, items: QueuedChatMessage[]) {
+  if (!userId) {
+    return;
+  }
+
+  try {
+    const key = getChatOutboxKey(userId);
+    if (items.length === 0) {
+      localStorage.removeItem(key);
+      return;
+    }
+
+    localStorage.setItem(key, JSON.stringify(items));
+  } catch {
+    // If storage is full or blocked, the live in-memory queue still keeps retrying for this session.
+  }
+}
+
+function createClientMessageId() {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `msg-${Date.now().toString(36)}-${random}`;
+}
+
+function retryDelayMs(attempts: number) {
+  return Math.min(60000, Math.max(3000, 3000 * 2 ** Math.min(attempts, 4)));
+}
+
+function isRetryableSendError(err: any) {
+  const status = err?.response?.status;
+  return !status || status === 408 || status === 429 || status >= 500;
+}
+
+function getSendErrorText(err: any) {
+  return err?.response?.data?.message || err?.response?.data || err?.message || 'Unable to send yet';
+}
+
+function queuedMessageToConversationMessage(item: QueuedChatMessage): ConversationMessage {
+  return {
+    id: item.clientMessageId,
+    conversationId: item.conversationId,
+    senderId: item.senderId,
+    senderName: item.senderName,
+    clientMessageId: item.clientMessageId,
+    message: item.message,
+    replyToMessageId: item.replyToMessageId,
+    replyToSenderName: item.replyToSenderName,
+    replyToPreview: item.replyToPreview,
+    sentAt: item.createdAt,
+    reactions: [],
+    deliveryStatus: item.status,
+    deliveryError: item.lastError,
+  };
+}
+
+function mergeServerAndQueuedMessages(serverMessages: ConversationMessage[], queuedMessages: QueuedChatMessage[], conversationId: string) {
+  const serverClientIds = new Set(serverMessages.map((message) => message.clientMessageId).filter(Boolean));
+  const pendingMessages = queuedMessages
+    .filter((item) => item.conversationId === conversationId && !serverClientIds.has(item.clientMessageId))
+    .map(queuedMessageToConversationMessage);
+
+  return [...serverMessages, ...pendingMessages].sort((left, right) => (
+    new Date(left.sentAt).getTime() - new Date(right.sentAt).getTime()
+  ));
 }
 
 function isImageAttachment(message: ConversationMessage) {
@@ -468,6 +576,9 @@ export default function Chat() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const quickGroupInputRef = useRef<HTMLInputElement | null>(null);
+  const queuedMessagesRef = useRef<QueuedChatMessage[]>([]);
+  const conversationsRef = useRef<Conversation[]>([]);
+  const retryingOutboxRef = useRef(false);
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
   const accounts = useAuthStore((state) => state.accounts);
@@ -477,6 +588,7 @@ export default function Chat() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
   const [messageDraft, setMessageDraft] = useState('');
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [userQuery, setUserQuery] = useState('');
@@ -580,6 +692,28 @@ export default function Chat() {
   ), 0);
   const selectedFiles = messages.filter((message) => message.attachmentUrl);
   const selectedPhotos = selectedFiles.filter(isImageAttachment);
+  const queuedMessageCount = queuedMessages.length;
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setQueuedMessages([]);
+      queuedMessagesRef.current = [];
+      return;
+    }
+
+    const storedMessages = readQueuedChatMessages(user.id);
+    queuedMessagesRef.current = storedMessages;
+    setQueuedMessages(storedMessages);
+  }, [user?.id]);
+
+  useEffect(() => {
+    queuedMessagesRef.current = queuedMessages;
+    writeQueuedChatMessages(user?.id, queuedMessages);
+  }, [queuedMessages, user?.id]);
 
   const getUserStatus = (userId?: string) => {
     if (!userId) {
@@ -919,7 +1053,7 @@ export default function Chat() {
 
     const loadMessages = () => conversationAPI.getMessages(selectedConversationId)
       .then((response) => {
-        setMessages(response.data);
+        setMessages(mergeServerAndQueuedMessages(response.data, queuedMessagesRef.current, selectedConversationId));
         clearConversationUnread(selectedConversationId);
       })
       .catch(() => setError('Unable to load messages'));
@@ -954,6 +1088,17 @@ export default function Chat() {
       leaveConversation(selectedConversationId).catch(() => undefined);
     };
   }, [selectedConversationId]);
+
+  useEffect(() => {
+    if (!selectedConversationId) {
+      return;
+    }
+
+    setMessages((items) => {
+      const serverMessages = items.filter((message) => !message.deliveryStatus || message.deliveryStatus === 'sent');
+      return mergeServerAndQueuedMessages(serverMessages, queuedMessages, selectedConversationId);
+    });
+  }, [queuedMessages, selectedConversationId]);
 
   useEffect(() => {
     const query = quickGroupOpen ? quickGroupQuery : userQuery;
@@ -1085,12 +1230,22 @@ export default function Chat() {
   };
 
   const appendSentMessage = (message: ConversationMessage) => {
+    const sentMessage: ConversationMessage = { ...message, deliveryStatus: 'sent' };
+    if (sentMessage.clientMessageId) {
+      setQueuedMessages((items) => items.filter((item) => item.clientMessageId !== sentMessage.clientMessageId));
+    }
+
     setMessages((items) => (
-      items.some((item) => item.id === message.id) ? items : [...items, message]
+      items.some((item) => item.id === sentMessage.id)
+        ? items.map((item) => (item.id === sentMessage.id ? sentMessage : item))
+        : [
+            ...items.filter((item) => !sentMessage.clientMessageId || item.clientMessageId !== sentMessage.clientMessageId),
+            sentMessage,
+          ]
     ));
     setConversations((items) => sortConversationsByActivity(items.map((conversation) => (
-      conversation.id === message.conversationId
-        ? { ...conversation, lastMessage: message, updatedAt: message.sentAt }
+      conversation.id === sentMessage.conversationId
+        ? { ...conversation, lastMessage: sentMessage, updatedAt: sentMessage.sentAt }
         : conversation
     ))));
   };
@@ -1112,18 +1267,18 @@ export default function Chat() {
     }));
   };
 
-  const notifyConversationMessage = async (message: ConversationMessage) => {
-    if (!user || !selectedConversation) {
+  const notifyConversationMessage = useCallback(async (message: ConversationMessage, sourceConversation = selectedConversation) => {
+    if (!user || !sourceConversation) {
       return;
     }
 
     await sendConversationMessage(
-      selectedConversation.id,
+      sourceConversation.id,
       message.id,
       user.id,
       displayName,
       message.message,
-      selectedConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
+      sourceConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
       message.attachmentUrl
         ? {
             attachmentFileName: message.attachmentFileName,
@@ -1140,7 +1295,7 @@ export default function Chat() {
           }
         : undefined,
     );
-  };
+  }, [displayName, selectedConversation, user]);
 
   const notifyConversationMessageEdited = async (message: ConversationMessage) => {
     if (!user || !selectedConversation || !message.editedAt) {
@@ -1170,6 +1325,132 @@ export default function Chat() {
       selectedConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
     );
   };
+
+  const appendQueuedMessage = (queuedMessage: QueuedChatMessage) => {
+    const pendingMessage = queuedMessageToConversationMessage(queuedMessage);
+    setMessages((items) => (
+      items.some((item) => item.clientMessageId === queuedMessage.clientMessageId)
+        ? items
+        : [...items, pendingMessage]
+    ));
+    setConversations((items) => sortConversationsByActivity(items.map((conversation) => (
+      conversation.id === queuedMessage.conversationId
+        ? { ...conversation, lastMessage: pendingMessage, updatedAt: pendingMessage.sentAt }
+        : conversation
+    ))));
+  };
+
+  const queueTextMessage = (
+    conversation: Conversation,
+    text: string,
+    replyTarget: ConversationMessage | null,
+    lastError?: string,
+    clientMessageId = createClientMessageId(),
+  ) => {
+    if (!user) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const queuedMessage: QueuedChatMessage = {
+      clientMessageId,
+      conversationId: conversation.id,
+      senderId: user.id,
+      senderName: displayName,
+      message: text,
+      replyToMessageId: replyTarget?.id,
+      replyToSenderName: replyTarget?.senderName,
+      replyToPreview: replyTarget ? getMessagePreview(replyTarget) : undefined,
+      createdAt: now,
+      attempts: 0,
+      nextAttemptAt: now,
+      status: 'pending',
+      lastError,
+    };
+
+    setQueuedMessages((items) => [...items, queuedMessage]);
+    appendQueuedMessage(queuedMessage);
+    return queuedMessage;
+  };
+
+  const retryQueuedMessages = useCallback(async () => {
+    if (!user || retryingOutboxRef.current || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      return;
+    }
+
+    const now = Date.now();
+    const dueMessages = queuedMessagesRef.current.filter((item) => (
+      item.status !== 'retrying' &&
+      (!item.nextAttemptAt || Date.parse(item.nextAttemptAt) <= now)
+    ));
+
+    if (dueMessages.length === 0) {
+      return;
+    }
+
+    retryingOutboxRef.current = true;
+    const dueIds = new Set(dueMessages.map((item) => item.clientMessageId));
+    setQueuedMessages((items) => items.map((item) => (
+      dueIds.has(item.clientMessageId) ? { ...item, status: 'retrying' } : item
+    )));
+
+    try {
+      for (const queuedMessage of dueMessages) {
+        try {
+          const response = await conversationAPI.sendMessage(queuedMessage.conversationId, {
+            senderId: queuedMessage.senderId,
+            senderName: queuedMessage.senderName,
+            clientMessageId: queuedMessage.clientMessageId,
+            message: queuedMessage.message,
+            replyToMessageId: queuedMessage.replyToMessageId,
+          });
+          const sentMessage = response.data as ConversationMessage;
+          appendSentMessage(sentMessage);
+          const sourceConversation = conversationsRef.current.find((conversation) => conversation.id === queuedMessage.conversationId);
+          await notifyConversationMessage(sentMessage, sourceConversation);
+          setMessageActionStatus('Queued message sent.');
+        } catch (err: any) {
+          const attempts = queuedMessage.attempts + 1;
+          const retryAt = new Date(Date.now() + retryDelayMs(attempts)).toISOString();
+          const retryable = isRetryableSendError(err);
+          setQueuedMessages((items) => items.map((item) => (
+            item.clientMessageId === queuedMessage.clientMessageId
+              ? {
+                  ...item,
+                  attempts,
+                  status: 'failed',
+                  nextAttemptAt: retryable ? retryAt : undefined,
+                  lastError: getSendErrorText(err),
+                }
+              : item
+          )));
+
+          if (!retryable) {
+            setError(getSendErrorText(err));
+          }
+        }
+      }
+    } finally {
+      retryingOutboxRef.current = false;
+    }
+  }, [displayName, notifyConversationMessage, user]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    retryQueuedMessages();
+    const retryTimer = window.setInterval(() => {
+      retryQueuedMessages();
+    }, 10000);
+    window.addEventListener('online', retryQueuedMessages);
+
+    return () => {
+      window.clearInterval(retryTimer);
+      window.removeEventListener('online', retryQueuedMessages);
+    };
+  }, [retryQueuedMessages, user]);
 
   const startEditingMessage = (message: ConversationMessage) => {
     setEditingMessageId(message.id);
@@ -1466,7 +1747,7 @@ export default function Chat() {
       });
 
       const meetingId = response.data.id;
-      const callUrl = `${window.location.origin}/meeting/${meetingId}?call=${mode}&autojoin=1`;
+      const callUrl = getMeetingJoinUrl(meetingId, response.data.meetingLink, `call=${mode}&autojoin=1`);
       const callMessage = `${displayName} started a ${callLabel}: ${callUrl}`;
       const messageResponse = await conversationAPI.sendMessage(selectedConversation.id, {
         senderId: user.id,
@@ -1484,7 +1765,7 @@ export default function Chat() {
         callUrl,
         callRecipientUserIds,
       ).catch(() => undefined);
-      navigate(`/meeting/${meetingId}?call=${mode}&autojoin=1`);
+      navigate(getMeetingJoinPath(meetingId, `call=${mode}&autojoin=1`));
     } catch (err: any) {
       setError(err.response?.data?.message || err.response?.data || `Unable to start ${callLabel}`);
     } finally {
@@ -1536,12 +1817,14 @@ export default function Chat() {
     setAttachmentStatus('');
     setReplyingToMessage(null);
     setSending(true);
+    const clientMessageId = filesToSend.length === 0 ? createClientMessageId() : undefined;
 
     try {
       if (filesToSend.length === 0) {
         const response = await conversationAPI.sendMessage(selectedConversation.id, {
           senderId: user.id,
           senderName: displayName,
+          clientMessageId,
           message: text,
           replyToMessageId: replyTarget?.id,
         });
@@ -1565,6 +1848,13 @@ export default function Chat() {
         await notifyConversationMessage(response.data);
       }
     } catch (err: any) {
+      if (filesToSend.length === 0 && text.trim() && selectedConversation && isRetryableSendError(err)) {
+        queueTextMessage(selectedConversation, text, replyTarget, getSendErrorText(err), clientMessageId);
+        setMessageActionStatus('Message saved to outbox. It will send automatically when Samvaad reconnects.');
+        setError('');
+        return;
+      }
+
       setError(err.response?.data || 'Unable to send message or attachment');
       setMessageDraft(text);
       setPendingFiles(filesToSend);
@@ -2104,7 +2394,8 @@ export default function Chat() {
                 {messages.map((message) => {
                   const isMine = message.senderId === user?.id;
                   const isEditing = editingMessageId === message.id;
-                  const canEdit = isMine && !!message.message;
+                  const isQueued = Boolean(message.deliveryStatus && message.deliveryStatus !== 'sent');
+                  const canEdit = isMine && !!message.message && !isQueued;
                   const reactionGroups = summarizeReactions(message.reactions);
                   return (
                     <div key={message.id} className={`group relative flex w-full gap-3 pt-3 ${isMine ? 'justify-end' : 'justify-start'}`}>
@@ -2120,7 +2411,7 @@ export default function Chat() {
                         </div>
                       )}
                       <div className={`flex min-w-0 max-w-[72%] flex-col lg:max-w-[680px] ${isMine ? 'items-end' : 'items-start'}`}>
-                        {!isEditing && (
+                        {!isEditing && !isQueued && (
                           <div className={`pointer-events-none absolute -top-1 z-20 flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-700 opacity-0 shadow-lg transition group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 ${isMine ? 'right-0' : 'left-14'}`}>
                             {QUICK_REACTIONS.map((emoji) => (
                               <button
@@ -2262,6 +2553,13 @@ export default function Chat() {
                           {!isMine && <span className="truncate font-medium text-slate-600">{message.senderName}</span>}
                           <span className="shrink-0">{formatMessageTime(message.sentAt)}</span>
                           {message.editedAt && <span className="shrink-0">Edited</span>}
+                          {isQueued && (
+                            <span className={`shrink-0 font-semibold ${
+                              message.deliveryStatus === 'retrying' ? 'text-blue-600' : 'text-amber-600'
+                            }`}>
+                              {message.deliveryStatus === 'retrying' ? 'Sending...' : 'Queued'}
+                            </span>
+                          )}
                         </div>
                         <div className={`max-w-full rounded-md px-4 py-2.5 text-sm shadow-sm ${
                           isMine ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-900'
@@ -2372,6 +2670,15 @@ export default function Chat() {
                             })}
                           </div>
                         )}
+                        {isQueued && (
+                          <p className={`mt-1 max-w-full text-xs font-medium ${
+                            message.deliveryStatus === 'retrying' ? 'text-blue-600' : 'text-amber-600'
+                          }`}>
+                            {message.deliveryStatus === 'retrying'
+                              ? 'Trying again now'
+                              : `Will retry automatically${message.deliveryError ? ` - ${message.deliveryError}` : ''}`}
+                          </p>
+                        )}
                         {translationMessageId === message.id && (
                           <div className={`mt-2 max-w-full rounded-md border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-800 shadow-sm ${isMine ? 'text-right' : 'text-left'}`}>
                             Translation is ready for the selected message once language support is connected.
@@ -2397,6 +2704,18 @@ export default function Chat() {
                   aria-label="Dismiss message"
                 >
                   <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+            {queuedMessageCount > 0 && (
+              <div className="mx-auto mb-3 flex max-w-5xl items-center justify-between gap-3 rounded-md bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800 ring-1 ring-amber-100">
+                <span>{queuedMessageCount} message{queuedMessageCount === 1 ? '' : 's'} waiting in outbox. Samvaad will retry automatically.</span>
+                <button
+                  type="button"
+                  onClick={retryQueuedMessages}
+                  className="rounded-md bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 hover:bg-amber-100"
+                >
+                  Try now
                 </button>
               </div>
             )}
