@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AppShell from '../components/AppShell';
-import { conversationAPI, getMeetingJoinPath, teamSpaceAPI, userAPI } from '../services/api';
+import { conversationAPI, openMeetingJoinInNewTab, teamSpaceAPI, userAPI } from '../services/api';
 import { useAuthStore } from '../store/authStore';
 
 interface UserSummary {
@@ -212,7 +212,7 @@ export default function Teams() {
         setSelectedChannelId(nextTeams[0]?.channels[0]?.id || null);
         setError('');
       } catch {
-        setError('Unable to load teams');
+        setError('Unable to load spaces');
       } finally {
         setLoading(false);
       }
@@ -460,53 +460,53 @@ export default function Teams() {
   };
 
   return (
-    <AppShell active="teams" title="Samvaad" subtitle="Teams">
-      <div className="grid h-full min-h-0 grid-cols-[360px_minmax(0,1fr)] bg-slate-100">
-        <aside className="min-h-0 overflow-y-auto border-r border-slate-200 bg-slate-50 p-4">
+    <AppShell active="teams" title="Spaces" subtitle="Samvaad">
+      <div className="grid h-full min-h-0 grid-cols-[340px_minmax(0,1fr)] gap-3 bg-transparent p-3">
+        <aside className="min-h-0 overflow-y-auto rounded-md border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-slate-950">Teams</h2>
+            <h2 className="text-lg font-semibold text-slate-950">Spaces</h2>
             <button
               type="button"
               onClick={createTeam}
               disabled={saving || !teamName.trim()}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
-              title="Create team"
-              aria-label="Create team"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50"
+              title="Create space"
+              aria-label="Create space"
             >
               <PlusIcon />
             </button>
           </div>
 
-          <div className="mt-4 space-y-2 rounded-md border border-slate-200 bg-white p-3">
+          <div className="mt-4 space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
             <input
               value={teamName}
               onChange={(event) => setTeamName(event.target.value)}
-              placeholder="Team name"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+              placeholder="Space name"
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500"
             />
             <textarea
               value={teamDescription}
               onChange={(event) => setTeamDescription(event.target.value)}
               placeholder="Description"
               rows={2}
-              className="w-full resize-none rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+              className="w-full resize-none rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500"
             />
           </div>
 
           <div className="mt-4 space-y-2">
             {loading ? (
-              <p className="rounded-md bg-white p-3 text-sm text-slate-500">Loading teams...</p>
+              <p className="rounded-md bg-white p-3 text-sm text-slate-500">Loading spaces...</p>
             ) : teams.length === 0 ? (
-              <p className="rounded-md bg-white p-3 text-sm text-slate-500">Create your first team space.</p>
+              <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-500">Create your first shared space.</p>
             ) : teams.map((team) => (
-              <div key={team.id} className="rounded-md border border-slate-200 bg-white">
+              <div key={team.id} className="rounded-md border border-slate-200 bg-slate-50">
                 <button
                   type="button"
                   onClick={() => {
                     setSelectedTeamId(team.id);
                     setSelectedChannelId(team.channels[0]?.id || null);
                   }}
-                  className={`w-full px-3 py-3 text-left ${selectedTeamId === team.id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
+                  className={`w-full px-3 py-3 text-left ${selectedTeamId === team.id ? 'bg-teal-50' : 'hover:bg-white'}`}
                 >
                   <p className="truncate font-semibold text-slate-950">{team.name}</p>
                   <p className="mt-1 text-xs text-slate-500">{team.members.length} members</p>
@@ -519,7 +519,7 @@ export default function Teams() {
                         type="button"
                         onClick={() => setSelectedChannelId(channel.id)}
                         className={`mb-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm ${
-                          selectedChannelId === channel.id ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
+                          selectedChannelId === channel.id ? 'bg-slate-950 text-white' : 'text-slate-700 hover:bg-white'
                         }`}
                       >
                         <span className="text-slate-400">#</span>
@@ -537,7 +537,7 @@ export default function Teams() {
                         type="button"
                         onClick={createChannel}
                         disabled={saving || !channelName.trim()}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-white text-indigo-700 ring-1 ring-slate-300 hover:bg-indigo-50 disabled:opacity-50"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-white text-teal-700 ring-1 ring-slate-300 hover:bg-teal-50 disabled:opacity-50"
                         title="Add channel"
                         aria-label="Add channel"
                       >
@@ -551,15 +551,15 @@ export default function Teams() {
           </div>
         </aside>
 
-        <section className="flex min-h-0 flex-col overflow-hidden bg-white">
-          <header className="border-b border-slate-200 px-6 py-4">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+          <header className="border-b border-slate-200 bg-slate-50 px-6 py-4">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0">
-                <p className="text-xs font-semibold text-indigo-700">{selectedTeam?.name || 'Team space'}</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-teal-700">{selectedTeam?.name || 'Space'}</p>
                 <h2 className="truncate text-2xl font-semibold text-slate-950">
                   {selectedChannel ? `# ${selectedChannel.name}` : 'Select a channel'}
                 </h2>
-                <p className="mt-1 text-sm text-slate-500">{selectedChannel?.description || selectedTeam?.description || 'Channels bring conversations, files, meetings, and tabs together.'}</p>
+                <p className="mt-1 text-sm text-slate-500">{selectedChannel?.description || selectedTeam?.description || 'Keep conversations, files, meetings, and useful tabs together.'}</p>
               </div>
               {selectedTeam && (
                 <div className="w-full max-w-sm rounded-md border border-slate-200 bg-slate-50 p-3">
@@ -574,12 +574,12 @@ export default function Teams() {
                       type="button"
                       onClick={addMembers}
                       disabled={saving || selectedUserIds.length === 0}
-                      className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                      className="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
                     >
                       Add
                     </button>
                   </div>
-                  {selectedUserIds.length > 0 && <p className="mt-2 text-xs text-indigo-700">{selectedUsers.map(displayUser).join(', ')}</p>}
+                  {selectedUserIds.length > 0 && <p className="mt-2 text-xs text-teal-700">{selectedUsers.map(displayUser).join(', ')}</p>}
                   {memberQuery && (
                     <div className="mt-2 max-h-36 overflow-y-auto rounded-md border border-slate-200 bg-white">
                       {selectableUsers.map((candidate) => (
@@ -587,7 +587,7 @@ export default function Teams() {
                           key={candidate.id}
                           type="button"
                           onClick={() => toggleSelectedUser(candidate.id)}
-                          className={`block w-full px-3 py-2 text-left text-sm hover:bg-slate-50 ${selectedUserIds.includes(candidate.id) ? 'bg-indigo-50 text-indigo-700' : ''}`}
+                          className={`block w-full px-3 py-2 text-left text-sm hover:bg-slate-50 ${selectedUserIds.includes(candidate.id) ? 'bg-teal-50 text-teal-700' : ''}`}
                         >
                           <span className="block font-medium">{displayUser(candidate)}</span>
                           <span className="text-xs text-slate-500">{candidate.email}</span>
@@ -605,7 +605,7 @@ export default function Teams() {
                   type="button"
                   onClick={() => setActiveTab(tab)}
                   className={`rounded-md px-3 py-2 text-sm font-semibold capitalize ${
-                    activeTab === tab ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
+                    activeTab === tab ? 'bg-slate-950 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100'
                   }`}
                 >
                   {tab}
@@ -632,8 +632,8 @@ export default function Teams() {
                   const isMine = message.senderId === user?.id;
                   return (
                     <div key={message.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[720px] rounded-md px-4 py-3 text-sm ${isMine ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-900'}`}>
-                        <div className={`mb-1 flex gap-2 text-xs ${isMine ? 'text-indigo-100' : 'text-slate-500'}`}>
+                        <div className={`max-w-[720px] rounded-md px-4 py-3 text-sm ${isMine ? 'bg-teal-700 text-white' : 'bg-slate-100 text-slate-900'}`}>
+                        <div className={`mb-1 flex gap-2 text-xs ${isMine ? 'text-teal-100' : 'text-slate-500'}`}>
                           <span className="font-semibold">{message.senderName}</span>
                           <span>{formatTime(message.sentAt)}</span>
                         </div>
@@ -656,7 +656,7 @@ export default function Teams() {
                       <p className="truncate font-semibold text-slate-950">{file.fileName}</p>
                       <p className="text-xs text-slate-500">{file.senderName} - {formatFileSize(file.sizeBytes)} - {formatTime(file.sentAt)}</p>
                     </div>
-                    <button onClick={() => downloadFile(file)} className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700">Download</button>
+                    <button onClick={() => downloadFile(file)} className="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-700">Download</button>
                   </div>
                 ))}
               </div>
@@ -666,7 +666,7 @@ export default function Teams() {
                   type="button"
                   onClick={createMeeting}
                   disabled={saving}
-                  className="mb-4 inline-flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  className="mb-4 inline-flex items-center gap-2 rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
                 >
                   <VideoIcon />
                   Meet now
@@ -680,7 +680,7 @@ export default function Teams() {
                         <p className="font-semibold text-slate-950">{meeting.title}</p>
                         <p className="text-sm text-slate-500">{formatTime(meeting.startTime)}</p>
                       </div>
-                      <button onClick={() => navigate(getMeetingJoinPath(meeting.id))} className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800">Join</button>
+                      <button onClick={() => openMeetingJoinInNewTab(meeting.id, meeting.meetingLink)} className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800">Join</button>
                     </div>
                   ))}
                 </div>
@@ -695,9 +695,9 @@ export default function Teams() {
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <p className="font-semibold text-slate-950">{tab.title}</p>
-                          <p className="text-xs font-medium text-indigo-700">{tab.kind}</p>
+                          <p className="text-xs font-medium text-teal-700">{tab.kind}</p>
                         </div>
-                        {tab.url && <a href={tab.url} target="_blank" rel="noreferrer" className="rounded-md bg-white px-3 py-2 text-sm font-semibold text-indigo-700 ring-1 ring-slate-200">Open</a>}
+                        {tab.url && <a href={tab.url} target="_blank" rel="noreferrer" className="rounded-md bg-white px-3 py-2 text-sm font-semibold text-teal-700 ring-1 ring-slate-200">Open</a>}
                       </div>
                       {tab.content && <p className="mt-3 whitespace-pre-wrap text-sm text-slate-600">{tab.content}</p>}
                     </div>
@@ -715,7 +715,7 @@ export default function Teams() {
                     </select>
                     <input value={tabUrl} onChange={(event) => setTabUrl(event.target.value)} placeholder="URL for link tabs" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none" />
                     <textarea value={tabContent} onChange={(event) => setTabContent(event.target.value)} placeholder="Notes" rows={4} className="w-full resize-none rounded-md border border-slate-300 px-3 py-2 text-sm outline-none" />
-                    <button onClick={createTab} disabled={saving || !tabTitle.trim()} className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">Add tab</button>
+                    <button onClick={createTab} disabled={saving || !tabTitle.trim()} className="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50">Add tab</button>
                   </div>
                 </div>
               </div>
@@ -742,7 +742,7 @@ export default function Teams() {
                 <button type="button" onClick={() => fileInputRef.current?.click()} disabled={saving} className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-50" title="Attach file" aria-label="Attach file">
                   <PaperclipIcon />
                 </button>
-                <button type="button" onClick={sendMessage} disabled={saving || !messageDraft.trim()} className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50" title="Send" aria-label="Send">
+                <button type="button" onClick={sendMessage} disabled={saving || !messageDraft.trim()} className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50" title="Send" aria-label="Send">
                   <SendIcon />
                 </button>
               </div>

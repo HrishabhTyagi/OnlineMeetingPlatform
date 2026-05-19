@@ -7,6 +7,7 @@ import {
   getActiveOrganization,
   getOrganizationScopedPath,
   meetingAPI,
+  openMeetingJoinInNewTab,
   organizationAPI,
   resolveApiAssetUrl,
   type ActiveOrganization,
@@ -300,7 +301,7 @@ export default function Activity() {
           detail: formatDateTime(meeting.startTime),
           time: meeting.startTime,
           actionLabel: 'Join',
-          action: () => navigate(scopedPath(`/meeting/${meeting.id}`)),
+          action: () => openMeetingJoinInNewTab(meeting.id, meeting.meetingLink),
         });
       });
 

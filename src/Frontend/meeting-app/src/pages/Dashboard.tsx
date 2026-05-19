@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { useEffect, useMemo, useState, type DragEvent, type MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AppShell from '../components/AppShell';
 import CalendarSyncPanel from '../components/CalendarSyncPanel';
 import { ProfileStatusMenu, UserAvatar, UserStatus, UserStatusBadge } from '../components/UserStatus';
-import { getMeetingJoinPath, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, userAPI } from '../services/api';
+import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openMeetingJoinInNewTab, userAPI } from '../services/api';
 import { initializeSignalR, joinUserNotifications, notifyUserStatusChanged, onMeetingInvite, startSignalR } from '../services/signalR';
 import { useAuthStore } from '../store/authStore';
 import { Meeting, useMeetingStore } from '../store/meetingStore';
@@ -60,6 +60,12 @@ function addDays(date: Date, count: number) {
   const next = new Date(date);
   next.setDate(date.getDate() + count);
   return next;
+}
+
+function getMonthCalendarDays(date: Date) {
+  const first = new Date(date.getFullYear(), date.getMonth(), 1);
+  const start = startOfWeek(first);
+  return Array.from({ length: 42 }, (_, index) => addDays(start, index));
 }
 
 function formatMonthLabel(days: Date[]) {
@@ -174,6 +180,54 @@ function getRecordingLink(meeting: Meeting) {
     : `http://localhost:5000${meeting.recordingUrl}`;
 }
 
+function getMeetingEndDate(meeting: Meeting) {
+  if (meeting.endTime) {
+    return new Date(meeting.endTime);
+  }
+
+  return new Date(new Date(meeting.startTime).getTime() + getMeetingDurationMinutes(meeting) * 60000);
+}
+
+function getCalendarMeetingState(meeting: Meeting, now = new Date()) {
+  if (meeting.status === 'Cancelled') {
+    return 'cancelled';
+  }
+
+  if (meeting.status === 'Completed' || getMeetingEndDate(meeting) <= now) {
+    return 'completed';
+  }
+
+  if (new Date(meeting.startTime) <= now && getMeetingEndDate(meeting) > now) {
+    return 'ongoing';
+  }
+
+  return 'upcoming';
+}
+
+function canEditCalendarMeeting(meeting: Meeting) {
+  return getCalendarMeetingState(meeting) === 'upcoming';
+}
+
+function canJoinCalendarMeeting(meeting: Meeting) {
+  return getCalendarMeetingState(meeting) === 'ongoing' || getCalendarMeetingState(meeting) === 'upcoming';
+}
+
+function eventStateClasses(state: string) {
+  if (state === 'ongoing') {
+    return 'border-emerald-400 bg-emerald-50 text-emerald-950 hover:border-emerald-500 hover:bg-emerald-100';
+  }
+
+  if (state === 'completed') {
+    return 'border-slate-300 bg-slate-100 text-slate-600 hover:border-slate-400 hover:bg-slate-200';
+  }
+
+  if (state === 'cancelled') {
+    return 'border-red-200 bg-red-50 text-red-700 line-through hover:border-red-300 hover:bg-red-100';
+  }
+
+  return 'border-indigo-300 bg-indigo-50 text-indigo-950 hover:border-indigo-500 hover:bg-indigo-100';
+}
+
 function normalizeRecurrence(rule?: string) {
   return RECURRENCE_OPTIONS.some((option) => option.value === rule) ? rule || '' : '';
 }
@@ -235,6 +289,20 @@ function findUserByEmail(users: UserSummary[], email: string) {
   return users.find((item) => item.email.toLowerCase() === email.toLowerCase());
 }
 
+function hasMeetingConflict(meetings: Meeting[], start: Date, durationMinutes: number, excludedMeetingId?: string) {
+  const end = new Date(start.getTime() + durationMinutes * 60000);
+
+  return meetings.some((meeting) => {
+    if (meeting.id === excludedMeetingId || ['Completed', 'Cancelled'].includes(meeting.status)) {
+      return false;
+    }
+
+    const meetingStart = new Date(meeting.startTime);
+    const meetingEnd = getMeetingEndDate(meeting);
+    return meetingStart < end && meetingEnd > start;
+  });
+}
+
 function showBrowserMeetingNotification(meeting: Meeting) {
   if (!('Notification' in window) || Notification.permission !== 'granted') {
     return;
@@ -247,7 +315,7 @@ function showBrowserMeetingNotification(meeting: Meeting) {
 
   notification.onclick = () => {
     window.focus();
-    window.location.href = getMeetingJoinUrl(meeting.id, meeting.meetingLink);
+    openMeetingJoinInNewTab(meeting.id, meeting.meetingLink);
   };
 }
 
@@ -324,34 +392,190 @@ interface EditMeetingForm extends QuickScheduleForm {
   allowTranscription: boolean;
 }
 
+interface CalendarMeetingLayout {
+  meeting: Meeting;
+  top: number;
+  height: number;
+  leftPercent: number;
+  widthPercent: number;
+  laneCount: number;
+}
+
+interface CalendarMeetingLayoutSeed {
+  meeting: Meeting;
+  startMinute: number;
+  endMinute: number;
+  top: number;
+  height: number;
+}
+
+function getCalendarMeetingLayouts(meetings: Meeting[]): CalendarMeetingLayout[] {
+  const seeds = meetings
+    .map((meeting) => {
+      const start = new Date(meeting.startTime);
+      const rawStartMinute = minutesSinceStartOfDay(start);
+      const rawEndMinute = rawStartMinute + getMeetingDurationMinutes(meeting);
+      const startMinute = Math.max(0, Math.min(24 * 60, rawStartMinute));
+      const endMinute = Math.max(0, Math.min(24 * 60, rawEndMinute));
+
+      if (endMinute <= startMinute) {
+        return null;
+      }
+
+      const renderedHeight = Math.max(28, (endMinute - startMinute) / 60 * HOUR_HEIGHT);
+      const top = Math.min(startMinute / 60 * HOUR_HEIGHT, DAY_GRID_HEIGHT - renderedHeight);
+
+      return {
+        meeting,
+        startMinute,
+        endMinute,
+        top,
+        height: renderedHeight,
+      };
+    })
+    .filter((layout): layout is CalendarMeetingLayoutSeed => Boolean(layout))
+    .sort((left, right) => left.startMinute - right.startMinute || left.endMinute - right.endMinute);
+
+  const layouts: CalendarMeetingLayout[] = [];
+  let cluster: CalendarMeetingLayoutSeed[] = [];
+  let clusterEndMinute = -1;
+
+  const flushCluster = () => {
+    if (cluster.length === 0) {
+      return;
+    }
+
+    const laneEndMinutes: number[] = [];
+    const assigned = cluster.map((item) => {
+      const reusableLane = laneEndMinutes.findIndex((endMinute) => endMinute <= item.startMinute);
+      const laneIndex = reusableLane >= 0 ? reusableLane : laneEndMinutes.length;
+      laneEndMinutes[laneIndex] = item.endMinute;
+      return { ...item, laneIndex };
+    });
+    const laneCount = Math.max(1, laneEndMinutes.length);
+
+    assigned.forEach((item) => {
+      layouts.push({
+        meeting: item.meeting,
+        top: item.top,
+        height: item.height,
+        leftPercent: item.laneIndex / laneCount * 100,
+        widthPercent: 100 / laneCount,
+        laneCount,
+      });
+    });
+
+    cluster = [];
+    clusterEndMinute = -1;
+  };
+
+  seeds.forEach((item) => {
+    if (cluster.length > 0 && item.startMinute >= clusterEndMinute) {
+      flushCluster();
+    }
+
+    cluster.push(item);
+    clusterEndMinute = Math.max(clusterEndMinute, item.endMinute);
+  });
+
+  flushCluster();
+  return layouts;
+}
+
 function TimeGridCalendar({
   days,
   meetingsByDay,
   onMeetingClick,
   onTimeSlotClick,
+  onMeetingReschedule,
 }: {
   days: Date[];
   meetingsByDay: Array<{ day: Date; meetings: Meeting[] }>;
   onMeetingClick: (meeting: Meeting) => void;
   onTimeSlotClick: (start: Date) => void;
+  onMeetingReschedule: (meeting: Meeting, start: Date) => Promise<void>;
 }) {
   const now = new Date();
+  const [blockedHoverDay, setBlockedHoverDay] = useState<string | null>(null);
   const todayIndex = days.findIndex((day) => sameDate(day, now));
   const currentTimeTop = minutesSinceStartOfDay(now) / 60 * HOUR_HEIGHT;
   const gridTemplateColumns = `64px repeat(${days.length}, minmax(170px, 1fr))`;
 
-  const handleColumnClick = (event: MouseEvent<HTMLDivElement>, day: Date) => {
+  const getSlotStartFromPointer = (event: MouseEvent<HTMLDivElement> | DragEvent<HTMLDivElement>, day: Date) => {
     const bounds = event.currentTarget.getBoundingClientRect();
     const offsetY = Math.max(0, Math.min(DAY_GRID_HEIGHT, event.clientY - bounds.top));
     const clickedMinutes = offsetY / HOUR_HEIGHT * 60;
-    const roundedMinutes = Math.floor(clickedMinutes / 30) * 30;
-    onTimeSlotClick(createSlotDate(day, roundedMinutes));
+    const roundedMinutes = Math.min(23 * 60 + 30, Math.floor(clickedMinutes / 30) * 30);
+    return createSlotDate(day, roundedMinutes);
+  };
+
+  const handleColumnClick = (event: MouseEvent<HTMLDivElement>, day: Date) => {
+    const start = getSlotStartFromPointer(event, day);
+    if (start < new Date(Date.now() - 60000)) {
+      return;
+    }
+
+    onTimeSlotClick(start);
+  };
+
+  const handleMeetingDragStart = (event: DragEvent<HTMLButtonElement>, meeting: Meeting) => {
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-samvaad-meeting', JSON.stringify({
+      id: meeting.id,
+      startTime: meeting.startTime,
+    }));
+  };
+
+  const handleMeetingDrop = async (event: DragEvent<HTMLDivElement>, day: Date) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const payload = event.dataTransfer.getData('application/x-samvaad-meeting');
+    if (!payload) {
+      return;
+    }
+
+    let parsed: { id: string; startTime: string };
+    try {
+      parsed = JSON.parse(payload) as { id: string; startTime: string };
+    } catch {
+      return;
+    }
+    const draggedMeeting = meetingsByDay
+      .flatMap((item) => item.meetings)
+      .find((meeting) => meeting.id === parsed.id && meeting.startTime === parsed.startTime)
+      || meetingsByDay.flatMap((item) => item.meetings).find((meeting) => meeting.id === parsed.id);
+
+    if (!draggedMeeting) {
+      return;
+    }
+
+    const nextStart = getSlotStartFromPointer(event, day);
+    if (nextStart < new Date(Date.now() - 60000)) {
+      window.alert('This time has already passed. Choose a future time for the meeting.');
+      return;
+    }
+
+    const nextEnd = new Date(nextStart.getTime() + getMeetingDurationMinutes(draggedMeeting) * 60000);
+    const confirmMessage = [
+      `Move "${draggedMeeting.title}"?`,
+      `${formatDateTime(nextStart)} - ${formatTime(nextEnd.toISOString())}`,
+      draggedMeeting.recurrenceRule ? 'This meeting repeats, so the meeting schedule will be updated.' : '',
+      'Do you really want to change this meeting time?',
+    ].filter(Boolean).join('\n');
+
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    await onMeetingReschedule(draggedMeeting, nextStart);
   };
 
   return (
-    <section className="overflow-hidden rounded-md border border-slate-200 bg-white">
-      <div className="grid border-b border-slate-200 bg-white" style={{ gridTemplateColumns }}>
-        <div className="border-r border-slate-200 px-3 py-3 text-xs font-medium text-slate-400">
+    <section className="samvaad-calendar overflow-hidden rounded-md border border-slate-200 bg-white">
+      <div className="samvaad-calendar-header grid border-b border-slate-200 bg-white" style={{ gridTemplateColumns }}>
+        <div className="samvaad-calendar-time-header border-r border-slate-200 px-3 py-3 text-xs font-medium text-slate-400">
           Time
         </div>
         {days.map((day) => {
@@ -374,9 +598,9 @@ function TimeGridCalendar({
         })}
       </div>
 
-      <div className="max-h-[calc(100vh-330px)] min-h-[560px] overflow-auto">
+      <div className="samvaad-calendar-scroll max-h-[calc(100vh-330px)] min-h-[560px] overflow-auto">
         <div className="relative grid min-w-[960px]" style={{ gridTemplateColumns, height: DAY_GRID_HEIGHT }}>
-          <div className="border-r border-slate-200 bg-white">
+          <div className="samvaad-calendar-time-column border-r border-slate-200 bg-white">
             {HOURS.map((hour) => (
               <div key={hour} className="relative border-t border-slate-200" style={{ height: HOUR_HEIGHT }}>
                 <span className="absolute left-3 top-1 text-xs text-slate-500">{formatHourLabel(hour)}</span>
@@ -384,11 +608,31 @@ function TimeGridCalendar({
             ))}
           </div>
 
-          {meetingsByDay.map(({ day, meetings: dayMeetings }) => (
+          {meetingsByDay.map(({ day, meetings: dayMeetings }) => {
+            const dayKey = toDateInputValue(day);
+            const isPastDay = createSlotDate(day, 24 * 60 - 1) < new Date(Date.now() - 60000);
+            const cursorClass = isPastDay || blockedHoverDay === dayKey ? 'cursor-not-allowed' : 'cursor-crosshair';
+            return (
             <div
               key={day.toISOString()}
+              title={isPastDay ? 'Past time cannot be scheduled' : 'Click a future time to schedule'}
               onClick={(event) => handleColumnClick(event, day)}
-              className="relative cursor-crosshair border-r border-slate-200 last:border-r-0"
+              onMouseMove={(event) => {
+                const start = getSlotStartFromPointer(event, day);
+                setBlockedHoverDay(start < new Date(Date.now() - 60000) ? dayKey : null);
+              }}
+              onMouseLeave={() => {
+                if (blockedHoverDay === dayKey) {
+                  setBlockedHoverDay(null);
+                }
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                const start = getSlotStartFromPointer(event, day);
+                event.dataTransfer.dropEffect = start < new Date(Date.now() - 60000) ? 'none' : 'move';
+              }}
+              onDrop={(event) => handleMeetingDrop(event, day)}
+              className={`samvaad-calendar-day-column relative border-r border-slate-200 last:border-r-0 ${cursorClass}`}
             >
               {HOURS.map((hour) => (
                 <div key={hour} className="border-t border-slate-200" style={{ height: HOUR_HEIGHT }}>
@@ -396,28 +640,34 @@ function TimeGridCalendar({
                 </div>
               ))}
 
-              {dayMeetings.map((meeting) => {
-                const start = new Date(meeting.startTime);
-                const top = Math.max(0, minutesSinceStartOfDay(start) / 60 * HOUR_HEIGHT);
-                const height = Math.max(38, getMeetingDurationMinutes(meeting) / 60 * HOUR_HEIGHT);
+              {getCalendarMeetingLayouts(dayMeetings).map(({ meeting, top, height, leftPercent, widthPercent }) => {
+                const state = getCalendarMeetingState(meeting, now);
                 return (
                   <button
                     key={`${meeting.id}-${meeting.startTime}`}
+                    draggable={canEditCalendarMeeting(meeting)}
+                    onDragStart={(event) => handleMeetingDragStart(event, meeting)}
                     onClick={(event) => {
                       event.stopPropagation();
                       onMeetingClick(meeting);
                     }}
-                    className="absolute left-2 right-2 z-10 overflow-hidden rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-2 text-left text-indigo-950 shadow-sm hover:border-indigo-400 hover:bg-indigo-100"
-                    style={{ top, height }}
+                    className={`samvaad-calendar-event absolute z-10 overflow-hidden rounded-md border px-2 py-1.5 text-left shadow-sm transition hover:z-20 ${eventStateClasses(state)}`}
+                    style={{
+                      top,
+                      height,
+                      left: `calc(${leftPercent}% + 4px)`,
+                      width: `calc(${widthPercent}% - 8px)`,
+                    }}
                   >
-                    <p className="truncate text-xs font-semibold text-indigo-700">{formatTime(meeting.startTime)}</p>
-                    <p className="truncate text-sm font-semibold">{meeting.title}</p>
-                    <p className="truncate text-xs text-indigo-800">{getMeetingDurationMinutes(meeting)} min</p>
+                    <p className="truncate text-[11px] font-semibold capitalize leading-tight">{state} - {formatTime(meeting.startTime)}</p>
+                    <p className="truncate text-xs font-semibold leading-tight sm:text-sm">{meeting.title}</p>
+                    <p className="truncate text-[11px] leading-tight">{getMeetingDurationMinutes(meeting)} min</p>
                   </button>
                 );
               })}
             </div>
-          ))}
+          );
+          })}
 
           {todayIndex >= 0 && (
             <div
@@ -428,6 +678,95 @@ function TimeGridCalendar({
             </div>
           )}
         </div>
+      </div>
+    </section>
+  );
+}
+
+function MonthCalendar({
+  days,
+  selectedDate,
+  meetingsByDay,
+  onMeetingClick,
+  onTimeSlotClick,
+}: {
+  days: Date[];
+  selectedDate: Date;
+  meetingsByDay: Array<{ day: Date; meetings: Meeting[] }>;
+  onMeetingClick: (meeting: Meeting) => void;
+  onTimeSlotClick: (start: Date) => void;
+}) {
+  const now = new Date();
+  const meetingsByDate = new Map(meetingsByDay.map((item) => [toDateInputValue(item.day), item.meetings]));
+
+  const createMonthSlot = (day: Date) => {
+    const slot = new Date(day);
+    const roundedHour = Math.max(now.getHours() + 1, 9);
+    slot.setHours(sameDate(day, now) ? Math.min(23, roundedHour) : 9, 0, 0, 0);
+    return slot;
+  };
+
+  return (
+    <section className="samvaad-calendar overflow-hidden rounded-md border border-slate-200 bg-white">
+      <div className="grid grid-cols-7 border-b border-slate-200 bg-white">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((label) => (
+          <div key={label} className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            {label}
+          </div>
+        ))}
+      </div>
+      <div className="grid min-h-[640px] grid-cols-7">
+        {days.map((day) => {
+          const dayKey = toDateInputValue(day);
+          const dayMeetings = meetingsByDate.get(dayKey) || [];
+          const isCurrentMonth = day.getMonth() === selectedDate.getMonth();
+          const isPastDay = createSlotDate(day, 24 * 60 - 1) < new Date(Date.now() - 60000);
+
+          return (
+            <div
+              key={dayKey}
+              onClick={() => {
+                const slot = createMonthSlot(day);
+                if (slot < new Date(Date.now() - 60000)) {
+                  return;
+                }
+                onTimeSlotClick(slot);
+              }}
+              title={isPastDay ? 'Past days cannot be scheduled' : 'Click to schedule on this day'}
+              className={`min-h-28 border-r border-t border-slate-200 p-2 last:border-r-0 ${
+                isPastDay ? 'cursor-not-allowed bg-slate-50' : 'cursor-pointer hover:bg-blue-50/40'
+              } ${isCurrentMonth ? 'text-slate-900' : 'bg-slate-50/70 text-slate-400'}`}
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <span className={`flex h-7 w-7 items-center justify-center rounded-full text-sm font-semibold ${sameDate(day, now) ? 'bg-indigo-600 text-white' : ''}`}>
+                  {day.getDate()}
+                </span>
+              </div>
+              <div className="space-y-1">
+                {dayMeetings.slice(0, 4).map((meeting) => {
+                  const state = getCalendarMeetingState(meeting, now);
+                  return (
+                    <button
+                      key={`${meeting.id}-${meeting.startTime}`}
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onMeetingClick(meeting);
+                      }}
+                      className={`block w-full rounded border px-2 py-1 text-left text-[11px] shadow-sm ${eventStateClasses(state)}`}
+                    >
+                      <span className="block truncate font-semibold">{formatTime(meeting.startTime)} - {meeting.title}</span>
+                      <span className="block truncate">{getMeetingDurationMinutes(meeting)} min</span>
+                    </button>
+                  );
+                })}
+                {dayMeetings.length > 4 && (
+                  <p className="px-1 text-xs font-semibold text-slate-500">+{dayMeetings.length - 4} more</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
@@ -735,6 +1074,8 @@ function MeetingDetailsModal({
   const durationMinutes = editMode ? Number(editForm.durationMinutes) : getMeetingDurationMinutes(meeting);
   const meetingEnd = new Date(meetingStart.getTime() + durationMinutes * 60000);
   const joinLink = getJoinLink(meeting);
+  const editable = canEditCalendarMeeting(meeting);
+  const joinable = canJoinCalendarMeeting(meeting);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6">
@@ -782,9 +1123,6 @@ function MeetingDetailsModal({
                   <input readOnly value={joinLink} className="min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700" />
                   <button onClick={onCopy} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
                     {copyStatus || 'Copy'}
-                  </button>
-                  <button onClick={onJoin} className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700">
-                    Join
                   </button>
                 </div>
               </div>
@@ -906,15 +1244,26 @@ function MeetingDetailsModal({
         <div className="flex flex-wrap justify-end gap-3 border-t border-slate-200 px-5 py-4">
           {!editMode ? (
             <>
-              <button onClick={onCancelMeeting} className="mr-auto rounded-md border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50">
-                Cancel meeting
-              </button>
-              <button onClick={onEdit} className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-                Edit
-              </button>
-              <button onClick={onJoin} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">
-                Join
-              </button>
+              {editable && (
+                <>
+                  <button onClick={onCancelMeeting} className="mr-auto rounded-md border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50">
+                    Cancel meeting
+                  </button>
+                  <button onClick={onEdit} className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                    Edit
+                  </button>
+                </>
+              )}
+              {joinable && (
+                <button onClick={onJoin} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">
+                  Join
+                </button>
+              )}
+              {!editable && !joinable && (
+                <span className="mr-auto rounded-md bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">
+                  Past meeting: chat and recordings only
+                </span>
+              )}
             </>
           ) : (
             <>
@@ -943,9 +1292,10 @@ export default function Dashboard() {
   const meetings = useMeetingStore((state) => state.meetings);
   const setMeetings = useMeetingStore((state) => state.setMeetings);
   const addMeeting = useMeetingStore((state) => state.addMeeting);
+  const updateMeetingInStore = useMeetingStore((state) => state.updateMeeting);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'calendar' | 'list'>('calendar');
-  const [calendarRange, setCalendarRange] = useState<'workWeek' | 'week'>('workWeek');
+  const [calendarRange, setCalendarRange] = useState<'workWeek' | 'week' | 'month'>('workWeek');
   const [dashboardView, setDashboardView] = useState<'calendar' | 'recordings'>('calendar');
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [notices, setNotices] = useState<string[]>([]);
@@ -1063,6 +1413,10 @@ export default function Dashboard() {
   }, [sortedMeetings]);
 
   const weekDays = useMemo(() => {
+    if (calendarRange === 'month') {
+      return getMonthCalendarDays(selectedDate);
+    }
+
     const start = calendarRange === 'workWeek' ? startOfWorkWeek(selectedDate) : startOfWeek(selectedDate);
     const dayCount = calendarRange === 'workWeek' ? 5 : 7;
     return Array.from({ length: dayCount }, (_, index) => addDays(start, index));
@@ -1151,6 +1505,10 @@ export default function Dashboard() {
   };
 
   const openQuickSchedule = (start: Date) => {
+    if (start < new Date(Date.now() - 60000)) {
+      return;
+    }
+
     setQuickScheduleForm(createQuickScheduleForm(start));
     setQuickScheduleError('');
     setQuickCreatedMeeting(null);
@@ -1187,6 +1545,11 @@ export default function Dashboard() {
 
     if (Number.isNaN(startDate.getTime()) || startDate < new Date(Date.now() - 60000)) {
       setQuickScheduleError('Choose a valid future start time');
+      return;
+    }
+
+    if (hasMeetingConflict(meetings, startDate, durationMinutes)) {
+      setQuickScheduleError('You already have a meeting in this time range.');
       return;
     }
 
@@ -1295,6 +1658,11 @@ export default function Dashboard() {
       return;
     }
 
+    if (hasMeetingConflict(meetings, startDate, durationMinutes, selectedMeeting.id)) {
+      setMeetingModalError('You already have a meeting in this time range.');
+      return;
+    }
+
     setMeetingSaving(true);
     setMeetingModalError('');
 
@@ -1330,6 +1698,55 @@ export default function Dashboard() {
     }
   };
 
+  const rescheduleMeeting = async (calendarMeeting: Meeting, nextStart: Date) => {
+    const sourceMeeting = meetings.find((meeting) => meeting.id === calendarMeeting.id) || calendarMeeting;
+    const durationMinutes = getMeetingDurationMinutes(calendarMeeting);
+    const nextEnd = new Date(nextStart.getTime() + durationMinutes * 60000);
+
+    if (Number.isNaN(nextStart.getTime()) || nextStart < new Date(Date.now() - 60000)) {
+      window.alert('Choose a valid future start time.');
+      return;
+    }
+
+    if (hasMeetingConflict(meetings, nextStart, durationMinutes, sourceMeeting.id)) {
+      window.alert('You already have a meeting in this time range.');
+      return;
+    }
+
+    try {
+      const response = await meetingAPI.updateMeeting(sourceMeeting.id, {
+        title: sourceMeeting.title,
+        description: sourceMeeting.description || '',
+        startTime: nextStart.toISOString(),
+        endTime: nextEnd.toISOString(),
+        durationMinutes,
+        attendeeEmails: sourceMeeting.attendeeEmails || [],
+        location: sourceMeeting.location || '',
+        isOnlineMeeting: sourceMeeting.isOnlineMeeting,
+        lobbyEnabled: sourceMeeting.lobbyEnabled,
+        allowChat: sourceMeeting.allowChat,
+        allowReactions: sourceMeeting.allowReactions,
+        allowScreenShare: sourceMeeting.allowScreenShare,
+        allowAttendeeUnmute: sourceMeeting.allowAttendeeUnmute,
+        allowRecording: sourceMeeting.allowRecording,
+        allowTranscription: sourceMeeting.allowTranscription,
+        recurrenceRule: sourceMeeting.recurrenceRule || '',
+        maxParticipants: sourceMeeting.maxParticipants || 100,
+      });
+
+      updateMeetingInStore(sourceMeeting.id, response.data);
+      if (selectedMeeting?.id === sourceMeeting.id) {
+        setSelectedMeeting(response.data);
+        setMeetingEditForm(toEditMeetingForm(response.data));
+      }
+      addNotification({ message: `${response.data.title} moved to ${formatDateTime(nextStart)}`, meetingId: response.data.id });
+    } catch (err: any) {
+      const message = err.response?.data?.message || err.response?.data || 'Failed to move meeting';
+      setNotices((items) => [message, ...items].slice(0, 3));
+      window.alert(message);
+    }
+  };
+
   const cancelSelectedMeeting = async () => {
     if (!selectedMeeting) {
       return;
@@ -1353,7 +1770,11 @@ export default function Dashboard() {
   const moveWeek = (offset: number) => {
     setSelectedDate((current) => {
       const next = new Date(current);
-      next.setDate(current.getDate() + offset * 7);
+      if (calendarRange === 'month') {
+        next.setMonth(current.getMonth() + offset);
+      } else {
+        next.setDate(current.getDate() + offset * 7);
+      }
       return next;
     });
   };
@@ -1491,11 +1912,12 @@ export default function Dashboard() {
               </button>
               <select
                 value={calendarRange}
-                onChange={(event) => setCalendarRange(event.target.value as 'workWeek' | 'week')}
+                onChange={(event) => setCalendarRange(event.target.value as 'workWeek' | 'week' | 'month')}
                 className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 outline-none focus:border-blue-500"
               >
                 <option value="workWeek">Work week</option>
                 <option value="week">Full week</option>
+                <option value="month">Month</option>
               </select>
             </div>
           )}
@@ -1510,7 +1932,7 @@ export default function Dashboard() {
                 <span>{notice}</span>
                 {sortedMeetings[0] && (
                   <button
-                    onClick={() => navigate(getMeetingJoinPath(sortedMeetings[0].id))}
+                    onClick={() => openMeetingJoinInNewTab(sortedMeetings[0].id, sortedMeetings[0].meetingLink)}
                     className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
                   >
                     Join
@@ -1566,12 +1988,23 @@ export default function Dashboard() {
             </div>
           </section>
         ) : view === 'calendar' ? (
-          <TimeGridCalendar
-            days={weekDays}
-            meetingsByDay={meetingsByDay}
-            onMeetingClick={openMeetingDetails}
-            onTimeSlotClick={openQuickSchedule}
-          />
+          calendarRange === 'month' ? (
+            <MonthCalendar
+              days={weekDays}
+              selectedDate={selectedDate}
+              meetingsByDay={meetingsByDay}
+              onMeetingClick={openMeetingDetails}
+              onTimeSlotClick={openQuickSchedule}
+            />
+          ) : (
+            <TimeGridCalendar
+              days={weekDays}
+              meetingsByDay={meetingsByDay}
+              onMeetingClick={openMeetingDetails}
+              onTimeSlotClick={openQuickSchedule}
+              onMeetingReschedule={rescheduleMeeting}
+            />
+          )
         ) : meetings.length === 0 ? (
           <div className="rounded-md border border-slate-200 bg-white py-12 text-center">
             <p className="mb-4 text-slate-500">You haven't created any meetings yet.</p>
@@ -1603,7 +2036,7 @@ export default function Dashboard() {
           onClose={closeQuickSchedule}
           onSubmit={submitQuickSchedule}
           onCopy={copyQuickJoinLink}
-          onJoin={(meeting) => navigate(getMeetingJoinPath(meeting.id))}
+          onJoin={(meeting) => openMeetingJoinInNewTab(meeting.id, meeting.meetingLink)}
         />
       )}
       {selectedMeeting && meetingEditForm && (
@@ -1616,7 +2049,7 @@ export default function Dashboard() {
           error={meetingModalError}
           copyStatus={meetingCopyStatus}
           onClose={closeMeetingDetails}
-          onJoin={() => navigate(getMeetingJoinPath(selectedMeeting.id))}
+          onJoin={() => openMeetingJoinInNewTab(selectedMeeting.id, selectedMeeting.meetingLink)}
           onCopy={copyMeetingJoinLink}
           onEdit={() => setMeetingEditMode(true)}
           onEditChange={updateMeetingEditForm}

@@ -34,6 +34,10 @@ public class ParticipantsController : ControllerBase
             var participant = await _meetingService.JoinMeetingAsync(meetingId, userId, request);
             return Ok(MapToDto(participant));
         }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error joining meeting");
@@ -116,6 +120,42 @@ public class ParticipantsController : ControllerBase
         }
     }
 
+    [HttpPut("{participantId}/hand")]
+    public async Task<ActionResult<ParticipantDto>> UpdateParticipantHand(Guid participantId, [FromBody] UpdateParticipantHandRequest request)
+    {
+        try
+        {
+            var participant = await _meetingService.UpdateParticipantHandAsync(participantId, request.IsHandRaised);
+            if (participant == null)
+                return NotFound();
+
+            return Ok(MapToDto(participant));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating participant hand status");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPut("{participantId}/reaction")]
+    public async Task<ActionResult<ParticipantDto>> UpdateParticipantReaction(Guid participantId, [FromBody] UpdateParticipantReactionRequest request)
+    {
+        try
+        {
+            var participant = await _meetingService.UpdateParticipantReactionAsync(participantId, request.Reaction);
+            if (participant == null)
+                return NotFound();
+
+            return Ok(MapToDto(participant));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating participant reaction");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
     private ParticipantDto MapToDto(Participant participant)
     {
         return new ParticipantDto
@@ -142,4 +182,14 @@ public class UpdateParticipantStatusRequest
     public bool AudioEnabled { get; set; }
     public bool VideoEnabled { get; set; }
     public bool ScreenSharing { get; set; }
+}
+
+public class UpdateParticipantHandRequest
+{
+    public bool IsHandRaised { get; set; }
+}
+
+public class UpdateParticipantReactionRequest
+{
+    public string? Reaction { get; set; }
 }

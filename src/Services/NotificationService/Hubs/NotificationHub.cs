@@ -121,7 +121,8 @@ public class NotificationHub : Hub
         long? attachmentSizeBytes = null,
         string? replyToMessageId = null,
         string? replyToSenderName = null,
-        string? replyToPreview = null)
+        string? replyToPreview = null,
+        bool isImportant = false)
     {
         if (string.IsNullOrWhiteSpace(message) && string.IsNullOrWhiteSpace(attachmentUrl))
         {
@@ -142,6 +143,7 @@ public class NotificationHub : Hub
             ReplyToMessageId = replyToMessageId,
             ReplyToSenderName = replyToSenderName,
             ReplyToPreview = replyToPreview,
+            IsImportant = isImportant,
             Timestamp = DateTime.UtcNow
         };
 
@@ -160,7 +162,8 @@ public class NotificationHub : Hub
         string senderName,
         string message,
         DateTime editedAt,
-        List<string> recipientUserIds)
+        List<string> recipientUserIds,
+        bool isImportant = false)
     {
         if (string.IsNullOrWhiteSpace(message))
         {
@@ -175,6 +178,7 @@ public class NotificationHub : Hub
             SenderName = senderName,
             Message = message.TrimEnd(),
             EditedAt = editedAt,
+            IsImportant = isImportant,
             Timestamp = DateTime.UtcNow
         };
 
@@ -248,6 +252,32 @@ public class NotificationHub : Hub
         }
     }
 
+    public async Task SendIncomingCallCancelled(
+        string conversationId,
+        string meetingId,
+        string callerUserId,
+        string callerName,
+        string recipientUserId,
+        string message)
+    {
+        if (string.IsNullOrWhiteSpace(meetingId) || string.IsNullOrWhiteSpace(recipientUserId))
+        {
+            return;
+        }
+
+        var payload = new
+        {
+            ConversationId = conversationId,
+            MeetingId = meetingId,
+            CallerUserId = callerUserId,
+            CallerName = string.IsNullOrWhiteSpace(callerName) ? "Someone" : callerName,
+            Message = string.IsNullOrWhiteSpace(message) ? "Sorry, I called you by mistake." : message.Trim(),
+            Timestamp = DateTime.UtcNow
+        };
+
+        await Clients.Group($"user_{recipientUserId}").SendAsync("IncomingCallCancelled", payload);
+    }
+
     public async Task SendWebRtcOffer(string meetingId, string senderUserId, string targetUserId, string sdp)
     {
         await Clients.OthersInGroup($"meeting_{meetingId}").SendAsync("WebRtcOffer", new
@@ -291,6 +321,19 @@ public class NotificationHub : Hub
             AudioEnabled = audioEnabled,
             VideoEnabled = videoEnabled,
             ScreenSharing = screenSharing,
+            Timestamp = DateTime.UtcNow
+        });
+    }
+
+    public async Task NotifyParticipantEngagementChanged(string meetingId, string userId, string participantName, bool isHandRaised, string? reaction)
+    {
+        await Clients.OthersInGroup($"meeting_{meetingId}").SendAsync("ParticipantEngagementChanged", new
+        {
+            MeetingId = meetingId,
+            UserId = userId,
+            ParticipantName = participantName,
+            IsHandRaised = isHandRaised,
+            Reaction = string.IsNullOrWhiteSpace(reaction) ? null : reaction,
             Timestamp = DateTime.UtcNow
         });
     }
@@ -372,6 +415,18 @@ public class NotificationHub : Hub
     {
         await Clients.Group($"meeting_{meetingId}").SendAsync("MeetingEnded", new
         {
+            Timestamp = DateTime.UtcNow
+        });
+    }
+
+    public async Task NotifyWhiteboardUpdated(string meetingId, string userId, string userName, string whiteboardData)
+    {
+        await Clients.OthersInGroup($"meeting_{meetingId}").SendAsync("WhiteboardUpdated", new
+        {
+            MeetingId = meetingId,
+            UserId = userId,
+            UserName = userName,
+            WhiteboardData = whiteboardData,
             Timestamp = DateTime.UtcNow
         });
     }

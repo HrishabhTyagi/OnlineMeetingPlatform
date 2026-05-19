@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import AppShell from '../components/AppShell';
 import { useSamvaadTheme } from '../components/ThemeProvider';
 import { ProfileStatusMenu, UserStatus } from '../components/UserStatus';
-import { getMeetingJoinPath, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, userAPI } from '../services/api';
+import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openMeetingJoinInNewTab, userAPI } from '../services/api';
 import { notifyUserStatusChanged } from '../services/signalR';
 import { useAuthStore } from '../store/authStore';
 import { Meeting, useMeetingStore } from '../store/meetingStore';
@@ -290,7 +290,7 @@ export default function Meet() {
 
     setError('');
     setJoinModalOpen(false);
-    navigate(getMeetingJoinPath(meetingId));
+    openMeetingJoinInNewTab(meetingId);
   };
 
   return (
@@ -410,7 +410,7 @@ export default function Meet() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => navigate(getMeetingJoinPath(meeting.id))}
+                          onClick={() => openMeetingJoinInNewTab(meeting.id, meeting.meetingLink)}
                           className="inline-flex h-9 items-center gap-2 rounded-md bg-indigo-600 px-3 text-sm font-semibold text-white hover:bg-indigo-700"
                         >
                           Join
@@ -492,7 +492,7 @@ export default function Meet() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => navigate(getMeetingJoinPath(meeting.id))}
+                          onClick={() => openMeetingJoinInNewTab(meeting.id, meeting.meetingLink)}
                           className="inline-flex h-9 items-center gap-2 rounded-md bg-slate-900 px-3 text-sm font-semibold text-white hover:bg-slate-800"
                         >
                           Join

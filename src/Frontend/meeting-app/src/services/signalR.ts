@@ -143,6 +143,20 @@ export const onMeetingInvite = (callback: (data: any) => void) => {
   }
 };
 
+export const onMeetingEnded = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.off('MeetingEnded');
+    connection.on('MeetingEnded', callback);
+  }
+};
+
+export const onWhiteboardUpdated = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.off('WhiteboardUpdated');
+    connection.on('WhiteboardUpdated', callback);
+  }
+};
+
 export const notifyParticipantJoined = async (meetingId: string, participantName: string) => {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     await connection.invoke('NotifyParticipantJoined', meetingId, participantName);
@@ -152,6 +166,23 @@ export const notifyParticipantJoined = async (meetingId: string, participantName
 export const notifyParticipantLeft = async (meetingId: string, participantName: string) => {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     await connection.invoke('NotifyParticipantLeft', meetingId, participantName);
+  }
+};
+
+export const notifyMeetingEnded = async (meetingId: string) => {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    await connection.invoke('NotifyMeetingEnded', meetingId);
+  }
+};
+
+export const notifyWhiteboardUpdated = async (
+  meetingId: string,
+  userId: string,
+  userName: string,
+  whiteboardData: string,
+) => {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    await connection.invoke('NotifyWhiteboardUpdated', meetingId, userId, userName, whiteboardData);
   }
 };
 
@@ -172,6 +203,25 @@ export const notifyParticipantMediaStatusChanged = async (
       audioEnabled,
       videoEnabled,
       screenSharing,
+    );
+  }
+};
+
+export const notifyParticipantEngagementChanged = async (
+  meetingId: string,
+  userId: string,
+  participantName: string,
+  isHandRaised: boolean,
+  reaction?: string | null,
+) => {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    await connection.invoke(
+      'NotifyParticipantEngagementChanged',
+      meetingId,
+      userId,
+      participantName,
+      isHandRaised,
+      reaction || null,
     );
   }
 };
@@ -241,6 +291,7 @@ export const sendConversationMessage = async (
     replyToSenderName?: string;
     replyToPreview?: string;
   },
+  isImportant = false,
 ) => {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     await connection.invoke(
@@ -258,6 +309,7 @@ export const sendConversationMessage = async (
       reply?.replyToMessageId || null,
       reply?.replyToSenderName || null,
       reply?.replyToPreview || null,
+      isImportant,
     );
   }
 };
@@ -285,6 +337,30 @@ export const sendIncomingCall = async (
   }
 };
 
+export const sendIncomingCallCancelled = async (
+  conversationId: string,
+  meetingId: string,
+  callerUserId: string,
+  callerName: string,
+  recipientUserId: string,
+  message: string,
+) => {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    await connection.invoke(
+      'SendIncomingCallCancelled',
+      conversationId,
+      meetingId,
+      callerUserId,
+      callerName,
+      recipientUserId,
+      message,
+    );
+    return true;
+  }
+
+  return false;
+};
+
 export const sendConversationMessageUpdated = async (
   conversationId: string,
   messageId: string,
@@ -293,6 +369,7 @@ export const sendConversationMessageUpdated = async (
   message: string,
   editedAt: string,
   recipientUserIds: string[],
+  isImportant = false,
 ) => {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     await connection.invoke(
@@ -304,6 +381,7 @@ export const sendConversationMessageUpdated = async (
       message,
       editedAt,
       recipientUserIds,
+      isImportant,
     );
   }
 };
@@ -410,6 +488,13 @@ export const onParticipantMediaStatusChanged = (callback: (data: any) => void) =
   }
 };
 
+export const onParticipantEngagementChanged = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.off('ParticipantEngagementChanged');
+    connection.on('ParticipantEngagementChanged', callback);
+  }
+};
+
 export const onLobbyRequestReceived = (callback: (data: any) => void) => {
   if (connection) {
     connection.off('LobbyRequestReceived');
@@ -439,6 +524,13 @@ export const onIncomingCall = (callback: (data: any) => void) => {
   if (connection) {
     connection.off('IncomingCall');
     connection.on('IncomingCall', callback);
+  }
+};
+
+export const onIncomingCallCancelled = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.off('IncomingCallCancelled');
+    connection.on('IncomingCallCancelled', callback);
   }
 };
 

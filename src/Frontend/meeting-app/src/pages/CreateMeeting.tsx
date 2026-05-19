@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import BrandMark from '../components/BrandMark';
 import { UserAvatar, UserStatusBadge } from '../components/UserStatus';
-import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, organizationAPI, userAPI } from '../services/api';
+import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openUrlInNewTab, organizationAPI, userAPI } from '../services/api';
 import { useMeetingStore } from '../store/meetingStore';
 
 const durationOptions = [15, 30, 45, 60, 90, 120, 180];
@@ -72,7 +72,7 @@ function notifyMeetingCreated(title: string, joinLink: string) {
 
   notification.onclick = () => {
     window.focus();
-    window.location.href = joinLink;
+    openUrlInNewTab(joinLink);
   };
 }
 

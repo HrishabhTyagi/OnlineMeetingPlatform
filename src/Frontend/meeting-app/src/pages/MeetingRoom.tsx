@@ -1,30 +1,39 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus, statusLabel } from '../components/UserStatus';
-import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, userAPI } from '../services/api';
+import { ProfileStatusMenu, UserAvatar, UserStatus, statusLabel } from '../components/UserStatus';
+import { conversationAPI, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinMeetingGroup,
   joinUserNotifications,
   leaveMeetingGroup,
+  notifyMeetingEnded,
   notifyLobbyDecision,
   notifyLobbyRequest,
+  notifyParticipantEngagementChanged,
   notifyParticipantJoined,
   notifyParticipantLeft,
   notifyParticipantMediaStatusChanged,
   notifyUserStatusChanged,
+  notifyWhiteboardUpdated,
   onDirectChatMessage,
   onLobbyDecisionReceived,
   onLobbyRequestReceived,
+  onMeetingEnded,
   onMeetingChatMessage,
+  onParticipantEngagementChanged,
   onParticipantJoined,
   onParticipantLeft,
   onParticipantMediaStatusChanged,
   onUserStatusChanged,
+  onWhiteboardUpdated,
   onWebRtcAnswer,
   onWebRtcIceCandidate,
   onWebRtcOffer,
+  sendConversationMessage,
   sendDirectChatMessage,
+  sendIncomingCall,
+  sendIncomingCallCancelled,
   sendMeetingChatMessage,
   sendWebRtcAnswer,
   sendWebRtcIceCandidate,
@@ -51,6 +60,9 @@ interface Participant {
 interface UserSummary {
   id: string;
   email: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
   profilePictureUrl?: string;
   status?: string;
 }
@@ -64,6 +76,38 @@ interface ChatMessage {
   timestamp: string;
   recipientUserId?: string;
   recipientName?: string;
+}
+
+function getRequestErrorMessage(err: any, fallback: string) {
+  const data = err?.response?.data;
+  if (!data) {
+    return err?.message || fallback;
+  }
+
+  if (typeof data === 'string') {
+    return data;
+  }
+
+  if (typeof data.detail === 'string') {
+    return data.detail;
+  }
+
+  if (typeof data.title === 'string') {
+    return data.title;
+  }
+
+  if (typeof data.message === 'string') {
+    return data.message;
+  }
+
+  if (data.errors && typeof data.errors === 'object') {
+    const firstError = Object.values(data.errors).flat().find(Boolean);
+    if (typeof firstError === 'string') {
+      return firstError;
+    }
+  }
+
+  return fallback;
 }
 
 function mapChatMessage(message: any): ChatMessage {
@@ -93,6 +137,303 @@ interface RemoteStream {
   stream: MediaStream;
 }
 
+interface PendingMeetingImage {
+  id: string;
+  name: string;
+  dataUrl: string;
+  size: number;
+}
+
+interface OutgoingMeetingCall {
+  userId: string;
+  email: string;
+  displayName: string;
+  status: 'Ringing' | 'Joined' | 'No response' | 'Cancelled' | 'Failed';
+  sentAt: string;
+}
+
+type InviteResponseStatus = 'Pending' | 'Accepted' | 'Declined' | 'Tentative';
+
+interface MeetingInvite {
+  id: string;
+  meetingId: string;
+  email: string;
+  displayName?: string;
+  role: string;
+  isRequired: boolean;
+  hasAccepted: boolean;
+  responseStatus: InviteResponseStatus;
+  responseReason?: string;
+  respondedAt?: string;
+  createdAt: string;
+}
+
+interface FloatingReaction {
+  id: string;
+  userId: string;
+  userName: string;
+  reaction: string;
+}
+
+interface WhiteboardPoint {
+  x: number;
+  y: number;
+}
+
+interface WhiteboardItem {
+  id: string;
+  kind: 'stroke' | 'text';
+  points?: WhiteboardPoint[];
+  text?: string;
+  x?: number;
+  y?: number;
+  color: string;
+  size: number;
+  authorName: string;
+}
+
+type SidePanelTab = 'participants' | 'chat' | 'details' | 'whiteboard';
+
+const CALL_CANCEL_MESSAGE = 'Sorry, I called you by mistake.';
+const QUICK_REACTIONS = ['👍', '👏', '❤️', '😊', '😂', '🎉'];
+
+interface IconButtonProps {
+  title: string;
+  children: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  danger?: boolean;
+  className?: string;
+}
+
+function IconButton({ title, children, onClick, disabled, active, danger, className = '' }: IconButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      className={`inline-flex h-9 w-9 items-center justify-center rounded-md border text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+        danger
+          ? 'border-red-500/40 bg-red-600 text-white hover:bg-red-700'
+          : active
+            ? 'border-white bg-white text-slate-950'
+            : 'border-white/10 bg-slate-800 text-slate-100 hover:bg-white/10'
+      } ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PeopleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM3.5 20a5.5 5.5 0 0 1 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M17 10.5a3 3 0 1 0 0-6M15.5 14.2A5 5 0 0 1 21 19.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M5 6.5A3.5 3.5 0 0 1 8.5 3h7A3.5 3.5 0 0 1 19 6.5v5a3.5 3.5 0 0 1-3.5 3.5H11l-5 4v-4.2A3.5 3.5 0 0 1 3.5 11.5v-5Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M8 8h8M8 11h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function InfoIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 10.5v5M12 7.5h.01" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function MicIcon({ off = false }: { off?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      {off && <path d="m4 4 16 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />}
+    </svg>
+  );
+}
+
+function VideoIcon({ off = false }: { off?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M5 7.5A2.5 2.5 0 0 1 7.5 5h7A2.5 2.5 0 0 1 17 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 5 16.5v-9Z" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m17 10 3.5-2v8L17 14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      {off && <path d="m4 4 16 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />}
+    </svg>
+  );
+}
+
+function ScreenIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 13.5v-7Z" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 16v4M8.5 20h7M12 12V8m0 0-2 2m2-2 2 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PresentingPresenceIcon({ className = 'h-3 w-3' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8A2.5 2.5 0 0 1 17.5 17h-11A2.5 2.5 0 0 1 4 14.5v-8Z" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 14V8m0 0-2.25 2.25M12 8l2.25 2.25M8.5 20h7M12 17v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function LivePresenceIndicator({ label, kind, compact = false }: { label: string; kind: 'call' | 'presenting'; compact?: boolean }) {
+  const textClass = kind === 'presenting' ? 'text-red-200' : 'text-rose-200';
+
+  return (
+    <span className={`inline-flex items-center gap-1.5 ${compact ? 'text-[11px]' : 'text-xs'} ${textClass}`}>
+      {kind === 'presenting' ? (
+        <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm bg-red-500/20 text-red-200">
+          <PresentingPresenceIcon className="h-3 w-3" />
+        </span>
+      ) : (
+        <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500" aria-hidden="true" />
+      )}
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function HandRaisedIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M7.5 13.5V7.2a1.25 1.25 0 0 1 2.5 0v5.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M10 12.5V5.8a1.25 1.25 0 0 1 2.5 0v6.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M12.5 12.2V7a1.25 1.25 0 0 1 2.5 0v6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M15 13.3l1.9-2.5a1.35 1.35 0 0 1 2.2 1.55l-2.85 4.2A5.2 5.2 0 0 1 11.95 19H11a5 5 0 0 1-5-5v-1.8a1.25 1.25 0 0 1 2.5 0V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5.7 5.2 4.4 3.8M18.2 6l1.4-1.4M12 2.8V1.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function RecordIcon({ active = false }: { active?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill={active ? 'currentColor' : 'none'} className="h-4 w-4" aria-hidden="true">
+      <circle cx="12" cy="12" r="6" stroke="currentColor" strokeWidth="1.8" />
+      {active && <circle cx="12" cy="12" r="3" />}
+    </svg>
+  );
+}
+
+function LinkIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M10 13.5a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M14 10.5a5 5 0 0 0-7.1-.1l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PinIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="m14 4 6 6-3 1-4 4 .5 4.5L4.5 10.5 9 11l4-4 1-3Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PanelIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M4 5h16v14H4V5Z" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M15 5v14" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function FullscreenIcon({ exit = false }: { exit?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      {exit ? (
+        <>
+          <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </>
+      ) : (
+        <>
+          <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="m4 5 16 7-16 7 3-7-3-7Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M7 12h13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M20 12a8 8 0 0 1-14.7 4.4M4 12A8 8 0 0 1 18.7 7.6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M5 17H2v-3M19 7h3v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function UndoIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M9 7 5 11l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 11h8a5 5 0 1 1 0 10H9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function RedoIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="m15 7 4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M19 11h-8a5 5 0 1 0 0 10h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function NotesIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M6.5 4h8.2L18 7.3v10.2A2.5 2.5 0 0 1 15.5 20h-9A2.5 2.5 0 0 1 4 17.5v-11A2.5 2.5 0 0 1 6.5 4Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M14 4v4h4M8 12h6M8 16h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function RemoteVideoTile({ remote }: { remote: RemoteStream }) {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -103,8 +444,13 @@ function RemoteVideoTile({ remote }: { remote: RemoteStream }) {
   }, [remote.stream]);
 
   return (
-    <div className="relative flex min-h-[180px] items-center justify-center overflow-hidden rounded-md bg-slate-950">
-      <video ref={remoteVideoRef} autoPlay playsInline className="h-full max-h-[60vh] w-full object-contain" />
+    <div className="relative flex h-full min-h-[180px] items-center justify-center overflow-hidden rounded-md bg-slate-950">
+      <video
+        ref={remoteVideoRef}
+        autoPlay
+        playsInline
+        className="h-full max-h-full w-full object-contain"
+      />
       <div className="absolute bottom-3 left-3 rounded bg-black/60 px-2 py-1 text-xs font-medium text-white">{remote.userName}</div>
     </div>
   );
@@ -143,6 +489,39 @@ function formatDuration(totalSeconds: number) {
   return `${minutes}:${seconds}`;
 }
 
+function formatFileSize(bytes?: number) {
+  if (!bytes || bytes <= 0) {
+    return '';
+  }
+
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function displayKnownUser(user: UserSummary) {
+  return user.fullName || `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
+}
+
+function inviteResponseClass(status?: string) {
+  switch (status) {
+    case 'Accepted':
+      return 'bg-emerald-500/15 text-emerald-200';
+    case 'Declined':
+      return 'bg-red-500/15 text-red-200';
+    case 'Tentative':
+      return 'bg-amber-500/15 text-amber-200';
+    default:
+      return 'bg-slate-700 text-slate-200';
+  }
+}
+
 function resolveRecordingUrl(recordingUrl?: string) {
   if (!recordingUrl) {
     return '';
@@ -153,6 +532,23 @@ function resolveRecordingUrl(recordingUrl?: string) {
   }
 
   return `http://localhost:5000${recordingUrl}`;
+}
+
+function parseWhiteboardData(value?: string): WhiteboardItem[] {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as WhiteboardItem[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializeWhiteboardData(items: WhiteboardItem[]) {
+  return JSON.stringify(items.slice(-300));
 }
 
 function stripCodeFence(value: string) {
@@ -192,6 +588,31 @@ function linkifyChatMessageText(message: string, isMine: boolean) {
 }
 
 function renderChatMessageText(message: string, isMine: boolean) {
+  const lines = message.split('\n');
+  const imageLines = lines.filter((line) => /^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(line.trim()));
+  const text = lines.filter((line) => !/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(line.trim())).join('\n').trim();
+
+  if (imageLines.length > 0) {
+    return (
+      <div className="space-y-2">
+        {text && (
+          <p className="whitespace-pre-wrap break-words">
+            {linkifyChatMessageText(text, isMine)}
+          </p>
+        )}
+        {imageLines.map((line, index) => (
+          <a key={`${line.slice(0, 40)}-${index}`} href={line.trim()} target="_blank" rel="noreferrer" className="block">
+            <img
+              src={line.trim()}
+              alt="Shared screenshot"
+              className="max-h-72 max-w-full rounded-md border border-white/10 object-contain"
+            />
+          </a>
+        ))}
+      </div>
+    );
+  }
+
   if (looksLikeCode(message) || message.trim().startsWith('```')) {
     return (
       <pre className={`mt-1 max-h-80 overflow-auto rounded-md border px-3 py-2 text-left font-mono text-xs leading-relaxed ${isMine ? 'border-white/20 bg-blue-700 text-white' : 'border-white/10 bg-slate-950 text-slate-100'}`}>
@@ -219,6 +640,7 @@ export default function MeetingRoom() {
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [currentParticipant, setCurrentParticipant] = useState<Participant | null>(null);
+  const [meetingInvites, setMeetingInvites] = useState<MeetingInvite[]>([]);
   const [loading, setLoading] = useState(true);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState('');
@@ -228,14 +650,26 @@ export default function MeetingRoom() {
   const [activity, setActivity] = useState<string[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatDraft, setChatDraft] = useState('');
+  const [pendingMeetingImages, setPendingMeetingImages] = useState<PendingMeetingImage[]>([]);
+  const [isDraggingMeetingImage, setIsDraggingMeetingImage] = useState(false);
   const [chatRecipient, setChatRecipient] = useState('everyone');
+  const [sidePanelOpen, setSidePanelOpen] = useState(true);
+  const [activeSidePanelTab, setActiveSidePanelTab] = useState<SidePanelTab>('details');
+  const [sidePanelWidth, setSidePanelWidth] = useState(340);
+  const [isResizingSidePanel, setIsResizingSidePanel] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [meetingActionOpen, setMeetingActionOpen] = useState(false);
   const [lobbyRequests, setLobbyRequests] = useState<LobbyRequest[]>([]);
   const [waitingForLobby, setWaitingForLobby] = useState(false);
   const [lobbyAdmitted, setLobbyAdmitted] = useState(false);
   const [focusedRemoteUserId, setFocusedRemoteUserId] = useState<string | null>(null);
   const [meetingNotes, setMeetingNotes] = useState('');
-  const [inviteText, setInviteText] = useState('');
+  const [inviteSearch, setInviteSearch] = useState('');
   const [inviteStatus, setInviteStatus] = useState('');
+  const [inviteResponseReason, setInviteResponseReason] = useState('');
+  const [inviteResponseStatus, setInviteResponseStatus] = useState('');
+  const [inviteCallStatuses, setInviteCallStatuses] = useState<Record<string, OutgoingMeetingCall>>({});
+  const [endingMeeting, setEndingMeeting] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -246,12 +680,24 @@ export default function MeetingRoom() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<RemoteStream[]>([]);
+  const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
+  const [whiteboardItems, setWhiteboardItems] = useState<WhiteboardItem[]>([]);
+  const [whiteboardRedoItems, setWhiteboardRedoItems] = useState<WhiteboardItem[]>([]);
+  const [whiteboardTool, setWhiteboardTool] = useState<'pen' | 'eraser' | 'text'>('pen');
+  const [whiteboardColor, setWhiteboardColor] = useState('#14b8a6');
+  const [whiteboardSize, setWhiteboardSize] = useState(4);
+  const [whiteboardText, setWhiteboardText] = useState('');
+  const [whiteboardStatus, setWhiteboardStatus] = useState('');
+  const roomRef = useRef<HTMLDivElement | null>(null);
+  const whiteboardCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const whiteboardDraftRef = useRef<WhiteboardItem | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const peerConnectionsRef = useRef<Record<string, RTCPeerConnection>>({});
   const pendingIceCandidatesRef = useRef<Record<string, RTCIceCandidateInit[]>>({});
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const videoEnabledRef = useRef(videoEnabled);
   const remoteStreamsRef = useRef<RemoteStream[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingChunksRef = useRef<BlobPart[]>([]);
@@ -266,9 +712,31 @@ export default function MeetingRoom() {
   const recordingStartedAtRef = useRef(0);
   const recordingStopRequestedRef = useRef(false);
   const autoJoinAttemptedRef = useRef(false);
+  const inviteResponseAppliedRef = useRef(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const participantsRef = useRef<Participant[]>([]);
   const currentParticipantRef = useRef<Participant | null>(null);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsFullscreen(document.fullscreenElement === roomRef.current);
+    };
+
+    document.addEventListener('fullscreenchange', syncFullscreenState);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState);
+  }, []);
+
+  useEffect(() => {
+    if (currentParticipant) {
+      setActiveSidePanelTab('participants');
+    }
+  }, [currentParticipant?.id]);
+
+  useEffect(() => () => {
+    resizeCleanupRef.current?.();
+  }, []);
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -302,9 +770,124 @@ export default function MeetingRoom() {
   };
 
   const isOrganizer = meeting?.organizerId === user?.id || currentParticipant?.role === 'Organizer';
+  const meetingEndsAt = meeting
+    ? new Date(meeting.endTime || new Date(meeting.startTime).getTime() + (meeting.durationMinutes || 60) * 60000)
+    : null;
+  const meetingHasEnded = Boolean(meeting && (
+    meeting.status === 'Completed'
+    || meeting.status === 'Cancelled'
+    || (meetingEndsAt && meetingEndsAt <= new Date())
+  ));
+  const canJoinMeeting = Boolean(meeting && !meetingHasEnded && meeting.status !== 'Cancelled');
+  const currentUserInvite = useMemo(() => {
+    const currentEmail = user?.email?.toLowerCase();
+    if (!currentEmail) {
+      return undefined;
+    }
+
+    return meetingInvites.find((invite) => invite.email.toLowerCase() === currentEmail);
+  }, [meetingInvites, user?.email]);
+  const searchableInviteUsers = useMemo(() => {
+    const query = inviteSearch.trim().toLowerCase();
+    const participantIds = new Set(participants.map((participant) => participant.userId).filter(Boolean));
+    const participantEmails = new Set(participants.map((participant) => participant.userEmail.toLowerCase()).filter(Boolean));
+
+    return knownUsers
+      .filter((item) => item.id !== user?.id)
+      .filter((item) => !participantIds.has(item.id) && !participantEmails.has(item.email.toLowerCase()))
+      .filter((item) => {
+        if (!query) {
+          return true;
+        }
+
+        return item.email.toLowerCase().includes(query)
+          || displayKnownUser(item).toLowerCase().includes(query);
+      })
+      .slice(0, 6);
+  }, [inviteSearch, knownUsers, participants, user?.id]);
 
   const currentUserId = user?.id || currentParticipant?.userId || '';
   const autoJoinRequested = useMemo(() => new URLSearchParams(window.location.search).get('autojoin') === '1', []);
+  const inviteResponseFromQuery = useMemo(() => {
+    const value = new URLSearchParams(window.location.search).get('response');
+    return value === 'Accepted' || value === 'Declined' || value === 'Tentative' ? value : null;
+  }, []);
+  const inviteIdFromQuery = useMemo(() => new URLSearchParams(window.location.search).get('inviteId'), []);
+
+  const getParticipantPresenceLabel = (participant: Participant) => {
+    if (isParticipantPresenting(participant)) {
+      return 'Presenting';
+    }
+
+    return 'In call';
+  };
+
+  const getParticipantPresenceKind = (participant: Participant): 'call' | 'presenting' => (
+    isParticipantPresenting(participant) ? 'presenting' : 'call'
+  );
+
+  const getParticipantPresenceStatus = (participant: Participant): UserStatus => (
+    getUserStatus(participant.userId, participant.userEmail) === 'Offline'
+      ? 'Offline'
+      : isParticipantPresenting(participant)
+        ? 'DoNotDisturb'
+        : 'Busy'
+  );
+
+  const sortedParticipants = useMemo(() => (
+    participants
+      .map((participant, index) => ({ participant, index }))
+      .sort((left, right) => {
+        if (left.participant.isHandRaised !== right.participant.isHandRaised) {
+          return left.participant.isHandRaised ? -1 : 1;
+        }
+
+        return left.index - right.index;
+      })
+      .map((item) => item.participant)
+  ), [participants]);
+
+  const activePresenterId = useMemo(
+    () => sortedParticipants.find((participant) => participant.isScreenSharing)?.id || null,
+    [sortedParticipants],
+  );
+
+  function isParticipantPresenting(participant: Participant) {
+    return Boolean(activePresenterId && participant.id === activePresenterId && participant.isScreenSharing);
+  }
+
+  const raisedHandParticipants = useMemo(
+    () => sortedParticipants.filter((participant) => participant.isHandRaised),
+    [sortedParticipants],
+  );
+
+  const raisedHandCount = raisedHandParticipants.length;
+
+  const raisedHandSummary = useMemo(() => {
+    if (raisedHandParticipants.length === 0) {
+      return '';
+    }
+
+    const firstParticipant = raisedHandParticipants[0];
+    const firstName = firstParticipant.userId === user?.id || firstParticipant.id === currentParticipant?.id
+      ? 'You'
+      : firstParticipant.userName;
+    const remainingCount = raisedHandParticipants.length - 1;
+
+    return remainingCount > 0 ? `${firstName} +${remainingCount}` : firstName;
+  }, [currentParticipant?.id, raisedHandParticipants, user?.id]);
+
+  const showFloatingReaction = (userId: string, userName: string, reaction?: string | null) => {
+    if (!reaction) {
+      return;
+    }
+
+    const reactionId = `${userId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setFloatingReactions((items) => [...items, { id: reactionId, userId, userName, reaction }].slice(-8));
+    window.setTimeout(() => {
+      setFloatingReactions((items) => items.filter((item) => item.id !== reactionId));
+    }, 3500);
+  };
 
   useEffect(() => {
     participantsRef.current = participants;
@@ -313,6 +896,10 @@ export default function MeetingRoom() {
   useEffect(() => {
     currentParticipantRef.current = currentParticipant;
   }, [currentParticipant]);
+
+  useEffect(() => {
+    videoEnabledRef.current = videoEnabled;
+  }, [videoEnabled]);
 
   useEffect(() => {
     localStreamRef.current = localStream;
@@ -325,6 +912,73 @@ export default function MeetingRoom() {
   useEffect(() => {
     remoteStreamsRef.current = remoteStreams;
   }, [remoteStreams]);
+
+  const drawWhiteboard = () => {
+    const canvas = whiteboardCanvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) {
+      return;
+    }
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    [...whiteboardItems, whiteboardDraftRef.current].filter(Boolean).forEach((item) => {
+      const boardItem = item as WhiteboardItem;
+      context.lineCap = 'round';
+      context.lineJoin = 'round';
+      context.strokeStyle = boardItem.color;
+      context.fillStyle = boardItem.color;
+      context.lineWidth = boardItem.size;
+      if (boardItem.kind === 'text') {
+        context.font = `${Math.max(14, boardItem.size * 4)}px Segoe UI, Arial`;
+        context.fillText(boardItem.text || '', boardItem.x || 20, boardItem.y || 40);
+        return;
+      }
+
+      const points = boardItem.points || [];
+      if (points.length < 2) {
+        return;
+      }
+
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+      context.stroke();
+    });
+  };
+
+  useEffect(() => {
+    drawWhiteboard();
+  }, [whiteboardItems]);
+
+  useEffect(() => {
+    setInviteResponseReason(currentUserInvite?.responseReason || '');
+    setInviteResponseStatus('');
+  }, [currentUserInvite?.id, currentUserInvite?.responseReason]);
+
+  useEffect(() => {
+    if (Object.keys(inviteCallStatuses).length === 0) {
+      return;
+    }
+
+    setInviteCallStatuses((items) => {
+      let changed = false;
+      const next = { ...items };
+      participants.forEach((participant) => {
+        if (participant.userId && next[participant.userId]?.status === 'Ringing') {
+          next[participant.userId] = {
+            ...next[participant.userId],
+            displayName: participant.userName || next[participant.userId].displayName,
+            status: 'Joined',
+          };
+          changed = true;
+        }
+      });
+
+      return changed ? next : items;
+    });
+  }, [inviteCallStatuses, participants]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ block: 'nearest' });
@@ -346,23 +1000,26 @@ export default function MeetingRoom() {
 
     const loadMeeting = async () => {
       try {
-        const [meetingResponse, participantsResponse, chatResponse, usersResponse, profileResponse] = await Promise.all([
+        const [meetingResponse, participantsResponse, chatResponse, invitesResponse, usersResponse, profileResponse] = await Promise.all([
           meetingAPI.getMeeting(id),
           meetingAPI.getParticipants(id),
           meetingAPI.getChatMessages(id).catch(() => ({ data: [] })),
+          meetingAPI.getInvites(id).catch(() => ({ data: [] })),
           userAPI.searchUsers().catch(() => ({ data: [] })),
           userAPI.getProfile().catch(() => ({ data: user })),
         ]);
         setMeeting(meetingResponse.data);
         setMeetingNotes(meetingResponse.data.notes || '');
+        setWhiteboardItems(parseWhiteboardData(meetingResponse.data.whiteboardData));
         setParticipants(participantsResponse.data);
+        setMeetingInvites(invitesResponse.data);
         setKnownUsers(usersResponse.data);
         if (profileResponse.data) {
           setUser(profileResponse.data);
         }
         setChatMessages(chatResponse.data.map(mapChatMessage));
       } catch (err: any) {
-        setError(err.response?.data || 'Unable to load meeting');
+        setError(getRequestErrorMessage(err, 'Unable to load meeting'));
       } finally {
         setLoading(false);
       }
@@ -959,6 +1616,36 @@ export default function MeetingRoom() {
           ]);
         });
         onParticipantMediaStatusChanged((data) => {
+          const isCurrentUserEvent = data.userId === currentUserId;
+          const anotherParticipantStartedPresenting = data.userId !== currentUserId && data.screenSharing;
+
+          if (anotherParticipantStartedPresenting) {
+            setScreenSharing(false);
+            setCurrentParticipant((participant) => participant ? { ...participant, isScreenSharing: false } : participant);
+            screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+            setScreenStream(null);
+            replaceOutgoingVideoTrack(videoEnabledRef.current ? getLiveVideoTrack() : null).catch(() => undefined);
+          }
+
+          if (isCurrentUserEvent) {
+            if (!data.audioEnabled) {
+              setAudioEnabled(false);
+              localStreamRef.current?.getAudioTracks().forEach((track) => {
+                track.enabled = false;
+              });
+            }
+
+            if (!data.videoEnabled) {
+              setVideoEnabled(false);
+              localStreamRef.current?.getVideoTracks().forEach((track) => {
+                track.enabled = false;
+              });
+            }
+
+            setScreenSharing(data.screenSharing);
+            setCurrentParticipant((participant) => participant ? { ...participant, isScreenSharing: data.screenSharing } : participant);
+          }
+
           setParticipants((items) => items.map((participant) => (
             participant.userId === data.userId
               ? {
@@ -967,12 +1654,43 @@ export default function MeetingRoom() {
                   isVideoEnabled: data.videoEnabled,
                   isScreenSharing: data.screenSharing,
                 }
-              : participant
+              : data.screenSharing
+                ? { ...participant, isScreenSharing: false }
+                : participant
           )));
           setActivity((items) => [
             `${data.participantName} ${data.screenSharing ? 'started presenting' : data.audioEnabled ? 'updated media' : 'muted'}`,
             ...items,
           ].slice(0, 5));
+        });
+        onParticipantEngagementChanged((data) => {
+          const userId = data.userId || data.UserId;
+          const participantName = data.participantName || data.ParticipantName || 'Participant';
+          const isHandRaised = Boolean(data.isHandRaised ?? data.IsHandRaised);
+          const reaction = data.reaction || data.Reaction || null;
+
+          setParticipants((items) => items.map((participant) => (
+            participant.userId === userId
+              ? {
+                  ...participant,
+                  isHandRaised,
+                  reaction,
+                }
+              : participant
+          )));
+
+          if (reaction) {
+            showFloatingReaction(userId, participantName, reaction);
+            window.setTimeout(() => {
+              setParticipants((items) => items.map((participant) => (
+                participant.userId === userId ? { ...participant, reaction: undefined } : participant
+              )));
+            }, 3500);
+          }
+
+          if (isHandRaised) {
+            setActivity((items) => [`${participantName} raised a hand`, ...items].slice(0, 5));
+          }
         });
         onLobbyRequestReceived((data) => {
           if (!isOrganizer) {
@@ -1011,9 +1729,29 @@ export default function MeetingRoom() {
             setLobbyRequests((requests) => requests.map((request) => (
               request.userName === data.userName
                 ? { ...request, status: data.admitted ? 'Admitted' : 'Denied' }
-                : request
+              : request
             )));
           }
+        });
+        onWhiteboardUpdated((data) => {
+          const whiteboardData = data.whiteboardData || data.WhiteboardData || '[]';
+          setWhiteboardItems(parseWhiteboardData(whiteboardData));
+          setWhiteboardRedoItems([]);
+          setWhiteboardStatus(`Updated by ${data.userName || data.UserName || 'a participant'}`);
+          window.setTimeout(() => setWhiteboardStatus(''), 1800);
+        });
+        onMeetingEnded(() => {
+          localStreamRef.current?.getTracks().forEach((track) => track.stop());
+          screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+          Object.values(peerConnectionsRef.current).forEach((connection) => connection.close());
+          peerConnectionsRef.current = {};
+          pendingIceCandidatesRef.current = {};
+          cleanupRecordingResources();
+          setRemoteStreams([]);
+          setCurrentParticipant(null);
+          setMeeting((current) => current ? { ...current, status: 'Completed' } : current);
+          setActivity((items) => ['Organizer ended the meeting', ...items].slice(0, 5));
+          navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
         });
         onWebRtcOffer(async (data) => {
           const localUserId = user?.id || currentParticipantRef.current?.userId;
@@ -1158,6 +1896,11 @@ export default function MeetingRoom() {
       return;
     }
 
+    if (!canJoinMeeting) {
+      setError('This meeting has ended. You can still view chat and recordings from the meeting details.');
+      return;
+    }
+
     setJoining(true);
     setError('');
 
@@ -1217,20 +1960,20 @@ export default function MeetingRoom() {
       }
       await notifyParticipantJoined(id, displayName);
     } catch (err: any) {
-      setError(err.response?.data || 'Unable to join meeting');
+      setError(getRequestErrorMessage(err, 'Unable to join meeting'));
     } finally {
       setJoining(false);
     }
   };
 
   useEffect(() => {
-    if (!autoJoinRequested || autoJoinAttemptedRef.current || !meeting || currentParticipant || joining || waitingForLobby) {
+    if (!autoJoinRequested || autoJoinAttemptedRef.current || !meeting || !canJoinMeeting || currentParticipant || joining || waitingForLobby) {
       return;
     }
 
     autoJoinAttemptedRef.current = true;
     handleJoin().catch(() => undefined);
-  }, [autoJoinRequested, meeting, currentParticipant, joining, waitingForLobby]);
+  }, [autoJoinRequested, meeting, canJoinMeeting, currentParticipant, joining, waitingForLobby]);
 
   const handleLeave = async () => {
     if (!id || !currentParticipant) {
@@ -1254,6 +1997,42 @@ export default function MeetingRoom() {
       await notifyParticipantLeft(id, displayName);
     } finally {
       navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
+    }
+  };
+
+  const handleEndMeeting = async () => {
+    if (!id || !isOrganizer || endingMeeting) {
+      return;
+    }
+
+    if (!window.confirm('End this meeting for everyone? Participants will be removed from the live session.')) {
+      return;
+    }
+
+    setEndingMeeting(true);
+    setError('');
+
+    try {
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      } else {
+        cleanupRecordingResources();
+      }
+
+      const response = await meetingAPI.endMeeting(id);
+      setMeeting(response.data);
+      localStream?.getTracks().forEach((track) => track.stop());
+      screenStream?.getTracks().forEach((track) => track.stop());
+      Object.values(peerConnectionsRef.current).forEach((connection) => connection.close());
+      peerConnectionsRef.current = {};
+      pendingIceCandidatesRef.current = {};
+      setRemoteStreams([]);
+      await notifyMeetingEnded(id).catch(() => undefined);
+      navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
+    } catch (err: any) {
+      setError(getRequestErrorMessage(err, 'Unable to end meeting'));
+    } finally {
+      setEndingMeeting(false);
     }
   };
 
@@ -1418,13 +2197,136 @@ export default function MeetingRoom() {
     await refreshParticipants();
   };
 
+  const updateHandRaised = async () => {
+    if (!id || !currentParticipant) {
+      return;
+    }
+
+    const nextRaised = !currentParticipant.isHandRaised;
+    const response = await meetingAPI.updateParticipantHand(id, currentParticipant.id, { isHandRaised: nextRaised });
+    setCurrentParticipant(response.data);
+    setParticipants((items) => items.map((participant) => (
+      participant.id === response.data.id ? response.data : participant
+    )));
+    await notifyParticipantEngagementChanged(
+      id,
+      currentParticipant.userId,
+      displayName,
+      nextRaised,
+      currentParticipant.reaction || null,
+    ).catch(() => undefined);
+  };
+
+  const sendQuickReaction = async (reaction: string) => {
+    if (!id || !currentParticipant || !meeting?.allowReactions) {
+      return;
+    }
+
+    const response = await meetingAPI.updateParticipantReaction(id, currentParticipant.id, { reaction });
+    setCurrentParticipant(response.data);
+    setParticipants((items) => items.map((participant) => (
+      participant.id === response.data.id ? response.data : participant
+    )));
+    showFloatingReaction(currentParticipant.userId, displayName, reaction);
+    await notifyParticipantEngagementChanged(
+      id,
+      currentParticipant.userId,
+      displayName,
+      currentParticipant.isHandRaised,
+      reaction,
+    ).catch(() => undefined);
+
+    window.setTimeout(() => {
+      meetingAPI.updateParticipantReaction(id, currentParticipant.id, { reaction: null }).catch(() => undefined);
+      setParticipants((items) => items.map((participant) => (
+        participant.id === currentParticipant.id ? { ...participant, reaction: undefined } : participant
+      )));
+      setCurrentParticipant((participant) => participant ? { ...participant, reaction: undefined } : participant);
+    }, 3500);
+  };
+
+  const readImageFile = (file: File) => new Promise<PendingMeetingImage>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve({
+        id: `${file.name}-${file.size}-${file.lastModified}-${Date.now()}`,
+        name: file.name || 'screenshot.png',
+        dataUrl: String(reader.result || ''),
+        size: file.size,
+      });
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+  const addPendingMeetingImages = async (files: File[], sourceLabel: string) => {
+    if (!currentParticipant) {
+      return;
+    }
+
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    if (imageFiles.length === 0) {
+      setActivity((items) => ['Only screenshot or image files can be attached in meeting chat right now', ...items].slice(0, 5));
+      return;
+    }
+
+    try {
+      const images = await Promise.all(imageFiles.map(readImageFile));
+      setPendingMeetingImages((items) => [...items, ...images]);
+      setActivity((items) => [`${images.length} ${sourceLabel}${images.length === 1 ? '' : 's'} ready to send`, ...items].slice(0, 5));
+    } catch {
+      setActivity((items) => [`Could not read ${sourceLabel}`, ...items].slice(0, 5));
+    }
+  };
+
+  const handleMeetingChatPaste = async (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const imageFiles = Array.from(event.clipboardData.files || []).filter((file) => file.type.startsWith('image/'));
+    if (imageFiles.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    await addPendingMeetingImages(imageFiles, 'screenshot');
+  };
+
+  const handleMeetingChatDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (!hasJoined || Array.from(event.dataTransfer.items || []).every((item) => !item.type.startsWith('image/'))) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsDraggingMeetingImage(true);
+  };
+
+  const handleMeetingChatDrop = async (event: ReactDragEvent<HTMLElement>) => {
+    if (!hasJoined) {
+      return;
+    }
+
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsDraggingMeetingImage(false);
+    await addPendingMeetingImages(files, 'image');
+  };
+
+  const removePendingMeetingImage = (imageId: string) => {
+    setPendingMeetingImages((items) => items.filter((image) => image.id !== imageId));
+  };
+
   const handleSendChat = async () => {
-    const message = chatDraft.replace(/\s+$/, '');
-    if (!id || !currentParticipant || !message.trim()) {
+    const messageText = chatDraft.replace(/\s+$/, '');
+    const imagePayload = pendingMeetingImages.map((image) => image.dataUrl).join('\n');
+    const message = [messageText, imagePayload].filter(Boolean).join('\n');
+    if (!id || !currentParticipant || (!messageText.trim() && pendingMeetingImages.length === 0)) {
       return;
     }
 
     setChatDraft('');
+    setPendingMeetingImages([]);
     const senderId = user?.id || currentParticipant.userId;
 
     if (chatRecipient === 'everyone') {
@@ -1493,27 +2395,404 @@ export default function MeetingRoom() {
     setMeeting(response.data);
   };
 
-  const sendEmailInvites = async () => {
-    if (!id || !inviteText.trim()) {
+  const canEditWhiteboard = Boolean(isOrganizer || currentParticipant?.role === 'Presenter');
+
+  const getWhiteboardPoint = (event: ReactPointerEvent<HTMLCanvasElement>): WhiteboardPoint => {
+    const canvas = event.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * canvas.width,
+      y: ((event.clientY - rect.top) / rect.height) * canvas.height,
+    };
+  };
+
+  const saveWhiteboard = async (items: WhiteboardItem[]) => {
+    if (!id || !canEditWhiteboard) {
       return;
     }
 
-    const emails = inviteText
-      .split(/[,;\n]/)
-      .map((email) => email.trim())
-      .filter(Boolean);
-
-    if (emails.length === 0) {
-      return;
-    }
-
-    setInviteStatus('Sending invites...');
+    const whiteboardData = serializeWhiteboardData(items);
+    setWhiteboardStatus('Saving...');
     try {
-      await meetingAPI.sendInvites(id, { emails });
-      setInviteText('');
-      setInviteStatus(`Invite${emails.length === 1 ? '' : 's'} sent`);
+      const response = await meetingAPI.updateWhiteboard(id, { whiteboardData });
+      setMeeting(response.data);
+      setWhiteboardStatus('Saved');
+      if (user) {
+        await notifyWhiteboardUpdated(id, user.id, displayName, whiteboardData).catch(() => undefined);
+      }
+      window.setTimeout(() => setWhiteboardStatus(''), 1800);
     } catch (err: any) {
-      setInviteStatus(err.response?.data || 'Unable to send invites');
+      setWhiteboardStatus(getRequestErrorMessage(err, 'Unable to save whiteboard'));
+    }
+  };
+
+  const startWhiteboardDraw = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!canEditWhiteboard || whiteboardTool === 'text') {
+      return;
+    }
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const point = getWhiteboardPoint(event);
+    whiteboardDraftRef.current = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      kind: 'stroke',
+      points: [point],
+      color: whiteboardTool === 'eraser' ? '#ffffff' : whiteboardColor,
+      size: whiteboardTool === 'eraser' ? Math.max(12, whiteboardSize * 3) : whiteboardSize,
+      authorName: displayName,
+    };
+    drawWhiteboard();
+  };
+
+  const moveWhiteboardDraw = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!whiteboardDraftRef.current || !canEditWhiteboard) {
+      return;
+    }
+
+    whiteboardDraftRef.current.points = [
+      ...(whiteboardDraftRef.current.points || []),
+      getWhiteboardPoint(event),
+    ];
+    drawWhiteboard();
+  };
+
+  const finishWhiteboardDraw = () => {
+    const draft = whiteboardDraftRef.current;
+    if (!draft || !canEditWhiteboard) {
+      return;
+    }
+
+    whiteboardDraftRef.current = null;
+    if ((draft.points || []).length < 2) {
+      drawWhiteboard();
+      return;
+    }
+
+    const nextItems = [...whiteboardItems, draft];
+    setWhiteboardItems(nextItems);
+    setWhiteboardRedoItems([]);
+    void saveWhiteboard(nextItems);
+  };
+
+  const addWhiteboardText = () => {
+    if (!canEditWhiteboard || !whiteboardText.trim()) {
+      return;
+    }
+
+    const nextItems = [
+      ...whiteboardItems,
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        kind: 'text' as const,
+        text: whiteboardText.trim(),
+        x: 36,
+        y: 56 + whiteboardItems.filter((item) => item.kind === 'text').length * 34,
+        color: whiteboardColor,
+        size: whiteboardSize,
+        authorName: displayName,
+      },
+    ];
+    setWhiteboardItems(nextItems);
+    setWhiteboardRedoItems([]);
+    setWhiteboardText('');
+    void saveWhiteboard(nextItems);
+  };
+
+  const undoWhiteboard = () => {
+    if (!canEditWhiteboard || whiteboardItems.length === 0) {
+      return;
+    }
+
+    const removed = whiteboardItems[whiteboardItems.length - 1];
+    const nextItems = whiteboardItems.slice(0, -1);
+    setWhiteboardItems(nextItems);
+    setWhiteboardRedoItems((items) => [removed, ...items]);
+    void saveWhiteboard(nextItems);
+  };
+
+  const redoWhiteboard = () => {
+    if (!canEditWhiteboard || whiteboardRedoItems.length === 0) {
+      return;
+    }
+
+    const [restored, ...rest] = whiteboardRedoItems;
+    const nextItems = [...whiteboardItems, restored];
+    setWhiteboardItems(nextItems);
+    setWhiteboardRedoItems(rest);
+    void saveWhiteboard(nextItems);
+  };
+
+  const clearWhiteboard = () => {
+    if (!canEditWhiteboard) {
+      return;
+    }
+
+    if (!window.confirm('Clear the shared whiteboard for everyone?')) {
+      return;
+    }
+
+    setWhiteboardItems([]);
+    setWhiteboardRedoItems([]);
+    void saveWhiteboard([]);
+  };
+
+  const exportWhiteboardImage = () => {
+    const canvas = whiteboardCanvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL('image/png');
+    link.download = `${meeting?.title || 'meeting'}-whiteboard.png`;
+    link.click();
+  };
+
+  const exportWhiteboardPdf = () => {
+    const canvas = whiteboardCanvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      return;
+    }
+
+    printWindow.document.write(`<html><head><title>Whiteboard</title></head><body style="margin:0"><img src="${canvas.toDataURL('image/png')}" style="width:100%;height:auto" /></body></html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
+
+  const downloadBlob = (blob: Blob, fileName: string) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  };
+
+  const exportMeetingChat = async () => {
+    if (!id) {
+      return;
+    }
+
+    const response = await meetingAPI.exportChat(id);
+    downloadBlob(new Blob([response.data], { type: 'text/plain' }), `${meeting?.title || 'meeting'}-chat.txt`);
+  };
+
+  const exportMeetingWhiteboardJson = async () => {
+    if (!id) {
+      return;
+    }
+
+    const response = await meetingAPI.exportWhiteboard(id);
+    downloadBlob(new Blob([response.data], { type: 'application/json' }), `${meeting?.title || 'meeting'}-whiteboard.json`);
+  };
+
+  const updateMyInviteResponse = async (status: InviteResponseStatus) => {
+    if (!id || !currentUserInvite) {
+      return;
+    }
+
+    setInviteResponseStatus('Saving response...');
+    try {
+      const response = await meetingAPI.updateInviteResponse(id, currentUserInvite.id, {
+        status,
+        reason: inviteResponseReason,
+      });
+      setMeetingInvites((items) => items.map((invite) => (
+        invite.id === response.data.id ? response.data : invite
+      )));
+      setInviteResponseStatus(`Response saved as ${response.data.responseStatus}`);
+    } catch (err: any) {
+      setInviteResponseStatus(getRequestErrorMessage(err, 'Unable to save response'));
+    }
+  };
+
+  useEffect(() => {
+    if (!inviteResponseFromQuery || inviteResponseAppliedRef.current || !id || !user?.email) {
+      return;
+    }
+
+    if (!currentUserInvite) {
+      if (meetingInvites.length > 0) {
+        inviteResponseAppliedRef.current = true;
+        setInviteResponseStatus('This RSVP link belongs to another invited email. Sign in with the invited account.');
+      }
+      return;
+    }
+
+    if (inviteIdFromQuery && currentUserInvite.id.toLowerCase() !== inviteIdFromQuery.toLowerCase()) {
+      inviteResponseAppliedRef.current = true;
+      setInviteResponseStatus('This RSVP link belongs to another invite.');
+      return;
+    }
+
+    inviteResponseAppliedRef.current = true;
+    updateMyInviteResponse(inviteResponseFromQuery).finally(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('response');
+      url.searchParams.delete('inviteId');
+      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+    });
+  }, [currentUserInvite?.id, id, inviteIdFromQuery, inviteResponseFromQuery, meetingInvites.length, user?.email]);
+
+  const callUserIntoMeeting = async (candidate: UserSummary) => {
+    if (!id || !meeting || !user || !currentParticipant) {
+      return;
+    }
+
+    const candidateName = displayKnownUser(candidate);
+    const candidateStatus = getUserStatus(candidate.id, candidate.email);
+    if (candidateStatus !== 'Available') {
+      setInviteStatus(`${candidateName} is ${statusLabel(candidateStatus)}. You can call them when they are available.`);
+      return;
+    }
+
+    const joinUrl = getMeetingJoinUrl(id, meeting.meetingLink, 'call=video&autojoin=1');
+    setInviteCallStatuses((items) => ({
+      ...items,
+      [candidate.id]: {
+        userId: candidate.id,
+        email: candidate.email,
+        displayName: candidateName,
+        status: 'Ringing',
+        sentAt: new Date().toISOString(),
+      },
+    }));
+    setInviteStatus(`Calling ${candidateName}...`);
+
+    try {
+      await sendIncomingCall(
+        `meeting-${id}`,
+        id,
+        user.id,
+        displayName,
+        'video',
+        joinUrl,
+        [candidate.id],
+      );
+      setInviteSearch('');
+      setInviteStatus(`${candidateName} is ringing. Waiting for response...`);
+      window.setTimeout(() => {
+        setInviteCallStatuses((items) => {
+          const current = items[candidate.id];
+          if (!current || current.status !== 'Ringing') {
+            return items;
+          }
+
+          return {
+            ...items,
+            [candidate.id]: {
+              ...current,
+              status: 'No response',
+            },
+          };
+        });
+      }, 45_000);
+    } catch (err: any) {
+      setInviteCallStatuses((items) => ({
+        ...items,
+        [candidate.id]: {
+          userId: candidate.id,
+          email: candidate.email,
+          displayName: candidateName,
+          status: 'Failed',
+          sentAt: new Date().toISOString(),
+        },
+      }));
+      setInviteStatus(getRequestErrorMessage(err, 'Unable to call user into meeting'));
+    }
+  };
+
+  const sendCallCancellationChatMessage = async (call: OutgoingMeetingCall) => {
+    if (!user) {
+      return false;
+    }
+
+    try {
+      const conversationResponse = await conversationAPI.createConversation({
+        type: 'Direct',
+        title: null,
+        members: [
+          {
+            userId: user.id,
+            userEmail: user.email,
+            userName: displayName,
+          },
+          {
+            userId: call.userId,
+            userEmail: call.email,
+            userName: call.displayName,
+          },
+        ],
+        inviteEmails: [],
+      });
+      const conversationId = conversationResponse.data.id;
+      const messageResponse = await conversationAPI.sendMessage(conversationId, {
+        senderId: user.id,
+        senderName: displayName,
+        message: CALL_CANCEL_MESSAGE,
+      });
+
+      await sendConversationMessage(
+        conversationId,
+        messageResponse.data.id,
+        user.id,
+        displayName,
+        CALL_CANCEL_MESSAGE,
+        [call.userId],
+      ).catch(() => undefined);
+
+      return true;
+    } catch (err) {
+      console.warn('Unable to save call cancellation message', err);
+      return false;
+    }
+  };
+
+  const cancelOutgoingMeetingCall = async (call: OutgoingMeetingCall) => {
+    if (!id || !meeting || !user || call.status !== 'Ringing') {
+      return;
+    }
+
+    setInviteStatus(`Stopping call to ${call.displayName}...`);
+
+    try {
+      const notified = await sendIncomingCallCancelled(
+        `meeting-${id}`,
+        id,
+        user.id,
+        displayName,
+        call.userId,
+        CALL_CANCEL_MESSAGE,
+      );
+
+      if (!notified) {
+        throw new Error('Call service is reconnecting. Try again in a moment.');
+      }
+
+      setInviteCallStatuses((items) => ({
+        ...items,
+        [call.userId]: {
+          ...call,
+          status: 'Cancelled',
+        },
+      }));
+
+      const messageSaved = await sendCallCancellationChatMessage(call);
+      setInviteStatus(
+        messageSaved
+          ? `Call stopped. ${call.displayName} received the mistake message.`
+          : `Call stopped. ${call.displayName} was notified, but the chat message could not be saved.`,
+      );
+    } catch (err: any) {
+      setInviteStatus(getRequestErrorMessage(err, 'Unable to stop call right now'));
     }
   };
 
@@ -1539,6 +2818,39 @@ export default function MeetingRoom() {
     await refreshParticipants();
   };
 
+  const muteParticipant = async (participant: Participant) => {
+    if (!id || !hasJoined) {
+      return;
+    }
+
+    if (participant.userId === user?.id || participant.id === currentParticipant?.id) {
+      await updateStatus({ audio: false });
+      return;
+    }
+
+    if (!isOrganizer) {
+      return;
+    }
+
+    await meetingAPI.updateParticipantStatus(id, participant.id, {
+      audioEnabled: false,
+      videoEnabled: participant.isVideoEnabled,
+      screenSharing: isParticipantPresenting(participant),
+    });
+    setParticipants((items) => items.map((item) => (
+      item.id === participant.id ? { ...item, isAudioEnabled: false } : item
+    )));
+    await notifyParticipantMediaStatusChanged(
+      id,
+      participant.userId,
+      participant.userName,
+      false,
+      participant.isVideoEnabled,
+      isParticipantPresenting(participant),
+    );
+    setActivity((items) => [`Muted ${participant.userName}`, ...items].slice(0, 5));
+  };
+
   const decideLobby = async (requestId: string, admit: boolean) => {
     if (!id || !isOrganizer) {
       return;
@@ -1552,6 +2864,66 @@ export default function MeetingRoom() {
       admit,
     );
     await refreshLobby();
+  };
+
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return;
+      }
+
+      await roomRef.current?.requestFullscreen();
+    } catch {
+      setActivity((items) => ['Fullscreen is not available in this browser session.', ...items].slice(0, 5));
+    }
+  };
+
+  const setClampedSidePanelWidth = (width: number) => {
+    setSidePanelWidth(Math.min(640, Math.max(280, Math.round(width))));
+  };
+
+  const startSidePanelResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+
+    const startX = event.clientX;
+    const startWidth = sidePanelWidth;
+
+    resizeCleanupRef.current?.();
+    setIsResizingSidePanel(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      setClampedSidePanelWidth(startWidth + (startX - moveEvent.clientX));
+    };
+
+    const stopResize = () => {
+      setIsResizingSidePanel(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+      resizeCleanupRef.current = null;
+    };
+
+    resizeCleanupRef.current = stopResize;
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+  };
+
+  const handleSidePanelResizeKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setClampedSidePanelWidth(sidePanelWidth + 24);
+    }
+
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setClampedSidePanelWidth(sidePanelWidth - 24);
+    }
   };
 
   if (loading) {
@@ -1580,16 +2952,26 @@ export default function MeetingRoom() {
   const visibleRemoteStreams = focusedRemoteStream
     ? remoteStreams.filter((remote) => remote.userId !== focusedRemoteStream.userId)
     : remoteStreams;
+  const isSidePanelWide = sidePanelWidth >= 460;
+  const meetingGridStyle = sidePanelOpen
+    ? ({ '--meeting-side-panel-width': `${sidePanelWidth}px` } as CSSProperties)
+    : undefined;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white">
-      <header className="border-b border-white/10 bg-slate-900">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <div>
-            <h1 className="text-xl font-semibold">{meeting.title}</h1>
-            <p className="text-sm text-slate-300">{formatDateTime(meeting.startTime)}</p>
+    <div ref={roomRef} className="flex h-screen flex-col overflow-hidden bg-[#050b16] text-white">
+      <header className="shrink-0 border-b border-white/10 bg-slate-950/95">
+        <div className="flex h-14 items-center justify-between gap-3 px-4">
+          <div className="min-w-0">
+            <h1 className="truncate text-base font-semibold">{meeting.title}</h1>
+            <p className="truncate text-xs text-slate-300">{formatDateTime(meeting.startTime)}</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
+            <IconButton title={sidePanelOpen ? 'Hide panel' : 'Show panel'} onClick={() => setSidePanelOpen((open) => !open)}>
+              <PanelIcon />
+            </IconButton>
+            <IconButton title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen} active={isFullscreen}>
+              <FullscreenIcon exit={isFullscreen} />
+            </IconButton>
             <ProfileStatusMenu
               displayName={displayName}
               currentUserId={user?.id}
@@ -1606,37 +2988,120 @@ export default function MeetingRoom() {
               onSignOut={handleSignOut}
               dark
             />
-            <button
-              onClick={handleLeave}
-              className="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
-            >
-              {hasJoined ? 'Leave' : 'Close'}
-            </button>
+            <div className="relative">
+              <IconButton
+                title={hasJoined && isOrganizer ? 'Meeting actions' : hasJoined ? 'Leave' : 'Close'}
+                onClick={() => {
+                  if (hasJoined && isOrganizer) {
+                    setMeetingActionOpen((open) => !open);
+                    return;
+                  }
+
+                  void handleLeave();
+                }}
+                danger
+              >
+                <XIcon />
+              </IconButton>
+              {meetingActionOpen && hasJoined && isOrganizer && (
+                <div className="absolute right-0 z-40 mt-2 w-48 overflow-hidden rounded-md border border-white/10 bg-slate-900 text-sm shadow-2xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMeetingActionOpen(false);
+                      void handleLeave();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-slate-100 hover:bg-white/10"
+                  >
+                    Leave meeting
+                    <span className="text-xs text-slate-400">Only you</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMeetingActionOpen(false);
+                      void handleEndMeeting();
+                    }}
+                    disabled={endingMeeting}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-red-200 hover:bg-red-500/10 disabled:opacity-50"
+                  >
+                    {endingMeeting ? 'Ending...' : 'End meeting'}
+                    <span className="text-xs text-red-300">Everyone</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-7xl gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <section className="rounded-md border border-white/10 bg-slate-900 p-4">
-          <div className="flex aspect-video items-center justify-center overflow-hidden rounded-md bg-slate-800 p-3">
+      <main
+        className={`grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden p-3 ${
+          sidePanelOpen ? 'md:grid-cols-[minmax(0,1fr)_10px_var(--meeting-side-panel-width)]' : ''
+        } ${isResizingSidePanel ? 'select-none' : ''}`}
+        style={meetingGridStyle}
+      >
+        <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-white/10 bg-slate-900/80">
+          <div className="relative m-3 flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md bg-slate-950">
             {hasJoined ? (
               <div className="relative flex h-full w-full flex-col gap-3">
-                {focusedRemoteStream && (
-                  <button
-                    onClick={() => setFocusedRemoteUserId(null)}
-                    className="absolute right-3 top-3 z-10 rounded bg-black/60 px-3 py-2 text-xs font-semibold text-white hover:bg-black/80"
+                {raisedHandParticipants.length > 0 && (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    tabIndex={0}
+                    aria-label={`${raisedHandCount} raised ${raisedHandCount === 1 ? 'hand' : 'hands'}`}
+                    className="group pointer-events-auto absolute left-4 top-4 z-30 w-fit max-w-[calc(100%-2rem)] overflow-hidden rounded-full border border-amber-300/40 bg-slate-950/85 px-3 py-2 text-amber-50 shadow-xl shadow-black/40 backdrop-blur transition-all duration-150 hover:w-72 hover:rounded-md focus:w-72 focus:rounded-md focus:outline-none focus:ring-2 focus:ring-amber-300"
                   >
-                    Unpin
-                  </button>
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-400 text-slate-950">
+                        <HandRaisedIcon className="h-5 w-5" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-amber-200">Raised hand</span>
+                        <span className="block truncate text-sm font-semibold text-white">{raisedHandSummary}</span>
+                      </span>
+                    </div>
+                    <div className="hidden border-t border-amber-300/20 pt-2 group-hover:mt-2 group-hover:block group-focus:mt-2 group-focus:block">
+                      <div className="max-h-44 space-y-1 overflow-y-auto pr-1">
+                        {raisedHandParticipants.map((participant) => {
+                          const isCurrentRaisedParticipant = participant.userId === user?.id || participant.id === currentParticipant?.id;
+                          return (
+                            <div key={participant.id} className="flex min-w-0 items-center gap-2 rounded-md bg-white/5 px-2 py-1.5">
+                              <UserAvatar
+                                displayName={participant.userName}
+                                email={participant.userEmail}
+                                profilePictureUrl={getUserAvatar(participant.userId, participant.userEmail)}
+                                status={getParticipantPresenceStatus(participant)}
+                                showStatus
+                                size="sm"
+                                dark
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-xs font-semibold text-white">
+                                  {isCurrentRaisedParticipant ? 'You' : participant.userName}
+                                </span>
+                                <LivePresenceIndicator
+                                  label={getParticipantPresenceLabel(participant)}
+                                  kind={getParticipantPresenceKind(participant)}
+                                  compact
+                                />
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
                 )}
                 {focusedRemoteStream ? (
                   <RemoteVideoTile remote={focusedRemoteStream} />
                 ) : (
-                  <div className="relative flex min-h-[180px] flex-1 items-center justify-center overflow-hidden rounded-md bg-slate-950">
+                  <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md bg-slate-950">
                     {screenStream ? (
-                      <video ref={screenVideoRef} autoPlay playsInline muted className="h-full max-h-[60vh] w-full object-contain" />
+                      <video ref={screenVideoRef} autoPlay playsInline muted className="h-full max-h-full w-full object-contain" />
                     ) : localStream && videoEnabled ? (
-                      <video ref={videoRef} autoPlay playsInline muted className="h-full max-h-[60vh] w-full object-contain" />
+                      <video ref={videoRef} autoPlay playsInline muted className="h-full max-h-full w-full object-contain" />
                     ) : (
                       <UserAvatar
                         displayName={displayName}
@@ -1652,7 +3117,7 @@ export default function MeetingRoom() {
                   </div>
                 )}
                 {visibleRemoteStreams.length > 0 && (
-                  <div className="grid max-h-56 gap-3 overflow-y-auto md:grid-cols-2">
+                  <div className="grid max-h-44 shrink-0 gap-3 overflow-y-auto md:grid-cols-3">
                     {visibleRemoteStreams.map((remote) => (
                       <button
                         key={remote.userId}
@@ -1669,17 +3134,29 @@ export default function MeetingRoom() {
                     Waiting for others to join
                   </div>
                 )}
+                {floatingReactions.length > 0 && (
+                  <div className="pointer-events-none absolute bottom-6 right-6 z-20 flex max-w-xs flex-col items-end gap-2">
+                    {floatingReactions.map((item) => (
+                      <div key={item.id} className="rounded-full bg-black/60 px-3 py-2 text-2xl shadow-lg">
+                        <span aria-hidden="true">{item.reaction}</span>
+                        <span className="ml-2 align-middle text-xs font-semibold text-white">{item.userName}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="max-w-md text-center">
-                <h2 className="text-2xl font-semibold">Ready to join?</h2>
-                <p className="mt-2 text-slate-300">{meeting.description || 'Join when you are ready.'}</p>
+                <h2 className="text-2xl font-semibold">{canJoinMeeting ? 'Ready to join?' : 'Meeting has ended'}</h2>
+                <p className="mt-2 text-slate-300">
+                  {canJoinMeeting ? meeting.description || 'Join when you are ready.' : 'Live joining is closed, but meeting chat and recordings remain available.'}
+                </p>
                 <button
                   onClick={handleJoin}
-                  disabled={joining || waitingForLobby}
+                  disabled={!canJoinMeeting || joining || waitingForLobby}
                   className="mt-6 rounded-md bg-blue-600 px-6 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
                 >
-                  {joining ? 'Joining...' : waitingForLobby ? 'Waiting for organizer' : lobbyAdmitted ? 'Join admitted meeting' : 'Join now'}
+                  {!canJoinMeeting ? 'Closed' : joining ? 'Joining...' : waitingForLobby ? 'Waiting for organizer' : lobbyAdmitted ? 'Join admitted meeting' : 'Join now'}
                 </button>
                 {waitingForLobby && (
                   <p className="mt-3 text-sm text-amber-200">The organizer has your lobby request.</p>
@@ -1688,67 +3165,155 @@ export default function MeetingRoom() {
             )}
           </div>
 
-          <div className="mt-4 flex flex-wrap justify-center gap-3">
-            <button
+          <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-t border-white/10 bg-slate-950/75 px-3 py-3">
+            <IconButton
+              title={audioEnabled ? 'Mute microphone' : 'Unmute microphone'}
               disabled={!hasJoined}
               onClick={() => updateStatus({ audio: !audioEnabled })}
-              className={`rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-40 ${
-                audioEnabled ? 'bg-slate-700 hover:bg-slate-600' : 'bg-red-600 hover:bg-red-700'
-              }`}
+              danger={!audioEnabled}
             >
-              {audioEnabled ? 'Mute' : 'Unmute'}
-            </button>
-            <button
+              <MicIcon off={!audioEnabled} />
+            </IconButton>
+            <IconButton
+              title={videoEnabled ? 'Stop video' : 'Start video'}
               disabled={!hasJoined}
               onClick={() => updateStatus({ video: !videoEnabled })}
-              className={`rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-40 ${
-                videoEnabled ? 'bg-slate-700 hover:bg-slate-600' : 'bg-red-600 hover:bg-red-700'
-              }`}
+              danger={!videoEnabled}
             >
-              {videoEnabled ? 'Stop video' : 'Start video'}
-            </button>
-            <button
+              <VideoIcon off={!videoEnabled} />
+            </IconButton>
+            <IconButton
+              title={screenSharing ? 'Stop sharing' : 'Share screen'}
               disabled={!hasJoined}
               onClick={() => updateStatus({ sharing: !screenSharing })}
-              className={`rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-40 ${
-                screenSharing ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-700 hover:bg-slate-600'
-              }`}
+              active={screenSharing}
             >
-              {screenSharing ? 'Stop sharing' : 'Share screen'}
-            </button>
+              <ScreenIcon />
+            </IconButton>
+            <IconButton
+              title={currentParticipant?.isHandRaised ? 'Lower hand' : 'Raise hand'}
+              disabled={!hasJoined}
+              onClick={updateHandRaised}
+              active={currentParticipant?.isHandRaised}
+            >
+              <HandRaisedIcon />
+            </IconButton>
+            {meeting.allowReactions && (
+              <div className="flex h-9 items-center gap-1 rounded-md border border-white/10 bg-slate-800 px-1">
+                {QUICK_REACTIONS.map((reaction) => (
+                  <button
+                    key={reaction}
+                    type="button"
+                    title={`React ${reaction}`}
+                    aria-label={`React ${reaction}`}
+                    disabled={!hasJoined}
+                    onClick={() => sendQuickReaction(reaction)}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded text-base transition hover:bg-white/10 disabled:opacity-40"
+                  >
+                    {reaction}
+                  </button>
+                ))}
+              </div>
+            )}
             {isOrganizer && (
               meeting.allowRecording ? (
                 <button
+                  type="button"
+                  title={isRecording ? 'Stop recording' : 'Start recording'}
+                  aria-label={isRecording ? 'Stop recording' : 'Start recording'}
                   disabled={!hasJoined || recordingStatus === 'Saving recording...' || recordingStatus === 'Preparing recording...' || recordingStatus === 'Stopping recording...'}
                   onClick={isRecording ? stopRecording : startRecording}
-                  className={`rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-40 ${
+                  className={`inline-flex h-9 items-center gap-2 rounded-md border border-white/10 px-3 text-sm font-semibold disabled:opacity-40 ${
                     isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-purple-600 hover:bg-purple-700'
                   }`}
                 >
-                  {isRecording ? `Stop recording ${formatDuration(recordingSeconds)}` : 'Start recording'}
+                  <RecordIcon active={isRecording} />
+                  {isRecording && <span className="text-xs">{formatDuration(recordingSeconds)}</span>}
                 </button>
               ) : (
-                <button
+                <IconButton
+                  title="Enable recording"
                   disabled={!hasJoined}
                   onClick={enableRecording}
-                  className="rounded-md bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700 disabled:opacity-40"
+                  className="bg-purple-600 hover:bg-purple-700"
                 >
-                  Enable recording
-                </button>
+                  <RecordIcon />
+                </IconButton>
               )
             )}
           </div>
           {recordingStatus && (
-            <p className={`mt-3 text-center text-sm ${isRecording ? 'text-red-200' : 'text-slate-300'}`}>
+            <p className={`px-3 pb-3 text-center text-sm ${isRecording ? 'text-red-200' : 'text-slate-300'}`}>
               {recordingStatus}
             </p>
           )}
         </section>
 
-        <aside className="space-y-5">
-          <section className="rounded-md border border-white/10 bg-slate-900 p-4">
+        {sidePanelOpen && (
+          <div
+            role="separator"
+            aria-label="Resize video and side panel"
+            aria-orientation="vertical"
+            aria-valuemin={280}
+            aria-valuemax={640}
+            aria-valuenow={sidePanelWidth}
+            tabIndex={0}
+            title="Drag to resize video area"
+            onPointerDown={startSidePanelResize}
+            onKeyDown={handleSidePanelResizeKey}
+            className={`group hidden cursor-col-resize touch-none items-center justify-center rounded-md border border-white/10 bg-slate-950/70 outline-none transition hover:bg-slate-800 focus:ring-2 focus:ring-blue-400 md:flex ${
+              isResizingSidePanel ? 'bg-slate-800 ring-2 ring-blue-400' : ''
+            }`}
+          >
+            <span className="h-16 w-1 rounded-full bg-slate-600 transition group-hover:bg-blue-400" />
+          </div>
+        )}
+
+        <aside className={`${sidePanelOpen ? 'flex' : 'hidden'} min-h-0 flex-col gap-3 overflow-y-auto rounded-md border border-white/10 bg-slate-950/80 p-3`}>
+          <div className="sticky top-0 z-20 rounded-md border border-white/10 bg-slate-950/95 p-2 shadow-xl">
+            <div className="flex items-center justify-between gap-2">
+              <div className="grid flex-1 grid-cols-4 gap-1">
+                {([
+                  ['participants', 'People', <PeopleIcon key="people" />, participants.length],
+                  ['chat', 'Chat', <ChatIcon key="chat" />, chatMessages.length],
+                  ['whiteboard', 'Board', <NotesIcon key="board" />, whiteboardItems.length],
+                  ['details', 'Details', <InfoIcon key="details" />, 0],
+                ] as Array<[SidePanelTab, string, ReactNode, number]>).map(([tab, label, icon, count]) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    onClick={() => setActiveSidePanelTab(tab)}
+                    className={`relative flex h-9 items-center justify-center rounded-md px-2 text-xs font-semibold ${
+                      activeSidePanelTab === tab
+                        ? 'bg-white text-slate-950'
+                        : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    {icon}
+                    {count > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-teal-500 px-1 text-[10px] font-bold text-white">
+                        {count > 99 ? '99+' : count}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <IconButton
+                onClick={() => setClampedSidePanelWidth(isSidePanelWide ? 340 : 500)}
+                title={isSidePanelWide ? 'Use compact panel' : 'Use wide panel'}
+                active={isSidePanelWide}
+                className="h-9 w-9"
+              >
+                <PinIcon />
+              </IconButton>
+            </div>
+          </div>
+
+          <section className={`${activeSidePanelTab === 'details' ? 'block' : 'hidden'} rounded-md border border-white/10 bg-slate-900 p-3`}>
             <h2 className="text-base font-semibold">Meeting details</h2>
-            <div className="mt-3 space-y-2 text-sm text-slate-300">
+            <div className="mt-3 space-y-1.5 text-sm text-slate-300">
               <p>{meeting.isOnlineMeeting ? 'Online meeting' : 'In-person meeting'}</p>
               {meeting.location && <p>{meeting.location}</p>}
               <p>{meeting.durationMinutes || 60} minutes</p>
@@ -1759,19 +3324,18 @@ export default function MeetingRoom() {
                   href={resolveRecordingUrl(meeting.recordingUrl)}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex rounded-md border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20"
+                  title="Open recording"
+                  aria-label="Open recording"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-emerald-400/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
                 >
-                  Open recording
+                  <RecordIcon />
                 </a>
               )}
               {meeting.meetingLink && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={copyJoinLink}
-                    className="rounded-md border border-white/10 px-3 py-2 text-left text-xs text-slate-200 hover:bg-white/5"
-                  >
-                    Copy join link
-                  </button>
+                  <IconButton title={copyStatus === 'Copied' ? 'Link copied' : 'Copy join link'} onClick={copyJoinLink}>
+                    <LinkIcon />
+                  </IconButton>
                   {copyStatus && (
                     <span
                       aria-live="polite"
@@ -1784,88 +3348,297 @@ export default function MeetingRoom() {
                   )}
                 </div>
               )}
+              {isOrganizer && (
+                <div className="flex flex-wrap items-center gap-2 pt-2">
+                  <IconButton title="Export meeting chat" onClick={exportMeetingChat}>
+                    <ChatIcon />
+                  </IconButton>
+                  <IconButton title="Export whiteboard data" onClick={exportMeetingWhiteboardJson}>
+                    <NotesIcon />
+                  </IconButton>
+                </div>
+              )}
             </div>
           </section>
 
-          {isOrganizer && (
-            <section className="rounded-md border border-white/10 bg-slate-900 p-4">
-              <h2 className="text-base font-semibold">Invite by email</h2>
+          {currentUserInvite && (
+            <section className={`${activeSidePanelTab === 'details' ? 'block' : 'hidden'} rounded-md border border-white/10 bg-slate-900 p-4`}>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-base font-semibold">My response</h2>
+                <span className={`rounded-full px-2 py-1 text-xs font-semibold ${inviteResponseClass(currentUserInvite.responseStatus)}`}>
+                  {currentUserInvite.responseStatus}
+                </span>
+              </div>
               <textarea
-                value={inviteText}
-                onChange={(event) => setInviteText(event.target.value)}
-                rows={3}
-                placeholder="name@example.com, teammate@example.com"
-                className="mt-3 w-full rounded-md border border-white/10 bg-slate-800 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
+                value={inviteResponseReason}
+                onChange={(event) => setInviteResponseReason(event.target.value)}
+                rows={2}
+                maxLength={500}
+                placeholder="Optional reason"
+                className="mt-3 w-full resize-none rounded-md border border-white/10 bg-slate-800 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
               />
-              <button
-                onClick={sendEmailInvites}
-                disabled={!inviteText.trim()}
-                className="mt-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                Send invite
-              </button>
-              {inviteStatus && <p className="mt-2 text-xs text-slate-300">{inviteStatus}</p>}
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {(['Accepted', 'Tentative', 'Declined'] as InviteResponseStatus[]).map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    onClick={() => updateMyInviteResponse(status)}
+                    disabled={inviteResponseStatus === 'Saving response...'}
+                    className={`rounded-md px-2 py-2 text-xs font-semibold disabled:opacity-50 ${inviteResponseClass(status)}`}
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+              {inviteResponseStatus && <p className="mt-2 text-xs text-slate-300">{inviteResponseStatus}</p>}
             </section>
           )}
 
-          <section className="rounded-md border border-white/10 bg-slate-900 p-4">
-            <h2 className="text-base font-semibold">Participants ({participants.length})</h2>
+          {isOrganizer && meetingInvites.length > 0 && (
+            <section className={`${activeSidePanelTab === 'details' ? 'block' : 'hidden'} rounded-md border border-white/10 bg-slate-900 p-4`}>
+              <h2 className="text-base font-semibold">Invite responses</h2>
+              <div className="mt-3 space-y-2">
+                {meetingInvites.map((invite) => (
+                  <div key={invite.id} className="rounded-md bg-slate-800 px-3 py-2 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate font-medium">{invite.displayName || invite.email}</span>
+                      <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${inviteResponseClass(invite.responseStatus)}`}>
+                        {invite.responseStatus}
+                      </span>
+                    </div>
+                    {invite.displayName && <p className="mt-1 truncate text-xs text-slate-500">{invite.email}</p>}
+                    {invite.responseReason && <p className="mt-1 text-xs text-slate-300">{invite.responseReason}</p>}
+                    {invite.respondedAt && <p className="mt-1 text-[11px] text-slate-500">{formatDateTime(invite.respondedAt)}</p>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section className={`${activeSidePanelTab === 'participants' ? 'block' : 'hidden'} rounded-md border border-white/10 bg-slate-900 p-4`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold">Participants</h2>
+                {raisedHandCount > 0 && (
+                  <p className="mt-1 text-xs font-semibold text-amber-200">
+                    {raisedHandCount === 1 ? '1 raised hand is at the top' : `${raisedHandCount} raised hands are at the top`}
+                  </p>
+                )}
+              </div>
+              <IconButton title="Refresh participants" onClick={refreshParticipants} className="h-8 w-8">
+                <RefreshIcon />
+              </IconButton>
+            </div>
+            {hasJoined && (
+              <div className="mt-3 rounded-md border border-white/10 bg-slate-950/70 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white">Call people</p>
+                    <p className="text-xs text-slate-400">Search available users and ring them directly.</p>
+                  </div>
+                  <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/10 bg-slate-800 text-slate-200">
+                    <VideoIcon />
+                  </span>
+                </div>
+                <input
+                  value={inviteSearch}
+                  onChange={(event) => setInviteSearch(event.target.value)}
+                  placeholder="Search available users"
+                  className="mt-3 w-full rounded-md border border-white/10 bg-slate-800 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
+                />
+                {inviteSearch.trim() && (
+                  <div className="mt-2 space-y-1">
+                    {searchableInviteUsers.length === 0 ? (
+                      <p className="rounded-md bg-slate-900 px-3 py-2 text-xs text-slate-400">No matching users found.</p>
+                    ) : (
+                      searchableInviteUsers.map((candidate) => {
+                        const candidateStatus = getUserStatus(candidate.id, candidate.email);
+                        const canCallCandidate = candidateStatus === 'Available';
+
+                        return (
+                          <button
+                            key={candidate.id}
+                            type="button"
+                            onClick={() => void callUserIntoMeeting(candidate)}
+                            disabled={!canCallCandidate}
+                            className={`flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm transition ${
+                              canCallCandidate
+                                ? 'bg-slate-900 hover:bg-slate-800'
+                                : 'cursor-not-allowed bg-slate-900/60 opacity-60'
+                            }`}
+                          >
+                            <span className="flex min-w-0 items-center gap-2">
+                              <UserAvatar
+                                displayName={displayKnownUser(candidate)}
+                                email={candidate.email}
+                                profilePictureUrl={candidate.profilePictureUrl}
+                                status={candidateStatus}
+                                showStatus
+                                size="sm"
+                                dark
+                              />
+                              <span className="min-w-0">
+                                <span className="block truncate font-semibold text-white">{displayKnownUser(candidate)}</span>
+                                <span className="block truncate text-xs text-slate-400">{candidate.email}</span>
+                                <span className={`mt-0.5 block text-[11px] font-semibold ${
+                                  canCallCandidate ? 'text-emerald-200' : 'text-slate-500'
+                                }`}>
+                                  {statusLabel(candidateStatus)}
+                                </span>
+                              </span>
+                            </span>
+                            <span className={`shrink-0 ${canCallCandidate ? 'text-emerald-200' : 'text-slate-500'}`}>
+                              <VideoIcon />
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+                {inviteStatus && <p className="mt-2 text-xs text-slate-300">{inviteStatus}</p>}
+                {Object.values(inviteCallStatuses).length > 0 && (
+                  <div className="mt-3 space-y-1">
+                    {Object.values(inviteCallStatuses).map((call) => (
+                      <div key={call.userId} className="flex items-center justify-between gap-2 rounded-md bg-slate-900 px-3 py-2 text-xs">
+                        <span className="min-w-0">
+                          <span className="block truncate font-semibold text-slate-100">{call.displayName}</span>
+                          <span className="block truncate text-slate-500">{call.email}</span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1">
+                          <span className={`rounded-full px-2 py-1 font-semibold ${
+                            call.status === 'Joined'
+                              ? 'bg-emerald-500/15 text-emerald-200'
+                              : call.status === 'No response' || call.status === 'Failed'
+                                ? 'bg-red-500/15 text-red-200'
+                                : call.status === 'Cancelled'
+                                  ? 'bg-slate-700 text-slate-200'
+                                  : 'bg-amber-500/15 text-amber-200'
+                          }`}>
+                            {call.status}
+                          </span>
+                          {call.status === 'Ringing' && (
+                            <button
+                              type="button"
+                              onClick={() => void cancelOutgoingMeetingCall(call)}
+                              title={`Stop call to ${call.displayName}`}
+                              aria-label={`Stop call to ${call.displayName}`}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-500/30 bg-red-500/15 text-red-200 transition hover:bg-red-500/25"
+                            >
+                              <XIcon />
+                            </button>
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="mt-3 space-y-2">
               {participants.length === 0 ? (
                 <p className="text-sm text-slate-400">No one has joined yet.</p>
               ) : (
-                participants.map((participant) => (
-                  <div key={participant.id} className="rounded-md bg-slate-800 px-3 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
+                sortedParticipants.map((participant) => {
+                  const isCurrentUserParticipant = participant.userId === user?.id || participant.id === currentParticipant?.id;
+                  return (
+                  <div
+                    key={participant.id}
+                    className={`rounded-md border px-3 py-3 transition ${
+                      participant.isHandRaised
+                        ? 'border-amber-400/40 bg-amber-500/10 shadow-sm shadow-amber-950/30'
+                        : 'border-transparent bg-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
                         <UserAvatar
                           displayName={participant.userName}
                           email={participant.userEmail}
                           profilePictureUrl={getUserAvatar(participant.userId, participant.userEmail)}
-                          status={getUserStatus(participant.userId, participant.userEmail)}
+                          status={getParticipantPresenceStatus(participant)}
                           showStatus
                           size="sm"
                           dark
                         />
                         <div className="min-w-0">
-                        <div className="flex items-center gap-2">
                           <p className="truncate text-sm font-medium">{participant.userName}</p>
-                          <UserStatusBadge status={getUserStatus(participant.userId, participant.userEmail)} compact />
-                        </div>
-                        <p className="text-xs text-slate-400">{statusLabel(getUserStatus(participant.userId, participant.userEmail))}</p>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                            <LivePresenceIndicator
+                              label={getParticipantPresenceLabel(participant)}
+                              kind={getParticipantPresenceKind(participant)}
+                            />
+                            {participant.role && (
+                              <span className="rounded bg-slate-950 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-300">
+                                {participant.role}
+                              </span>
+                            )}
+                            {participant.isHandRaised && (
+                              <span className="inline-flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100">
+                                <HandRaisedIcon className="h-3 w-3" />
+                                Hand raised
+                              </span>
+                            )}
+                            {participant.reaction && (
+                              <span className="rounded bg-slate-950 px-1.5 py-0.5 text-sm" aria-label="Latest reaction">
+                                {participant.reaction}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                      {isOrganizer && participant.userId !== user?.id ? (
-                        <select
-                          value={participant.role || 'Attendee'}
-                          onChange={(event) => updateRole(participant.id, event.target.value)}
-                          className="rounded border border-white/10 bg-slate-900 px-2 py-1 text-xs text-white"
-                        >
-                          <option value="Attendee">Attendee</option>
-                          <option value="Presenter">Presenter</option>
-                          <option value="Organizer">Organizer</option>
-                        </select>
-                      ) : (
-                        <span className="rounded bg-slate-900 px-2 py-1 text-xs text-slate-300">{participant.role || 'Attendee'}</span>
-                      )}
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {isOrganizer && participant.userId !== user?.id && (
+                          <select
+                            value={participant.role || 'Attendee'}
+                            onChange={(event) => updateRole(participant.id, event.target.value)}
+                            className="max-w-[96px] rounded border border-white/10 bg-slate-900 px-2 py-1 text-xs text-white"
+                          >
+                            <option value="Attendee">Attendee</option>
+                            <option value="Presenter">Presenter</option>
+                            <option value="Organizer">Organizer</option>
+                          </select>
+                        )}
+                        {(isOrganizer || isCurrentUserParticipant) && (
+                          <IconButton
+                            title={isCurrentUserParticipant ? 'Mute me' : 'Mute participant'}
+                            onClick={() => muteParticipant(participant)}
+                            disabled={!participant.isAudioEnabled}
+                            danger
+                            className="h-8 w-8"
+                          >
+                            <MicIcon off />
+                          </IconButton>
+                        )}
+                        {!isCurrentUserParticipant && (
+                          <IconButton
+                            title={`Chat with ${participant.userName}`}
+                            onClick={() => {
+                              setChatRecipient(participant.userId);
+                              setActiveSidePanelTab('chat');
+                            }}
+                            disabled={!participant.userId}
+                            className="h-8 w-8"
+                          >
+                            <ChatIcon />
+                          </IconButton>
+                        )}
+                      </div>
                     </div>
-                    <p className="text-xs text-slate-400">
-                      {participant.isAudioEnabled ? 'Audio on' : 'Muted'} - {participant.isVideoEnabled ? 'Video on' : 'Video off'}
-                      {participant.isScreenSharing ? ' - Presenting' : ''}
-                    </p>
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           </section>
 
           {isOrganizer && (
-            <section className="rounded-md border border-white/10 bg-slate-900 p-4">
+            <section className={`${activeSidePanelTab === 'details' ? 'block' : 'hidden'} rounded-md border border-white/10 bg-slate-900 p-4`}>
               <div className="flex items-center justify-between">
                 <h2 className="text-base font-semibold">Lobby</h2>
-                <button onClick={refreshLobby} className="rounded-md border border-white/10 px-2 py-1 text-xs text-slate-200 hover:bg-white/5">
-                  Refresh
-                </button>
+                <IconButton title="Refresh lobby" onClick={refreshLobby} className="h-8 w-8">
+                  <RefreshIcon />
+                </IconButton>
               </div>
               <div className="mt-3 space-y-2">
                 {lobbyRequests.filter((request) => request.status === 'Waiting').length === 0 ? (
@@ -1878,12 +3651,21 @@ export default function MeetingRoom() {
                         <p className="text-sm font-medium">{request.userName}</p>
                         <p className="text-xs text-slate-400">{request.userEmail}</p>
                         <div className="mt-2 flex gap-2">
-                          <button onClick={() => decideLobby(request.id, true)} className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white">
-                            Admit
-                          </button>
-                          <button onClick={() => decideLobby(request.id, false)} className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white">
-                            Deny
-                          </button>
+                          <IconButton
+                            title="Admit"
+                            onClick={() => decideLobby(request.id, true)}
+                            className="h-8 w-8 border-emerald-500/30 bg-emerald-600 text-white hover:bg-emerald-700"
+                          >
+                            <CheckIcon />
+                          </IconButton>
+                          <IconButton
+                            title="Deny"
+                            onClick={() => decideLobby(request.id, false)}
+                            danger
+                            className="h-8 w-8"
+                          >
+                            <XIcon />
+                          </IconButton>
                         </div>
                       </div>
                     ))
@@ -1892,7 +3674,7 @@ export default function MeetingRoom() {
             </section>
           )}
 
-          <section className="rounded-md border border-white/10 bg-slate-900 p-4">
+          <section className={`${activeSidePanelTab === 'details' ? 'block' : 'hidden'} rounded-md border border-white/10 bg-slate-900 p-4`}>
             <h2 className="text-base font-semibold">Meeting notes</h2>
             <textarea
               value={meetingNotes}
@@ -1903,13 +3685,127 @@ export default function MeetingRoom() {
               className="mt-3 w-full rounded-md border border-white/10 bg-slate-800 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 disabled:opacity-60"
             />
             {isOrganizer && (
-              <button onClick={saveNotes} className="mt-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700">
-                Save notes
+              <button
+                onClick={saveNotes}
+                title="Save notes"
+                aria-label="Save notes"
+                className="mt-2 inline-flex h-9 w-9 items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700"
+              >
+                <NotesIcon />
               </button>
             )}
           </section>
 
-          <section className="rounded-md border border-white/10 bg-slate-900 p-4">
+          <section className={`${activeSidePanelTab === 'whiteboard' ? 'flex' : 'hidden'} min-h-[620px] flex-col rounded-md border border-white/10 bg-slate-900 p-4`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-base font-semibold">Whiteboard</h2>
+                <p className="text-xs text-slate-400">{canEditWhiteboard ? 'Shared with everyone in this meeting.' : 'View only. Ask the organizer for presenter access.'}</p>
+              </div>
+              {whiteboardStatus && <span className="rounded-full bg-slate-800 px-2 py-1 text-xs text-slate-300">{whiteboardStatus}</span>}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {(['pen', 'eraser', 'text'] as const).map((tool) => (
+                <button
+                  key={tool}
+                  type="button"
+                  onClick={() => setWhiteboardTool(tool)}
+                  disabled={!canEditWhiteboard}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold capitalize disabled:opacity-50 ${whiteboardTool === tool ? 'bg-white text-slate-950' : 'bg-slate-800 text-slate-200 hover:bg-white/10'}`}
+                >
+                  {tool}
+                </button>
+              ))}
+              <input
+                type="color"
+                value={whiteboardColor}
+                onChange={(event) => setWhiteboardColor(event.target.value)}
+                disabled={!canEditWhiteboard || whiteboardTool === 'eraser'}
+                className="h-8 w-10 rounded border border-white/10 bg-slate-800 p-1 disabled:opacity-50"
+                aria-label="Whiteboard color"
+              />
+              <input
+                type="range"
+                min={2}
+                max={12}
+                value={whiteboardSize}
+                onChange={(event) => setWhiteboardSize(Number(event.target.value))}
+                disabled={!canEditWhiteboard}
+                className="w-24"
+                aria-label="Whiteboard stroke size"
+              />
+              <IconButton title="Undo" onClick={undoWhiteboard} disabled={!canEditWhiteboard || whiteboardItems.length === 0} className="h-8 w-8">
+                <UndoIcon />
+              </IconButton>
+              <IconButton title="Redo" onClick={redoWhiteboard} disabled={!canEditWhiteboard || whiteboardRedoItems.length === 0} className="h-8 w-8">
+                <RedoIcon />
+              </IconButton>
+              <IconButton title="Clear whiteboard" onClick={clearWhiteboard} disabled={!canEditWhiteboard || whiteboardItems.length === 0} danger className="h-8 w-8">
+                <XIcon />
+              </IconButton>
+            </div>
+            {whiteboardTool === 'text' && (
+              <div className="mt-3 flex gap-2">
+                <input
+                  value={whiteboardText}
+                  onChange={(event) => setWhiteboardText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      addWhiteboardText();
+                    }
+                  }}
+                  disabled={!canEditWhiteboard}
+                  placeholder="Text to place on board"
+                  className="min-w-0 flex-1 rounded-md border border-white/10 bg-slate-800 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 disabled:opacity-50"
+                />
+                <IconButton title="Add text" onClick={addWhiteboardText} disabled={!canEditWhiteboard || !whiteboardText.trim()} className="h-10 w-10 border-blue-500/30 bg-blue-600 hover:bg-blue-700">
+                  <SendIcon />
+                </IconButton>
+              </div>
+            )}
+            <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-md bg-white p-2">
+              <canvas
+                ref={whiteboardCanvasRef}
+                width={900}
+                height={560}
+                onPointerDown={startWhiteboardDraw}
+                onPointerMove={moveWhiteboardDraw}
+                onPointerUp={finishWhiteboardDraw}
+                onPointerCancel={finishWhiteboardDraw}
+                className={`h-auto w-full rounded border border-slate-200 bg-white ${canEditWhiteboard && whiteboardTool !== 'text' ? 'cursor-crosshair' : 'cursor-default'}`}
+              />
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              <button type="button" onClick={exportWhiteboardImage} className="rounded-md bg-slate-800 px-2 py-2 text-xs font-semibold text-slate-100 hover:bg-white/10">
+                PNG
+              </button>
+              <button type="button" onClick={exportWhiteboardPdf} className="rounded-md bg-slate-800 px-2 py-2 text-xs font-semibold text-slate-100 hover:bg-white/10">
+                PDF
+              </button>
+              {isOrganizer && (
+                <button type="button" onClick={exportMeetingWhiteboardJson} className="rounded-md bg-slate-800 px-2 py-2 text-xs font-semibold text-slate-100 hover:bg-white/10">
+                  Data
+                </button>
+              )}
+            </div>
+          </section>
+
+          <section
+            className={`${activeSidePanelTab === 'chat' ? 'relative flex min-h-[560px] flex-1 flex-col' : 'hidden'} rounded-md border border-white/10 bg-slate-900 p-4`}
+            onDragOver={handleMeetingChatDragOver}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setIsDraggingMeetingImage(false);
+              }
+            }}
+            onDrop={handleMeetingChatDrop}
+          >
+            {isDraggingMeetingImage && (
+              <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-md border border-dashed border-blue-300 bg-blue-500/10 text-sm font-semibold text-blue-100">
+                Drop screenshot here
+              </div>
+            )}
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-base font-semibold">Chat</h2>
               <select
@@ -1919,7 +3815,7 @@ export default function MeetingRoom() {
                 className="max-w-[170px] rounded-md border border-white/10 bg-slate-800 px-2 py-1 text-xs text-white outline-none disabled:opacity-50"
               >
                 <option value="everyone">Everyone</option>
-                {participants
+                {sortedParticipants
                   .filter((participant) => participant.userId && participant.userId !== user?.id)
                   .map((participant) => (
                     <option key={participant.id} value={participant.userId}>
@@ -1929,7 +3825,7 @@ export default function MeetingRoom() {
               </select>
             </div>
 
-            <div className="mt-3 flex h-64 flex-col gap-2 overflow-y-auto rounded-md bg-slate-950 p-3">
+            <div className="mt-3 flex min-h-[360px] flex-1 flex-col gap-2 overflow-y-auto rounded-md bg-slate-950 p-3">
               {chatMessages.length === 0 ? (
                 <p className="text-sm text-slate-400">No messages yet.</p>
               ) : (
@@ -1949,14 +3845,39 @@ export default function MeetingRoom() {
               <div ref={chatEndRef} />
             </div>
 
+            {pendingMeetingImages.length > 0 && (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {pendingMeetingImages.map((image) => (
+                  <div key={image.id} className="flex items-center gap-2 rounded-md border border-white/10 bg-slate-950 p-2">
+                    <img src={image.dataUrl} alt={image.name} className="h-12 w-16 rounded object-cover" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs font-semibold text-slate-100">{image.name}</p>
+                      <p className="text-[11px] text-slate-500">{formatFileSize(image.size)}</p>
+                    </div>
+                    <IconButton
+                      title="Remove screenshot"
+                      onClick={() => removePendingMeetingImage(image.id)}
+                      className="h-8 w-8"
+                    >
+                      <XIcon />
+                    </IconButton>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="mt-3 flex items-end gap-2">
               <textarea
+                ref={chatInputRef}
                 value={chatDraft}
                 onChange={(event) => setChatDraft(event.target.value)}
+                onPaste={handleMeetingChatPaste}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
-                    handleSendChat();
+                    handleSendChat().finally(() => {
+                      window.requestAnimationFrame(() => chatInputRef.current?.focus());
+                    });
                     return;
                   }
 
@@ -1978,17 +3899,22 @@ export default function MeetingRoom() {
                 placeholder={hasJoined ? 'Type a message' : 'Join to chat'}
                 className="max-h-32 min-w-0 flex-1 resize-none rounded-md border border-white/10 bg-slate-800 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 disabled:opacity-50"
               />
-              <button
-                onClick={handleSendChat}
-                disabled={!hasJoined || !chatDraft.trim()}
-                className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+              <IconButton
+                title="Send message"
+                onClick={() => {
+                  handleSendChat().finally(() => {
+                    window.requestAnimationFrame(() => chatInputRef.current?.focus());
+                  });
+                }}
+                disabled={!hasJoined || (!chatDraft.trim() && pendingMeetingImages.length === 0)}
+                className="h-10 w-10 shrink-0 border-blue-500/30 bg-blue-600 text-white hover:bg-blue-700"
               >
-                Send
-              </button>
+                <SendIcon />
+              </IconButton>
             </div>
           </section>
 
-          <section className="rounded-md border border-white/10 bg-slate-900 p-4">
+          <section className={`${activeSidePanelTab === 'details' ? 'block' : 'hidden'} rounded-md border border-white/10 bg-slate-900 p-4`}>
             <h2 className="text-base font-semibold">Activity</h2>
             <div className="mt-3 space-y-2 text-sm text-slate-300">
               {activity.length === 0 ? <p className="text-slate-400">Activity will appear here.</p> : activity.map((item, index) => <p key={index}>{item}</p>)}

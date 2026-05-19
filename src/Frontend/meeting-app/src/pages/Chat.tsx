@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type SVGProps } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type SVGProps } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import AppShell from '../components/AppShell';
 import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus } from '../components/UserStatus';
-import { conversationAPI, getMeetingJoinPath, getMeetingJoinUrl, meetingAPI, resolveApiAssetUrl, userAPI } from '../services/api';
+import { conversationAPI, getMeetingJoinUrl, meetingAPI, openMeetingJoinInNewTab, resolveApiAssetUrl, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinConversation,
@@ -55,6 +55,7 @@ interface ConversationMessage {
   sentAt: string;
   editedAt?: string;
   isPinned?: boolean;
+  isImportant?: boolean;
   reactions?: ConversationMessageReaction[];
   deliveryStatus?: 'pending' | 'retrying' | 'failed' | 'sent';
   deliveryError?: string;
@@ -78,6 +79,57 @@ interface ScheduledConversationMessage {
   scheduledFor: string;
   createdAt: string;
   status: string;
+}
+
+interface ConversationTaskNote {
+  id: string;
+  taskId: string;
+  authorId: string;
+  authorName: string;
+  note: string;
+  createdAt: string;
+}
+
+interface ConversationTaskActivity {
+  id: string;
+  taskId: string;
+  actorId: string;
+  actorName: string;
+  action: string;
+  details?: string;
+  createdAt: string;
+}
+
+interface ConversationTask {
+  id: string;
+  conversationId: string;
+  sourceMessageId?: string;
+  title: string;
+  description?: string;
+  priority: 'Low' | 'Normal' | 'High' | 'Urgent';
+  status: 'Pending' | 'InProgress' | 'Completed';
+  ownerId: string;
+  ownerName: string;
+  assigneeId?: string;
+  assigneeEmail?: string;
+  assigneeName?: string;
+  dueDate?: string;
+  createdAt: string;
+  updatedAt?: string;
+  completedAt?: string;
+  sourceMessagePreview?: string;
+  notes?: ConversationTaskNote[];
+  activities?: ConversationTaskActivity[];
+}
+
+interface GlobalSearchResult {
+  kind: string;
+  id: string;
+  conversationId?: string;
+  meetingId?: string;
+  title: string;
+  snippet?: string;
+  occurredAt?: string;
 }
 
 interface ConversationInvite {
@@ -105,6 +157,7 @@ interface QueuedChatMessage {
   senderId: string;
   senderName: string;
   message: string;
+  isImportant?: boolean;
   replyToMessageId?: string;
   replyToSenderName?: string;
   replyToPreview?: string;
@@ -155,6 +208,34 @@ function formatScheduledDate(value?: string) {
   }).format(new Date(value));
 }
 
+function formatTaskStatus(value?: string) {
+  return (value || 'Pending').replace(/([a-z])([A-Z])/g, '$1 $2');
+}
+
+function getTaskPriorityClass(priority?: string) {
+  switch (priority) {
+    case 'Urgent':
+      return 'bg-red-50 text-red-700 ring-red-100';
+    case 'High':
+      return 'bg-orange-50 text-orange-700 ring-orange-100';
+    case 'Low':
+      return 'bg-slate-50 text-slate-600 ring-slate-200';
+    default:
+      return 'bg-teal-50 text-teal-700 ring-teal-100';
+  }
+}
+
+function getTaskStatusClass(status?: string) {
+  switch (status) {
+    case 'Completed':
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+    case 'InProgress':
+      return 'bg-blue-50 text-blue-700 ring-blue-100';
+    default:
+      return 'bg-amber-50 text-amber-700 ring-amber-100';
+  }
+}
+
 function toDateTimeLocalValue(date: Date) {
   const offset = date.getTimezoneOffset();
   const local = new Date(date.getTime() - offset * 60000);
@@ -183,6 +264,10 @@ function formatFileSize(bytes?: number) {
 
 function fileKey(file: File) {
   return `${file.name}-${file.size}-${file.lastModified}`;
+}
+
+function isImageFile(file: File) {
+  return file.type.startsWith('image/');
 }
 
 function describeLastMessage(message: ConversationMessage | undefined, memberCount: number) {
@@ -294,6 +379,7 @@ function queuedMessageToConversationMessage(item: QueuedChatMessage): Conversati
     senderName: item.senderName,
     clientMessageId: item.clientMessageId,
     message: item.message,
+    isImportant: item.isImportant,
     replyToMessageId: item.replyToMessageId,
     replyToSenderName: item.replyToSenderName,
     replyToPreview: item.replyToPreview,
@@ -536,6 +622,24 @@ function ClockIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+function TaskIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M5 6.5h14M5 12h14M5 17.5h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="m4.5 12 1.2 1.2L8 10.8M4.5 17.5l1.2 1.2L8 16.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ImportantIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
+      <path d="M12 4v10" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+      <path d="M12 19h.01" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function VideoCallIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" {...props}>
@@ -613,10 +717,11 @@ export default function Chat() {
   const [quickGroupStatus, setQuickGroupStatus] = useState('');
   const [creatingQuickGroup, setCreatingQuickGroup] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
-  const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'photos'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'photos' | 'tasks'>('chat');
   const [startingCall, setStartingCall] = useState<'audio' | 'video' | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
+  const [editImportant, setEditImportant] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
   const [reactingMessageId, setReactingMessageId] = useState<string | null>(null);
@@ -628,6 +733,70 @@ export default function Chat() {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleFor, setScheduleFor] = useState(() => toDateTimeLocalValue(new Date(Date.now() + 15 * 60000)));
   const [scheduling, setScheduling] = useState(false);
+  const [tasks, setTasks] = useState<ConversationTask[]>([]);
+  const [taskStatusFilter, setTaskStatusFilter] = useState('All');
+  const [taskPriorityFilter, setTaskPriorityFilter] = useState('All');
+  const [taskQuery, setTaskQuery] = useState('');
+  const [taskDraft, setTaskDraft] = useState('');
+  const [taskDescriptionDraft, setTaskDescriptionDraft] = useState('');
+  const [taskPriorityDraft, setTaskPriorityDraft] = useState<'Low' | 'Normal' | 'High' | 'Urgent'>('Normal');
+  const [taskAssigneeDraft, setTaskAssigneeDraft] = useState('');
+  const [taskDueDraft, setTaskDueDraft] = useState('');
+  const [taskSourceMessage, setTaskSourceMessage] = useState<ConversationMessage | null>(null);
+  const [creatingTask, setCreatingTask] = useState(false);
+  const [taskNoteDrafts, setTaskNoteDrafts] = useState<Record<string, string>>({});
+  const [highlightMessageId, setHighlightMessageId] = useState(searchParams.get('messageId'));
+  const [importantDraft, setImportantDraft] = useState(false);
+  const [shareMessage, setShareMessage] = useState<ConversationMessage | null>(null);
+  const [shareEmailsDraft, setShareEmailsDraft] = useState('');
+  const [shareNoteDraft, setShareNoteDraft] = useState('');
+  const [sharingDocument, setSharingDocument] = useState(false);
+  const [documentPreview, setDocumentPreview] = useState<ConversationMessage | null>(null);
+  const [documentPreviewUrl, setDocumentPreviewUrl] = useState('');
+  const [documentPreviewError, setDocumentPreviewError] = useState('');
+  const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResult[]>([]);
+  const [searchingGlobally, setSearchingGlobally] = useState(false);
+  const pendingFilePreviews = useMemo(
+    () => pendingFiles.map((file) => ({
+      file,
+      previewUrl: isImageFile(file) ? URL.createObjectURL(file) : '',
+    })),
+    [pendingFiles],
+  );
+
+  useEffect(() => () => {
+    pendingFilePreviews.forEach((item) => {
+      if (item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+    });
+  }, [pendingFilePreviews]);
+
+  useEffect(() => {
+    if (!documentPreview) {
+      setDocumentPreviewUrl('');
+      setDocumentPreviewError('');
+      return;
+    }
+
+    let objectUrl = '';
+    conversationAPI.previewAttachment(documentPreview.conversationId, documentPreview.id)
+      .then((response) => {
+        objectUrl = URL.createObjectURL(new Blob([response.data], { type: documentPreview.attachmentContentType || 'application/octet-stream' }));
+        setDocumentPreviewUrl(objectUrl);
+        setDocumentPreviewError('');
+      })
+      .catch(() => {
+        setDocumentPreviewUrl('');
+        setDocumentPreviewError('Preview is unavailable for this file.');
+      });
+
+    return () => {
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [documentPreview]);
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -693,6 +862,20 @@ export default function Chat() {
   const selectedFiles = messages.filter((message) => message.attachmentUrl);
   const selectedPhotos = selectedFiles.filter(isImageAttachment);
   const queuedMessageCount = queuedMessages.length;
+  const filteredTasks = useMemo(() => {
+    const query = taskQuery.trim().toLowerCase();
+    return tasks.filter((task) => {
+      const matchesStatus = taskStatusFilter === 'All' || task.status === taskStatusFilter;
+      const matchesPriority = taskPriorityFilter === 'All' || task.priority === taskPriorityFilter;
+      const matchesQuery = !query
+        || task.title.toLowerCase().includes(query)
+        || (task.description || '').toLowerCase().includes(query)
+        || (task.assigneeName || task.assigneeEmail || '').toLowerCase().includes(query);
+      return matchesStatus && matchesPriority && matchesQuery;
+    });
+  }, [taskPriorityFilter, taskQuery, taskStatusFilter, tasks]);
+  const importantMessages = messages.filter((message) => message.isImportant);
+  const pinnedMessages = messages.filter((message) => message.isPinned);
 
   useEffect(() => {
     conversationsRef.current = conversations;
@@ -817,6 +1000,22 @@ export default function Chat() {
   }, [conversations, requestedConversationId, selectedConversationId]);
 
   useEffect(() => {
+    setHighlightMessageId(searchParams.get('messageId'));
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!highlightMessageId || activeTab !== 'chat') {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      document.getElementById(`message-${highlightMessageId}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 100);
+
+    return () => window.clearTimeout(timer);
+  }, [activeTab, highlightMessageId, messages]);
+
+  useEffect(() => {
     if (!token || !user) {
       return;
     }
@@ -864,6 +1063,7 @@ export default function Chat() {
             replyToPreview: data.replyToPreview || data.ReplyToPreview,
             sentAt: data.timestamp,
             isPinned: Boolean(data.isPinned || data.IsPinned),
+            isImportant: Boolean(data.isImportant || data.IsImportant),
             reactions: [],
           };
 
@@ -914,6 +1114,7 @@ export default function Chat() {
           const editedAt = data.editedAt || data.EditedAt || data.timestamp || data.Timestamp;
           const senderId = data.senderId || data.SenderId;
           const senderName = data.senderName || data.SenderName;
+          const isImportant = data.isImportant ?? data.IsImportant;
 
           if (!messageId || !conversationId) {
             return;
@@ -928,6 +1129,7 @@ export default function Chat() {
                   senderName: senderName || item.senderName,
                   message: messageText,
                   editedAt,
+                  isImportant: typeof isImportant === 'boolean' ? isImportant : item.isImportant,
                 }
               : item
           )));
@@ -944,6 +1146,7 @@ export default function Chat() {
                 ...lastMessage,
                 message: messageText,
                 editedAt,
+                isImportant: typeof isImportant === 'boolean' ? isImportant : lastMessage.isImportant,
               },
               updatedAt: editedAt || conversation.updatedAt,
             };
@@ -1045,6 +1248,7 @@ export default function Chat() {
     if (!selectedConversationId) {
       setMessages([]);
       setScheduledMessages([]);
+      setTasks([]);
       return;
     }
 
@@ -1060,9 +1264,13 @@ export default function Chat() {
     const loadScheduledMessages = () => conversationAPI.getScheduledMessages(selectedConversationId)
       .then((response) => setScheduledMessages(response.data))
       .catch(() => undefined);
+    const loadTasks = () => conversationAPI.getTasks(selectedConversationId)
+      .then((response) => setTasks(response.data))
+      .catch(() => undefined);
 
     loadMessages();
     loadScheduledMessages();
+    loadTasks();
     setPendingFiles([]);
     setAttachmentStatus('');
     setIsDraggingAttachment(false);
@@ -1076,11 +1284,22 @@ export default function Chat() {
     setTranslationMessageId(null);
     setHeaderMenuOpen(false);
     setScheduleOpen(false);
+    setTaskSourceMessage(null);
+    setTaskDraft('');
+    setTaskDescriptionDraft('');
+    setTaskPriorityDraft('Normal');
+    setTaskAssigneeDraft('');
+    setTaskDueDraft('');
+    setTaskQuery('');
+    setShareMessage(null);
+    setDocumentPreview(null);
+    setImportantDraft(false);
     setScheduleFor(toDateTimeLocalValue(new Date(Date.now() + 15 * 60000)));
 
     const poll = window.setInterval(() => {
       loadMessages();
       loadScheduledMessages();
+      loadTasks();
     }, 15000);
 
     return () => {
@@ -1294,6 +1513,7 @@ export default function Chat() {
             replyToPreview: message.replyToPreview,
           }
         : undefined,
+      Boolean(message.isImportant),
     );
   }, [displayName, selectedConversation, user]);
 
@@ -1310,6 +1530,7 @@ export default function Chat() {
       message.message,
       message.editedAt,
       selectedConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
+      Boolean(message.isImportant),
     );
   };
 
@@ -1346,6 +1567,7 @@ export default function Chat() {
     replyTarget: ConversationMessage | null,
     lastError?: string,
     clientMessageId = createClientMessageId(),
+    isImportant = false,
   ) => {
     if (!user) {
       return null;
@@ -1358,6 +1580,7 @@ export default function Chat() {
       senderId: user.id,
       senderName: displayName,
       message: text,
+      isImportant,
       replyToMessageId: replyTarget?.id,
       replyToSenderName: replyTarget?.senderName,
       replyToPreview: replyTarget ? getMessagePreview(replyTarget) : undefined,
@@ -1402,6 +1625,7 @@ export default function Chat() {
             senderName: queuedMessage.senderName,
             clientMessageId: queuedMessage.clientMessageId,
             message: queuedMessage.message,
+            isImportant: queuedMessage.isImportant,
             replyToMessageId: queuedMessage.replyToMessageId,
           });
           const sentMessage = response.data as ConversationMessage;
@@ -1455,6 +1679,7 @@ export default function Chat() {
   const startEditingMessage = (message: ConversationMessage) => {
     setEditingMessageId(message.id);
     setEditDraft(message.message);
+    setEditImportant(Boolean(message.isImportant));
     setReactionPickerMessageId(null);
     setMessageMenuId(null);
     setReplyingToMessage(null);
@@ -1464,6 +1689,7 @@ export default function Chat() {
   const cancelEditingMessage = () => {
     setEditingMessageId(null);
     setEditDraft('');
+    setEditImportant(false);
   };
 
   const applyEditedMessage = (message: ConversationMessage) => {
@@ -1587,7 +1813,7 @@ export default function Chat() {
       return;
     }
 
-    if (nextMessage === message.message) {
+    if (nextMessage === message.message && editImportant === Boolean(message.isImportant)) {
       cancelEditingMessage();
       return;
     }
@@ -1596,6 +1822,7 @@ export default function Chat() {
     try {
       const response = await conversationAPI.updateMessage(selectedConversation.id, message.id, {
         message: nextMessage,
+        isImportant: editImportant,
       });
       const updatedMessage = response.data as ConversationMessage;
       applyEditedMessage(updatedMessage);
@@ -1692,6 +1919,174 @@ export default function Chat() {
     }
   };
 
+  const refreshTasks = async () => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    const response = await conversationAPI.getTasks(selectedConversation.id);
+    setTasks(response.data);
+  };
+
+  const startTaskFromMessage = (message: ConversationMessage) => {
+    setTaskSourceMessage(message);
+    setTaskDraft(getMessagePreview(message));
+    setTaskDescriptionDraft(message.message || message.attachmentFileName || '');
+    setTaskPriorityDraft(message.isImportant ? 'High' : 'Normal');
+    setTaskAssigneeDraft(user?.id || '');
+    setTaskDueDraft('');
+    setActiveTab('tasks');
+    setMessageMenuId(null);
+    setReactionPickerMessageId(null);
+  };
+
+  const createTask = async () => {
+    if (!selectedConversation || creatingTask) {
+      return;
+    }
+
+    const title = taskDraft.trim();
+    if (!title) {
+      setError('Task title is required');
+      return;
+    }
+
+    const assignee = selectedConversation.members.find((member) => member.userId === taskAssigneeDraft);
+    setCreatingTask(true);
+    try {
+      const response = await conversationAPI.createTask(selectedConversation.id, {
+        sourceMessageId: taskSourceMessage?.id,
+        title,
+        description: taskDescriptionDraft.trim(),
+        priority: taskPriorityDraft,
+        assigneeId: assignee?.userId,
+        assigneeEmail: assignee?.userEmail,
+        assigneeName: assignee?.userName,
+        dueDate: taskDueDraft ? new Date(taskDueDraft).toISOString() : undefined,
+      });
+      setTasks((items) => [response.data, ...items]);
+      setTaskDraft('');
+      setTaskDescriptionDraft('');
+      setTaskPriorityDraft('Normal');
+      setTaskAssigneeDraft('');
+      setTaskDueDraft('');
+      setTaskSourceMessage(null);
+      setMessageActionStatus('Task created.');
+      setError('');
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to create task');
+    } finally {
+      setCreatingTask(false);
+    }
+  };
+
+  const updateTask = async (task: ConversationTask, changes: Partial<ConversationTask>) => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    try {
+      const response = await conversationAPI.updateTask(selectedConversation.id, task.id, changes);
+      setTasks((items) => items.map((item) => (item.id === task.id ? response.data : item)));
+      setMessageActionStatus('Task updated.');
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to update task');
+    }
+  };
+
+  const addTaskNote = async (task: ConversationTask) => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    const note = (taskNoteDrafts[task.id] || '').trim();
+    if (!note) {
+      return;
+    }
+
+    try {
+      await conversationAPI.addTaskNote(selectedConversation.id, task.id, { note });
+      setTaskNoteDrafts((items) => ({ ...items, [task.id]: '' }));
+      await refreshTasks();
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to add note');
+    }
+  };
+
+  const deleteTask = async (task: ConversationTask) => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    try {
+      await conversationAPI.deleteTask(selectedConversation.id, task.id);
+      setTasks((items) => items.filter((item) => item.id !== task.id));
+      setMessageActionStatus('Task deleted.');
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to delete task');
+    }
+  };
+
+  const openTaskSourceMessage = (task: ConversationTask) => {
+    if (!task.sourceMessageId) {
+      return;
+    }
+
+    setActiveTab('chat');
+    setHighlightMessageId(task.sourceMessageId);
+    setSearchParams({ conversationId: task.conversationId, messageId: task.sourceMessageId });
+  };
+
+  const shareDocumentByEmail = async () => {
+    if (!selectedConversation || !shareMessage || sharingDocument) {
+      return;
+    }
+
+    const emails = shareEmailsDraft
+      .split(/[;,\n]/)
+      .map((email) => email.trim())
+      .filter(Boolean);
+
+    if (emails.length === 0) {
+      setError('Add at least one email recipient');
+      return;
+    }
+
+    setSharingDocument(true);
+    try {
+      await conversationAPI.shareDocument(selectedConversation.id, shareMessage.id, {
+        emails,
+        message: shareNoteDraft,
+      });
+      setShareMessage(null);
+      setShareEmailsDraft('');
+      setShareNoteDraft('');
+      setMessageActionStatus('Document shared by email.');
+    } catch (err: any) {
+      setError(err.response?.data || 'Unable to share document');
+    } finally {
+      setSharingDocument(false);
+    }
+  };
+
+  const runGlobalSearch = async (query: string) => {
+    setChatSearch(query);
+    if (query.trim().length < 2) {
+      setGlobalSearchResults([]);
+      return;
+    }
+
+    setSearchingGlobally(true);
+    try {
+      const response = await conversationAPI.search(query.trim());
+      setGlobalSearchResults(response.data);
+    } catch {
+      setGlobalSearchResults([]);
+    } finally {
+      setSearchingGlobally(false);
+    }
+  };
+
   const startInstantCall = async (mode: 'audio' | 'video') => {
     if (!user || !selectedConversation || startingCall) {
       setError('Select a chat before starting a call');
@@ -1765,7 +2160,7 @@ export default function Chat() {
         callUrl,
         callRecipientUserIds,
       ).catch(() => undefined);
-      navigate(getMeetingJoinPath(meetingId, `call=${mode}&autojoin=1`));
+      openMeetingJoinInNewTab(meetingId, response.data.meetingLink, `call=${mode}&autojoin=1`);
     } catch (err: any) {
       setError(err.response?.data?.message || err.response?.data || `Unable to start ${callLabel}`);
     } finally {
@@ -1808,6 +2203,7 @@ export default function Chat() {
     const text = messageDraft.replace(/\s+$/, '');
     const filesToSend = pendingFiles;
     const replyTarget = replyingToMessage;
+    const messageIsImportant = importantDraft;
     if (!text.trim() && filesToSend.length === 0) {
       return;
     }
@@ -1816,6 +2212,7 @@ export default function Chat() {
     setPendingFiles([]);
     setAttachmentStatus('');
     setReplyingToMessage(null);
+    setImportantDraft(false);
     setSending(true);
     const clientMessageId = filesToSend.length === 0 ? createClientMessageId() : undefined;
 
@@ -1826,6 +2223,7 @@ export default function Chat() {
           senderName: displayName,
           clientMessageId,
           message: text,
+          isImportant: messageIsImportant,
           replyToMessageId: replyTarget?.id,
         });
         appendSentMessage(response.data);
@@ -1838,6 +2236,9 @@ export default function Chat() {
         formData.append('senderId', user.id);
         formData.append('senderName', displayName);
         formData.append('message', index === 0 ? text : '');
+        if (index === 0 && messageIsImportant) {
+          formData.append('isImportant', 'true');
+        }
         formData.append('file', file);
         if (replyTarget?.id && index === 0) {
           formData.append('replyToMessageId', replyTarget.id);
@@ -1849,7 +2250,7 @@ export default function Chat() {
       }
     } catch (err: any) {
       if (filesToSend.length === 0 && text.trim() && selectedConversation && isRetryableSendError(err)) {
-        queueTextMessage(selectedConversation, text, replyTarget, getSendErrorText(err), clientMessageId);
+        queueTextMessage(selectedConversation, text, replyTarget, getSendErrorText(err), clientMessageId, messageIsImportant);
         setMessageActionStatus('Message saved to outbox. It will send automatically when Samvaad reconnects.');
         setError('');
         return;
@@ -1859,6 +2260,7 @@ export default function Chat() {
       setMessageDraft(text);
       setPendingFiles(filesToSend);
       setReplyingToMessage(replyTarget);
+      setImportantDraft(messageIsImportant);
     } finally {
       setSending(false);
       if (shouldRestoreFocus) {
@@ -1886,6 +2288,22 @@ export default function Chat() {
     event.preventDefault();
     setIsDraggingAttachment(false);
     addPendingFiles(event.dataTransfer.files);
+  };
+
+  const handleMessagePaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    const files = Array.from(event.clipboardData.files || []);
+    const imageFiles = files.filter(isImageFile);
+    if (imageFiles.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    addPendingFiles(imageFiles);
+    setAttachmentStatus(`${imageFiles.length} screenshot${imageFiles.length === 1 ? '' : 's'} ready to send.`);
   };
 
   const downloadAttachment = async (message: ConversationMessage) => {
@@ -1960,7 +2378,7 @@ export default function Chat() {
           active
             ? 'bg-white shadow-md ring-1 ring-slate-200'
             : hasUnread
-              ? 'bg-white shadow-md ring-1 ring-indigo-200'
+              ? 'bg-white shadow-md ring-1 ring-teal-200'
               : 'hover:bg-white/70'
         }`}
       >
@@ -1976,12 +2394,12 @@ export default function Chat() {
           <span className="flex items-center justify-between gap-2">
             <span className={`truncate text-sm ${hasUnread ? 'font-bold text-slate-950' : 'font-semibold text-slate-800'}`}>{title}</span>
             <span className="flex shrink-0 items-center gap-2">
-              <span className={`text-xs ${hasUnread ? 'font-semibold text-indigo-700' : 'text-slate-500'}`}>
+              <span className={`text-xs ${hasUnread ? 'font-semibold text-teal-700' : 'text-slate-500'}`}>
                 {formatConversationDate(conversation.lastMessage?.sentAt || conversation.updatedAt || conversation.createdAt)}
               </span>
               {hasUnread && (
                 <span
-                  className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-indigo-600 px-1.5 text-[11px] font-bold leading-none text-white shadow-sm"
+                  className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-teal-600 px-1.5 text-[11px] font-bold leading-none text-white shadow-sm"
                   aria-label={`${unreadCount} unread message${unreadCount === 1 ? '' : 's'}`}
                 >
                   {formatUnreadCount(unreadCount)}
@@ -2000,8 +2418,8 @@ export default function Chat() {
   return (
     <AppShell
       active="chat"
-      title="Chat"
-      subtitle="Messages"
+      title="Talk"
+      subtitle="Samvaad"
       actions={(
         <ProfileStatusMenu
           displayName={displayName}
@@ -2020,22 +2438,22 @@ export default function Chat() {
         />
       )}
     >
-      <div className="grid h-full min-h-0 grid-cols-[minmax(300px,360px)_minmax(0,1fr)] gap-4 overflow-hidden bg-slate-100 p-4">
-        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-slate-200 shadow-sm">
+      <div className="grid h-full min-h-0 grid-cols-[minmax(300px,360px)_minmax(0,1fr)] gap-3 overflow-hidden bg-transparent p-3">
+        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
           <div className="px-4 py-4">
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-xl font-semibold text-slate-900">Chats</h2>
+              <h2 className="text-xl font-semibold text-slate-900">Conversations</h2>
               <div className="flex gap-2">
                 <button
                   type="button"
-                  className="rounded-md bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:bg-slate-50"
+                  className="rounded-md bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200"
                   onClick={() => setChatSearch('')}
                 >
                   Clear
                 </button>
                 <button
                   type="button"
-                  className="rounded-md bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm hover:bg-slate-50"
+                  className="rounded-md bg-slate-950 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-slate-800"
                   onClick={() => setNewChatOpen(true)}
                 >
                   New
@@ -2044,16 +2462,63 @@ export default function Chat() {
             </div>
             <input
               value={chatSearch}
-              onChange={(event) => setChatSearch(event.target.value)}
-              placeholder="Search chats"
-              className="mt-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500"
+              onChange={(event) => runGlobalSearch(event.target.value)}
+              placeholder="Search chats, tasks, files, meetings"
+              className="mt-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-teal-500"
             />
+            {chatSearch.trim().length >= 2 && (
+              <div className="mt-2 max-h-52 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-sm">
+                {searchingGlobally ? (
+                  <p className="px-3 py-2 text-xs text-slate-500">Searching Samvaad...</p>
+                ) : globalSearchResults.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-slate-500">No matching chats, tasks, documents, or meetings.</p>
+                ) : globalSearchResults.slice(0, 8).map((result) => (
+                  <button
+                    key={`${result.kind}-${result.id}`}
+                    type="button"
+                    onClick={() => {
+                      if (result.conversationId) {
+                        setSelectedConversationId(result.conversationId);
+                        setSearchParams(result.kind === 'Task'
+                          ? { conversationId: result.conversationId }
+                          : { conversationId: result.conversationId, messageId: result.id });
+                        setActiveTab(result.kind === 'Task' ? 'tasks' : 'chat');
+                      } else if (result.meetingId) {
+                        openMeetingJoinInNewTab(result.meetingId);
+                      }
+                    }}
+                    className="block w-full px-3 py-2 text-left hover:bg-slate-50"
+                  >
+                    <span className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-500">
+                      <span>{result.kind}</span>
+                      <span>{formatScheduledDate(result.occurredAt)}</span>
+                    </span>
+                    <span className="mt-0.5 block truncate text-sm font-medium text-slate-900">{result.title}</span>
+                    {result.snippet && <span className="mt-0.5 block truncate text-xs text-slate-500">{result.snippet}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <button type="button" onClick={() => setChatSearch('unread')} className="rounded-md border border-slate-200 px-2 py-1.5 font-semibold text-slate-600 hover:bg-slate-50">
+                Unread
+              </button>
+              <button type="button" onClick={() => setActiveTab('tasks')} disabled={!selectedConversation} className="rounded-md border border-slate-200 px-2 py-1.5 font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+                Tasks
+              </button>
+              <button type="button" onClick={() => setMessageActionStatus(`${pinnedMessages.length} pinned message${pinnedMessages.length === 1 ? '' : 's'} in this chat.`)} disabled={!selectedConversation} className="rounded-md border border-slate-200 px-2 py-1.5 font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+                Pinned
+              </button>
+              <button type="button" onClick={() => setMessageActionStatus(`${importantMessages.length} important message${importantMessages.length === 1 ? '' : 's'} in this chat.`)} disabled={!selectedConversation} className="rounded-md border border-slate-200 px-2 py-1.5 font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+                Important
+              </button>
+            </div>
             <button
               type="button"
               onClick={() => setNewChatOpen(true)}
-              className="mt-4 flex w-full items-center gap-3 rounded-md px-3 py-3 text-left hover:bg-white/70"
+              className="mt-4 flex w-full items-center gap-3 rounded-md bg-amber-50 px-3 py-3 text-left hover:bg-amber-100"
             >
-              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-sm font-semibold text-amber-700">Req</span>
+              <span className="flex h-12 w-12 items-center justify-center rounded-md bg-amber-200 text-sm font-semibold text-amber-800">Req</span>
               <span className="font-semibold text-slate-700">{pendingRequestCount || 0} requests</span>
             </button>
           </div>
@@ -2062,7 +2527,7 @@ export default function Chat() {
             {loading ? (
               <p className="px-4 py-3 text-sm text-slate-500">Loading chats...</p>
             ) : filteredConversations.length === 0 ? (
-              <div className="mx-3 rounded-md bg-white px-4 py-5 text-sm text-slate-500">
+              <div className="mx-3 rounded-md bg-slate-50 px-4 py-5 text-sm text-slate-500">
                 No chats found.
               </div>
             ) : (
@@ -2083,11 +2548,11 @@ export default function Chat() {
             )}
           </div>
 
-          <div className="border-t border-slate-300 p-3">
+          <div className="border-t border-slate-200 p-3">
             <button
               type="button"
               onClick={() => setNewChatOpen(true)}
-              className="w-full rounded-md bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+              className="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-700"
             >
               Start a chat
             </button>
@@ -2095,7 +2560,7 @@ export default function Chat() {
         </aside>
 
         <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
-          <header className="flex min-h-[72px] items-center justify-between gap-4 border-b border-slate-200 px-6">
+          <header className="flex min-h-[72px] items-center justify-between gap-4 border-b border-slate-200 bg-slate-50 px-6">
             <div className="flex min-w-0 flex-1 items-center gap-3">
               {selectedConversation && (
                 <UserAvatar
@@ -2111,15 +2576,20 @@ export default function Chat() {
                 <h2 className="truncate text-xl font-semibold text-slate-900">{selectedTitle}</h2>
                 {selectedConversation && (
                   <div className="mt-1 flex gap-4 text-sm">
-                    {(['chat', 'files', 'photos'] as const).map((tab) => (
+                    {([
+                      ['chat', 'Chat'],
+                      ['files', `Files${selectedFiles.length ? ` (${selectedFiles.length})` : ''}`],
+                      ['photos', `Photos${selectedPhotos.length ? ` (${selectedPhotos.length})` : ''}`],
+                      ['tasks', `Tasks${tasks.length ? ` (${tasks.length})` : ''}`],
+                    ] as const).map(([tab, label]) => (
                       <button
                         key={tab}
                         onClick={() => setActiveTab(tab)}
-                        className={`border-b-2 pb-2 capitalize ${
-                          activeTab === tab ? 'border-indigo-600 text-slate-950' : 'border-transparent text-slate-500 hover:text-slate-800'
+                        className={`rounded-md px-3 py-1.5 ${
+                          activeTab === tab ? 'bg-slate-950 text-white' : 'bg-white text-slate-500 ring-1 ring-slate-200 hover:text-slate-800'
                         }`}
                       >
-                        {tab}
+                        {label}
                       </button>
                     ))}
                   </div>
@@ -2130,7 +2600,7 @@ export default function Chat() {
               <button
                 onClick={() => startInstantCall('video')}
                 disabled={!selectedConversation || !!startingCall}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-indigo-700 hover:bg-indigo-50 disabled:text-slate-400 disabled:hover:bg-transparent"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-teal-700 hover:bg-teal-50 disabled:text-slate-400 disabled:hover:bg-transparent"
                 title="Start video call"
                 aria-label="Start video call"
               >
@@ -2139,7 +2609,7 @@ export default function Chat() {
               <button
                 onClick={() => startInstantCall('audio')}
                 disabled={!selectedConversation || !!startingCall}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-indigo-700 hover:bg-indigo-50 disabled:text-slate-400 disabled:hover:bg-transparent"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-teal-700 hover:bg-teal-50 disabled:text-slate-400 disabled:hover:bg-transparent"
                 title="Start audio call"
                 aria-label="Start audio call"
               >
@@ -2153,7 +2623,7 @@ export default function Chat() {
                     setHeaderMenuOpen(false);
                     setQuickGroupStatus('');
                   }}
-                  className={`inline-flex h-9 w-9 items-center justify-center rounded-md text-indigo-700 hover:bg-indigo-50 ${quickGroupOpen ? 'bg-indigo-50' : ''}`}
+                  className={`inline-flex h-9 w-9 items-center justify-center rounded-md text-teal-700 hover:bg-teal-50 ${quickGroupOpen ? 'bg-teal-50' : ''}`}
                   title="Start a group chat"
                   aria-label="Start a group chat"
                   aria-expanded={quickGroupOpen}
@@ -2164,7 +2634,7 @@ export default function Chat() {
                 {quickGroupOpen && (
                   <div className="absolute right-0 top-12 z-40 w-[min(540px,calc(100vw-2rem))] rounded-md border border-slate-200 bg-white p-5 text-left shadow-2xl">
                     <p className="text-base font-medium text-slate-700">Start a group chat</p>
-                    <div className="mt-2 rounded-md border-b-2 border-indigo-500 bg-slate-100 px-3 py-2">
+                    <div className="mt-2 rounded-md border-b-2 border-teal-500 bg-slate-100 px-3 py-2">
                       <input
                         ref={quickGroupInputRef}
                         value={quickGroupQuery}
@@ -2196,12 +2666,12 @@ export default function Chat() {
                     {quickGroupSelectedUsers.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-2">
                         {quickGroupSelectedUsers.map((selectedUser) => (
-                          <span key={selectedUser.id} className="inline-flex max-w-full items-center gap-2 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-800 ring-1 ring-indigo-100">
+                          <span key={selectedUser.id} className="inline-flex max-w-full items-center gap-2 rounded-md bg-teal-50 px-2.5 py-1.5 text-xs font-medium text-teal-800 ring-1 ring-teal-100">
                             <span className="truncate">{displayUser(selectedUser)}</span>
                             <button
                               type="button"
                               onClick={() => setQuickGroupSelectedUsers((items) => items.filter((item) => item.id !== selectedUser.id))}
-                              className="font-bold text-indigo-500 hover:text-indigo-900"
+                              className="font-bold text-teal-500 hover:text-teal-900"
                               aria-label={`Remove ${displayUser(selectedUser)}`}
                             >
                               x
@@ -2257,7 +2727,7 @@ export default function Chat() {
                         type="button"
                         onClick={createQuickGroupConversation}
                         disabled={!quickGroupCanCreate || creatingQuickGroup}
-                        className="min-w-32 rounded-md bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400"
+                        className="min-w-32 rounded-md bg-teal-600 px-5 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:bg-slate-200 disabled:text-slate-400"
                       >
                         {creatingQuickGroup ? 'Creating...' : 'Create'}
                       </button>
@@ -2339,6 +2809,18 @@ export default function Chat() {
                       <ImageIcon className="h-4 w-4 text-slate-500" />
                       View photos
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('tasks');
+                        setHeaderMenuOpen(false);
+                      }}
+                      disabled={!selectedConversation}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <TaskIcon className="h-4 w-4 text-slate-500" />
+                      View tasks
+                    </button>
                   </div>
                 )}
               </div>
@@ -2347,7 +2829,7 @@ export default function Chat() {
 
           {error && <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
           {isDraggingAttachment && selectedConversation && (
-            <div className="pointer-events-none absolute inset-x-4 bottom-24 top-24 z-20 flex items-center justify-center rounded-md border-2 border-dashed border-indigo-400 bg-indigo-50/90 text-sm font-semibold text-indigo-800">
+            <div className="pointer-events-none absolute inset-x-4 bottom-24 top-24 z-20 flex items-center justify-center rounded-md border-2 border-dashed border-teal-400 bg-teal-50/90 text-sm font-semibold text-teal-800">
               Drop files to share
             </div>
           )}
@@ -2370,9 +2852,17 @@ export default function Chat() {
                       <p className="truncate text-sm font-semibold text-slate-900">{message.attachmentFileName || 'Attachment'}</p>
                       <p className="text-xs text-slate-500">{message.senderName} - {formatFileSize(message.attachmentSizeBytes)}</p>
                     </div>
-                    <button onClick={() => downloadAttachment(message)} className="rounded-md bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700">
-                      Download
-                    </button>
+                    <div className="flex shrink-0 gap-2">
+                      <button onClick={() => setDocumentPreview(message)} className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                        Preview
+                      </button>
+                      <button onClick={() => setShareMessage(message)} className="rounded-md border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-semibold text-teal-700 hover:bg-teal-100">
+                        Email
+                      </button>
+                      <button onClick={() => downloadAttachment(message)} className="rounded-md bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-700">
+                        Download
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2387,6 +2877,174 @@ export default function Chat() {
                   </button>
                 ))}
               </div>
+            ) : activeTab === 'tasks' ? (
+              <div className="mx-auto grid max-w-6xl gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+                <section className="rounded-md border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center gap-2">
+                    <TaskIcon className="h-5 w-5 text-teal-700" />
+                    <h3 className="text-base font-semibold text-slate-900">Create task</h3>
+                  </div>
+                  {taskSourceMessage && (
+                    <div className="mt-3 rounded-md border-l-4 border-teal-500 bg-white px-3 py-2 text-xs text-slate-600">
+                      <p className="font-semibold text-slate-900">From message</p>
+                      <p className="mt-1 line-clamp-2">{getMessagePreview(taskSourceMessage)}</p>
+                      <button type="button" onClick={() => setTaskSourceMessage(null)} className="mt-2 text-xs font-semibold text-teal-700 hover:text-teal-900">
+                        Clear source
+                      </button>
+                    </div>
+                  )}
+                  <input
+                    value={taskDraft}
+                    onChange={(event) => setTaskDraft(event.target.value)}
+                    placeholder="Task title"
+                    className="mt-3 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-teal-500"
+                  />
+                  <textarea
+                    value={taskDescriptionDraft}
+                    onChange={(event) => setTaskDescriptionDraft(event.target.value)}
+                    rows={3}
+                    placeholder="Description"
+                    className="mt-3 w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-teal-500"
+                  />
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <select
+                      value={taskPriorityDraft}
+                      onChange={(event) => setTaskPriorityDraft(event.target.value as ConversationTask['priority'])}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-teal-500"
+                    >
+                      {(['Low', 'Normal', 'High', 'Urgent'] as const).map((priority) => (
+                        <option key={priority} value={priority}>{priority}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={taskAssigneeDraft}
+                      onChange={(event) => setTaskAssigneeDraft(event.target.value)}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-teal-500"
+                    >
+                      <option value="">Unassigned</option>
+                      {selectedConversation.members.map((member) => (
+                        <option key={member.userId} value={member.userId}>{member.userName}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <input
+                    type="datetime-local"
+                    value={taskDueDraft}
+                    onChange={(event) => setTaskDueDraft(event.target.value)}
+                    className="mt-3 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-teal-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={createTask}
+                    disabled={creatingTask || !taskDraft.trim()}
+                    className="mt-3 w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
+                  >
+                    {creatingTask ? 'Creating...' : 'Create task'}
+                  </button>
+                </section>
+
+                <section className="min-w-0 space-y-3">
+                  <div className="grid gap-2 rounded-md border border-slate-200 bg-white p-3 md:grid-cols-[minmax(0,1fr)_160px_160px]">
+                    <input
+                      value={taskQuery}
+                      onChange={(event) => setTaskQuery(event.target.value)}
+                      placeholder="Search tasks"
+                      className="rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500"
+                    />
+                    <select value={taskStatusFilter} onChange={(event) => setTaskStatusFilter(event.target.value)} className="rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500">
+                      {['All', 'Pending', 'InProgress', 'Completed'].map((status) => (
+                        <option key={status} value={status}>{status === 'InProgress' ? 'In progress' : status}</option>
+                      ))}
+                    </select>
+                    <select value={taskPriorityFilter} onChange={(event) => setTaskPriorityFilter(event.target.value)} className="rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500">
+                      {['All', 'Low', 'Normal', 'High', 'Urgent'].map((priority) => (
+                        <option key={priority} value={priority}>{priority}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {filteredTasks.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                      No tasks match this view.
+                    </div>
+                  ) : filteredTasks.map((task) => (
+                    <article key={task.id} className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="break-words text-base font-semibold text-slate-900">{task.title}</h3>
+                            <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${getTaskStatusClass(task.status)}`}>{formatTaskStatus(task.status)}</span>
+                            <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${getTaskPriorityClass(task.priority)}`}>{task.priority}</span>
+                          </div>
+                          {task.description && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-600">{task.description}</p>}
+                          <p className="mt-2 text-xs text-slate-500">
+                            Owner: {task.ownerName} {task.assigneeName || task.assigneeEmail ? `- Assigned to ${task.assigneeName || task.assigneeEmail}` : '- Unassigned'}
+                            {task.dueDate ? ` - Due ${formatScheduledDate(task.dueDate)}` : ''}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          <select
+                            value={task.status}
+                            onChange={(event) => updateTask(task, { status: event.target.value as ConversationTask['status'] })}
+                            className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs font-semibold text-slate-700"
+                          >
+                            <option value="Pending">Pending</option>
+                            <option value="InProgress">In progress</option>
+                            <option value="Completed">Completed</option>
+                          </select>
+                          {task.status === 'Completed' && (
+                            <button type="button" onClick={() => updateTask(task, { status: 'Pending' })} className="rounded-md border border-slate-300 px-2 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                              Reopen
+                            </button>
+                          )}
+                          {task.sourceMessageId && (
+                            <button type="button" onClick={() => openTaskSourceMessage(task)} className="rounded-md border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-semibold text-teal-700 hover:bg-teal-100">
+                              Open message
+                            </button>
+                          )}
+                          <button type="button" onClick={() => deleteTask(task)} className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100">
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+
+                      {task.activities && task.activities.length > 0 && (
+                        <div className="mt-3 rounded-md bg-slate-50 px-3 py-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Activity</p>
+                          <div className="mt-2 space-y-1">
+                            {task.activities.slice(0, 3).map((activity) => (
+                              <p key={activity.id} className="text-xs text-slate-600">
+                                <span className="font-semibold">{activity.actorName}</span> {activity.action.toLowerCase()} {activity.details ? `- ${activity.details}` : ''} · {formatScheduledDate(activity.createdAt)}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-3 flex gap-2">
+                        <input
+                          value={taskNoteDrafts[task.id] || ''}
+                          onChange={(event) => setTaskNoteDrafts((items) => ({ ...items, [task.id]: event.target.value }))}
+                          placeholder="Add task note"
+                          className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500"
+                        />
+                        <button type="button" onClick={() => addTaskNote(task)} className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800">
+                          Add
+                        </button>
+                      </div>
+                      {task.notes && task.notes.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {task.notes.slice(0, 2).map((note) => (
+                            <p key={note.id} className="rounded-md bg-white px-3 py-2 text-xs text-slate-600 ring-1 ring-slate-100">
+                              <span className="font-semibold text-slate-800">{note.authorName}</span>: {note.note}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </section>
+              </div>
             ) : messages.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-slate-500">Start the conversation.</div>
             ) : (
@@ -2397,8 +3055,13 @@ export default function Chat() {
                   const isQueued = Boolean(message.deliveryStatus && message.deliveryStatus !== 'sent');
                   const canEdit = isMine && !!message.message && !isQueued;
                   const reactionGroups = summarizeReactions(message.reactions);
+                  const highlighted = highlightMessageId === message.id;
                   return (
-                    <div key={message.id} className={`group relative flex w-full gap-3 pt-3 ${isMine ? 'justify-end' : 'justify-start'}`}>
+                    <div
+                      key={message.id}
+                      id={`message-${message.id}`}
+                      className={`group relative flex w-full gap-3 rounded-md pt-3 transition ${highlighted ? 'bg-amber-50/80 ring-2 ring-amber-200' : ''} ${isMine ? 'justify-end' : 'justify-start'}`}
+                    >
                       {!isMine && (
                         <div className="pt-5">
                           <UserAvatar
@@ -2515,6 +3178,40 @@ export default function Chat() {
                                 </button>
                                 <button
                                   type="button"
+                                  onClick={() => startTaskFromMessage(message)}
+                                  className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                                >
+                                  <TaskIcon className="h-4 w-4 text-slate-500" />
+                                  Create task
+                                </button>
+                                {message.attachmentUrl && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setDocumentPreview(message);
+                                        setMessageMenuId(null);
+                                      }}
+                                      className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                                    >
+                                      <SearchIcon className="h-4 w-4 text-slate-500" />
+                                      Preview file
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setShareMessage(message);
+                                        setMessageMenuId(null);
+                                      }}
+                                      className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
+                                    >
+                                      <ForwardIcon className="h-4 w-4 text-slate-500" />
+                                      Share by email
+                                    </button>
+                                  </>
+                                )}
+                                <button
+                                  type="button"
                                   onClick={() => markMessageUnread(message)}
                                   className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50"
                                 >
@@ -2550,6 +3247,12 @@ export default function Chat() {
                               Pinned
                             </span>
                           )}
+                          {message.isImportant && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700 ring-1 ring-red-100">
+                              <ImportantIcon className="h-3 w-3" />
+                              Important
+                            </span>
+                          )}
                           {!isMine && <span className="truncate font-medium text-slate-600">{message.senderName}</span>}
                           <span className="shrink-0">{formatMessageTime(message.sentAt)}</span>
                           {message.editedAt && <span className="shrink-0">Edited</span>}
@@ -2562,7 +3265,7 @@ export default function Chat() {
                           )}
                         </div>
                         <div className={`max-w-full rounded-md px-4 py-2.5 text-sm shadow-sm ${
-                          isMine ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-900'
+                          isMine ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-900'
                         }`}>
                           {isEditing ? (
                             <div className="w-[min(520px,70vw)] max-w-full space-y-2">
@@ -2584,7 +3287,16 @@ export default function Chat() {
                                 autoFocus
                                 className="max-h-48 w-full resize-none rounded-md border border-white/30 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-2 ring-transparent focus:ring-white/60"
                               />
-                              <div className="flex justify-end gap-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditImportant((value) => !value)}
+                                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold ${editImportant ? 'bg-red-50 text-red-700 ring-1 ring-red-100' : 'bg-white/15 text-white hover:bg-white/25'}`}
+                                >
+                                  <ImportantIcon className="h-3.5 w-3.5" />
+                                  Important
+                                </button>
+                                <div className="flex gap-2">
                                 <button
                                   type="button"
                                   onClick={cancelEditingMessage}
@@ -2598,12 +3310,13 @@ export default function Chat() {
                                   type="button"
                                   onClick={() => saveEditedMessage(message)}
                                   disabled={editSaving || !editDraft.trim()}
-                                  className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-white text-indigo-700 hover:bg-indigo-50 disabled:opacity-50"
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-white text-teal-700 hover:bg-teal-50 disabled:opacity-50"
                                   title="Save edit"
                                   aria-label="Save edit"
                                 >
                                   <CheckIcon className="h-4 w-4" />
                                 </button>
+                                </div>
                               </div>
                             </div>
                           ) : (
@@ -2613,7 +3326,7 @@ export default function Chat() {
                                   type="button"
                                   onClick={() => setMessageActionStatus(`Replying to ${message.replyToSenderName || 'a message'}`)}
                                   className={`mb-2 block max-w-full rounded-md border-l-4 px-3 py-2 text-left text-xs ${
-                                    isMine ? 'border-white/70 bg-white/10 text-indigo-50' : 'border-indigo-400 bg-white text-slate-600'
+                                    isMine ? 'border-white/70 bg-white/10 text-teal-50' : 'border-teal-400 bg-white text-slate-600'
                                   }`}
                                 >
                                   <span className="block truncate font-semibold">{message.replyToSenderName || 'Reply'}</span>
@@ -2630,17 +3343,35 @@ export default function Chat() {
                               )}
                               <div className="px-3 py-2">
                                 <p className="break-words text-sm font-semibold">{message.attachmentFileName || 'Attachment'}</p>
-                                <p className={`mt-1 text-xs ${isMine ? 'text-indigo-50' : 'text-slate-500'}`}>
+                                <p className={`mt-1 text-xs ${isMine ? 'text-teal-50' : 'text-slate-500'}`}>
                                   {[message.attachmentContentType, formatFileSize(message.attachmentSizeBytes)].filter(Boolean).join(' - ') || 'File'}
                                 </p>
-                                <button
-                                  onClick={() => downloadAttachment(message)}
-                                  className={`mt-2 rounded-md px-3 py-1.5 text-xs font-semibold ${
-                                    isMine ? 'bg-white text-indigo-700 hover:bg-indigo-50' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
-                                  }`}
-                                >
-                                  Download
-                                </button>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <button
+                                    onClick={() => setDocumentPreview(message)}
+                                    className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                                      isMine ? 'bg-white/15 text-white hover:bg-white/25' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                                    }`}
+                                  >
+                                    Preview
+                                  </button>
+                                  <button
+                                    onClick={() => setShareMessage(message)}
+                                    className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                                      isMine ? 'bg-white/15 text-white hover:bg-white/25' : 'border border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100'
+                                    }`}
+                                  >
+                                    Email
+                                  </button>
+                                  <button
+                                    onClick={() => downloadAttachment(message)}
+                                    className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                                      isMine ? 'bg-white text-teal-700 hover:bg-teal-50' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                                    }`}
+                                  >
+                                    Download
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           )}
@@ -2657,7 +3388,7 @@ export default function Chat() {
                                   disabled={reactingMessageId === message.id}
                                   className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs shadow-sm ${
                                     reactedByMe
-                                      ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                                      ? 'border-teal-300 bg-teal-50 text-teal-700'
                                       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                                   }`}
                                   title={reactions.map((reaction) => reaction.userName).join(', ')}
@@ -2680,7 +3411,7 @@ export default function Chat() {
                           </p>
                         )}
                         {translationMessageId === message.id && (
-                          <div className={`mt-2 max-w-full rounded-md border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-800 shadow-sm ${isMine ? 'text-right' : 'text-left'}`}>
+                          <div className={`mt-2 max-w-full rounded-md border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-800 shadow-sm ${isMine ? 'text-right' : 'text-left'}`}>
                             Translation is ready for the selected message once language support is connected.
                           </div>
                         )}
@@ -2740,16 +3471,16 @@ export default function Chat() {
               </div>
             )}
             {replyingToMessage && (
-              <div className="mx-auto mb-3 flex max-w-5xl items-start gap-3 rounded-md border-l-4 border-indigo-500 bg-indigo-50 px-3 py-2">
-                <ReplyIcon className="mt-0.5 h-4 w-4 shrink-0 text-indigo-700" />
+              <div className="mx-auto mb-3 flex max-w-5xl items-start gap-3 rounded-md border-l-4 border-teal-500 bg-teal-50 px-3 py-2">
+                <ReplyIcon className="mt-0.5 h-4 w-4 shrink-0 text-teal-700" />
                 <div className="min-w-0 flex-1 text-sm">
-                  <p className="truncate font-semibold text-indigo-900">Replying to {replyingToMessage.senderName}</p>
-                  <p className="truncate text-indigo-700">{getMessagePreview(replyingToMessage)}</p>
+                  <p className="truncate font-semibold text-teal-900">Replying to {replyingToMessage.senderName}</p>
+                  <p className="truncate text-teal-700">{getMessagePreview(replyingToMessage)}</p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setReplyingToMessage(null)}
-                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-indigo-700 hover:bg-white"
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-teal-700 hover:bg-white"
                   title="Cancel reply"
                   aria-label="Cancel reply"
                 >
@@ -2759,9 +3490,12 @@ export default function Chat() {
             )}
             {pendingFiles.length > 0 && (
               <div className="mb-3 flex flex-wrap gap-2">
-                {pendingFiles.map((file, index) => (
-                  <span key={fileKey(file)} className="inline-flex max-w-full items-center gap-2 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs text-slate-700 ring-1 ring-indigo-100">
-                    <span className="truncate">{file.name}</span>
+                {pendingFilePreviews.map(({ file, previewUrl }, index) => (
+                  <span key={fileKey(file)} className="inline-flex max-w-full items-center gap-2 rounded-md bg-teal-50 px-2.5 py-1.5 text-xs text-slate-700 ring-1 ring-teal-100">
+                    {previewUrl && (
+                      <img src={previewUrl} alt="" className="h-12 w-16 rounded object-cover ring-1 ring-teal-100" />
+                    )}
+                    <span className="max-w-48 truncate">{file.name}</span>
                     <span className="shrink-0 text-slate-400">{formatFileSize(file.size)}</span>
                     <button
                       type="button"
@@ -2822,6 +3556,7 @@ export default function Chat() {
                 ref={messageInputRef}
                 value={messageDraft}
                 onChange={(event) => setMessageDraft(event.target.value)}
+                onPaste={handleMessagePaste}
                 onKeyDown={(event) => {
                   if (event.key === 'ArrowUp' && !event.shiftKey && event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0) {
                     if (editLastOwnMessage()) {
@@ -2855,6 +3590,16 @@ export default function Chat() {
                 placeholder={selectedConversation ? 'Type a message' : 'Select a chat first'}
                 className="max-h-36 min-w-0 flex-1 resize-none border-0 px-1 py-1 text-sm outline-none disabled:bg-white read-only:text-slate-500"
               />
+              <button
+                type="button"
+                onClick={() => setImportantDraft((value) => !value)}
+                disabled={!selectedConversation || sending}
+                className={`inline-flex h-9 w-9 items-center justify-center rounded-md disabled:opacity-50 ${importantDraft ? 'bg-red-50 text-red-700 ring-1 ring-red-100' : 'text-slate-500 hover:bg-slate-100'}`}
+                title={importantDraft ? 'Marked important' : 'Mark important'}
+                aria-label={importantDraft ? 'Marked important' : 'Mark important'}
+              >
+                <ImportantIcon className="h-5 w-5" />
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -2899,7 +3644,7 @@ export default function Chat() {
                 type="button"
                 onClick={sendMessage}
                 disabled={!selectedConversation || sending || (!messageDraft.trim() && pendingFiles.length === 0)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50"
                 title={sending ? 'Sending' : 'Send message'}
                 aria-label={sending ? 'Sending' : 'Send message'}
               >
@@ -2909,6 +3654,78 @@ export default function Chat() {
           </footer>
         </section>
       </div>
+
+      {documentPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <section className="flex h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-md bg-white shadow-2xl">
+            <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-semibold text-slate-900">{documentPreview.attachmentFileName || 'Document preview'}</h2>
+                <p className="text-xs text-slate-500">{[documentPreview.attachmentContentType, formatFileSize(documentPreview.attachmentSizeBytes)].filter(Boolean).join(' - ')}</p>
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => downloadAttachment(documentPreview)} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                  Download
+                </button>
+                <button type="button" onClick={() => setDocumentPreview(null)} className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-600 hover:bg-slate-100" aria-label="Close preview">
+                  <XIcon className="h-5 w-5" />
+                </button>
+              </div>
+            </header>
+            <div className="min-h-0 flex-1 bg-slate-100 p-3">
+              {documentPreviewError ? (
+                <div className="flex h-full items-center justify-center rounded-md bg-white text-sm text-slate-500">{documentPreviewError}</div>
+              ) : !documentPreviewUrl ? (
+                <div className="flex h-full items-center justify-center rounded-md bg-white text-sm text-slate-500">Loading preview...</div>
+              ) : documentPreview.attachmentContentType?.startsWith('image/') ? (
+                <div className="flex h-full items-center justify-center overflow-auto rounded-md bg-white">
+                  <img src={documentPreviewUrl} alt={documentPreview.attachmentFileName || 'Preview'} className="max-h-full max-w-full object-contain" />
+                </div>
+              ) : (
+                <iframe title={documentPreview.attachmentFileName || 'Document preview'} src={documentPreviewUrl} className="h-full w-full rounded-md border-0 bg-white" />
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {shareMessage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+          <section className="w-full max-w-lg rounded-md bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-slate-900">Share document by email</h2>
+                <p className="mt-1 truncate text-sm text-slate-500">{shareMessage.attachmentFileName || 'Attachment'}</p>
+              </div>
+              <button type="button" onClick={() => setShareMessage(null)} className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100" aria-label="Close share dialog">
+                <XIcon className="h-4 w-4" />
+              </button>
+            </div>
+            <textarea
+              value={shareEmailsDraft}
+              onChange={(event) => setShareEmailsDraft(event.target.value)}
+              rows={3}
+              placeholder="name@example.com, teammate@example.com"
+              className="mt-4 w-full resize-none rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500"
+            />
+            <textarea
+              value={shareNoteDraft}
+              onChange={(event) => setShareNoteDraft(event.target.value)}
+              rows={3}
+              placeholder="Optional message"
+              className="mt-3 w-full resize-none rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setShareMessage(null)} className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                Cancel
+              </button>
+              <button type="button" onClick={shareDocumentByEmail} disabled={sharingDocument || !shareEmailsDraft.trim()} className="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50">
+                {sharingDocument ? 'Sharing...' : 'Share'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {newChatOpen && (
         <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/30">
@@ -2948,14 +3765,14 @@ export default function Chat() {
                 value={groupTitle}
                 onChange={(event) => setGroupTitle(event.target.value)}
                 placeholder="Group name"
-                className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+                className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500"
               />
             )}
             <input
               value={userQuery}
               onChange={(event) => setUserQuery(event.target.value)}
               placeholder="Search people or type an email"
-              className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+              className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-500"
             />
 
             <div className="mt-4 max-h-[48vh] space-y-2 overflow-y-auto">
@@ -2963,7 +3780,7 @@ export default function Chat() {
                 <div className="space-y-2">
                   <p className="text-sm text-slate-500">No registered users found.</p>
                   {canAddEmailInvite && (
-                    <button onClick={addEmailInvite} className="w-full rounded-md border border-indigo-300 bg-indigo-50 px-3 py-2 text-left text-sm font-medium text-indigo-800 hover:bg-indigo-100">
+                    <button onClick={addEmailInvite} className="w-full rounded-md border border-teal-300 bg-teal-50 px-3 py-2 text-left text-sm font-medium text-teal-800 hover:bg-teal-100">
                       Add email invite: {userQuery.trim()}
                     </button>
                   )}
@@ -2978,7 +3795,7 @@ export default function Chat() {
                       setRequestStatus('');
                     }}
                     className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
-                      isSelected ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-200' : 'border-slate-200 hover:bg-slate-50'
+                      isSelected ? 'border-teal-400 bg-teal-50 ring-1 ring-teal-200' : 'border-slate-200 hover:bg-slate-50'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-3">
@@ -2999,7 +3816,7 @@ export default function Chat() {
                           <p className="truncate text-xs text-slate-500">{item.email}</p>
                         </div>
                       </div>
-                      <span className={`rounded px-2 py-1 text-xs font-semibold ${isSelected ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                      <span className={`rounded px-2 py-1 text-xs font-semibold ${isSelected ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
                         {isSelected ? 'Selected' : 'Select'}
                       </span>
                     </div>
@@ -3030,7 +3847,7 @@ export default function Chat() {
             <button
               onClick={createConversation}
               disabled={recipientCount === 0 || (mode === 'direct' && recipientCount !== 1)}
-              className="mt-5 w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              className="mt-5 w-full rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
             >
               {requestStatus === 'Sending request...' ? 'Sending...' : 'Send chat request'}
             </button>

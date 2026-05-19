@@ -9,23 +9,29 @@ public interface IMeetingService
     Task<Meeting> CreateMeetingAsync(Guid organizerId, CreateMeetingRequest request);
     Task<Meeting?> GetMeetingByIdAsync(Guid id);
     Task<List<Meeting>> GetMeetingsByOrganizerAsync(Guid organizerId);
+    Task<List<Meeting>> GetMeetingsForUserAsync(Guid userId, string? userEmail);
     Task<List<Meeting>> GetUpcomingMeetingsAsync();
     Task<Meeting> UpdateMeetingAsync(Guid id, UpdateMeetingRequest request);
+    Task<Meeting> EndMeetingAsync(Guid id, Guid organizerId);
     Task DeleteMeetingAsync(Guid id);
     Task<Participant> JoinMeetingAsync(Guid meetingId, Guid userId, JoinMeetingRequest request);
     Task<bool> LeaveMeetingAsync(Guid meetingId, Guid participantId);
     Task<List<Participant>> GetMeetingParticipantsAsync(Guid meetingId);
     Task<bool> UpdateParticipantStatusAsync(Guid participantId, bool audioEnabled, bool videoEnabled, bool screenSharing);
     Task<bool> UpdateParticipantRoleAsync(Guid participantId, ParticipantRole role);
+    Task<Participant?> UpdateParticipantHandAsync(Guid participantId, bool isHandRaised);
+    Task<Participant?> UpdateParticipantReactionAsync(Guid participantId, string? reaction);
     Task<MeetingChatMessage> AddChatMessageAsync(Guid meetingId, CreateChatMessageRequest request);
     Task<List<MeetingChatMessage>> GetChatMessagesAsync(Guid meetingId, Guid? currentUserId = null);
     Task<LobbyRequest> RequestLobbyAccessAsync(Guid meetingId, Guid userId, JoinMeetingRequest request);
     Task<List<LobbyRequest>> GetLobbyRequestsAsync(Guid meetingId);
     Task<LobbyRequest> DecideLobbyRequestAsync(Guid requestId, bool admit);
     Task<Meeting> UpdateNotesAsync(Guid meetingId, string? notes);
+    Task<Meeting> UpdateWhiteboardAsync(Guid meetingId, Guid userId, string userName, string? whiteboardData);
     Task<Meeting> UpdateRecordingAsync(Guid meetingId, string recordingUrl);
     Task<List<MeetingInvite>> GetInvitesAsync(Guid meetingId);
     Task<List<MeetingInvite>> SendInvitesAsync(Guid meetingId, IEnumerable<string> emails);
+    Task<MeetingInvite> UpdateInviteResponseAsync(Guid meetingId, Guid inviteId, Guid currentUserId, string? currentUserEmail, MeetingInviteResponseStatus status, string? reason);
     Task<List<Conversation>> GetConversationsAsync(Guid userId, string? userEmail, string userName);
     Task<Conversation> CreateConversationAsync(Guid creatorId, CreateConversationRequest request);
     Task<List<ConversationMessage>> GetConversationMessagesAsync(Guid conversationId, Guid userId);
@@ -39,6 +45,15 @@ public interface IMeetingService
     Task<List<ScheduledConversationMessage>> GetScheduledConversationMessagesAsync(Guid conversationId, Guid userId);
     Task<ScheduledConversationMessage> ScheduleConversationMessageAsync(Guid conversationId, Guid userId, string senderName, ScheduleConversationMessageRequest request);
     Task CancelScheduledConversationMessageAsync(Guid conversationId, Guid scheduledMessageId, Guid userId);
+    Task<List<ConversationTask>> GetConversationTasksAsync(Guid conversationId, Guid userId, string? status = null, string? priority = null, Guid? assigneeId = null, DateTime? dueBefore = null, string? query = null);
+    Task<ConversationTask> CreateConversationTaskAsync(Guid conversationId, Guid userId, string userName, CreateConversationTaskRequest request);
+    Task<ConversationTask> UpdateConversationTaskAsync(Guid conversationId, Guid taskId, Guid userId, string userName, UpdateConversationTaskRequest request);
+    Task<ConversationTaskNote> AddConversationTaskNoteAsync(Guid conversationId, Guid taskId, Guid userId, string userName, AddConversationTaskNoteRequest request);
+    Task DeleteConversationTaskAsync(Guid conversationId, Guid taskId, Guid userId, string userName);
+    Task<List<ConversationDocumentShare>> ShareConversationDocumentAsync(Guid conversationId, Guid messageId, Guid userId, string userName, ShareConversationDocumentRequest request);
+    Task<List<ConversationDocumentShare>> GetConversationDocumentSharesAsync(Guid conversationId, Guid userId, Guid? messageId = null);
+    Task<List<GlobalSearchResultDto>> SearchAsync(Guid userId, string query);
+    Task LogAuditAsync(Guid actorId, string actorName, string action, string? details = null, Guid? meetingId = null, Guid? conversationId = null);
     Task<bool> CanAccessConversationAsync(Guid conversationId, Guid userId);
 }
 
@@ -67,6 +82,7 @@ public class MeetingServiceImpl : IMeetingService
     public async Task<Meeting> CreateMeetingAsync(Guid organizerId, CreateMeetingRequest request)
     {
         var durationMinutes = ResolveDurationMinutes(request.StartTime, request.EndTime, request.DurationMinutes);
+        await EnsureOrganizerHasNoOverlapAsync(organizerId, request.StartTime, request.StartTime.AddMinutes(durationMinutes));
         var meetingId = Guid.NewGuid();
         var meeting = new Meeting
         {
@@ -143,6 +159,21 @@ public class MeetingServiceImpl : IMeetingService
             .ToListAsync();
     }
 
+    public async Task<List<Meeting>> GetMeetingsForUserAsync(Guid userId, string? userEmail)
+    {
+        var normalizedEmail = userEmail?.Trim().ToLowerInvariant();
+
+        return await MeetingsForTenant()
+            .Include(m => m.Participants)
+            .Include(m => m.Invites)
+            .Where(m =>
+                m.OrganizerId == userId
+                || m.Participants.Any(participant => participant.UserId == userId)
+                || (!string.IsNullOrWhiteSpace(normalizedEmail) && m.Invites.Any(invite => invite.Email.ToLower() == normalizedEmail)))
+            .OrderByDescending(m => m.CreatedAt)
+            .ToListAsync();
+    }
+
     public async Task<List<Meeting>> GetUpcomingMeetingsAsync()
     {
         return await MeetingsForTenant()
@@ -159,6 +190,7 @@ public class MeetingServiceImpl : IMeetingService
             throw new InvalidOperationException("Meeting not found");
 
         var durationMinutes = ResolveDurationMinutes(request.StartTime, request.EndTime, request.DurationMinutes);
+        await EnsureOrganizerHasNoOverlapAsync(meeting.OrganizerId, request.StartTime, request.StartTime.AddMinutes(durationMinutes), id);
         meeting.Title = request.Title;
         meeting.TeamChannelId = request.TeamChannelId;
         meeting.Description = request.Description;
@@ -186,6 +218,35 @@ public class MeetingServiceImpl : IMeetingService
         return meeting;
     }
 
+    public async Task<Meeting> EndMeetingAsync(Guid id, Guid organizerId)
+    {
+        var meeting = await MeetingsForTenant()
+            .Include(m => m.Participants)
+            .FirstOrDefaultAsync(m => m.Id == id);
+        if (meeting == null)
+            throw new InvalidOperationException("Meeting not found");
+
+        if (meeting.OrganizerId != organizerId)
+            throw new UnauthorizedAccessException("Only the organizer can end this meeting");
+
+        meeting.Status = MeetingStatus.Completed;
+        meeting.EndTime = DateTime.UtcNow;
+        meeting.UpdatedAt = DateTime.UtcNow;
+
+        foreach (var participant in meeting.Participants.Where(participant => participant.LeftAt == null))
+        {
+            participant.LeftAt = DateTime.UtcNow;
+            participant.IsAudioEnabled = false;
+            participant.IsVideoEnabled = false;
+            participant.IsScreenSharing = false;
+        }
+
+        _context.Meetings.Update(meeting);
+        await _context.SaveChangesAsync();
+        _logger.LogInformation("Meeting ended: {MeetingId}", id);
+        return meeting;
+    }
+
     public async Task DeleteMeetingAsync(Guid id)
     {
         var meeting = await MeetingsForTenant().FirstOrDefaultAsync(m => m.Id == id);
@@ -204,6 +265,18 @@ public class MeetingServiceImpl : IMeetingService
         var meeting = await MeetingsForTenant().FirstOrDefaultAsync(m => m.Id == meetingId);
         if (meeting == null)
             throw new InvalidOperationException("Meeting not found");
+
+        var now = DateTime.UtcNow;
+        var meetingEnd = meeting.EndTime ?? meeting.StartTime.AddMinutes(meeting.DurationMinutes ?? 60);
+        if (!meeting.IsActive || meeting.Status is MeetingStatus.Completed or MeetingStatus.Cancelled || meetingEnd <= now)
+            throw new InvalidOperationException("This meeting has ended. Chats and recordings are still available from the meeting details.");
+
+        if (meeting.Status == MeetingStatus.Scheduled && meeting.StartTime <= now)
+        {
+            meeting.Status = MeetingStatus.InProgress;
+            meeting.UpdatedAt = now;
+            _context.Meetings.Update(meeting);
+        }
 
         var existingParticipant = await _context.Participants
             .FirstOrDefaultAsync(p => p.MeetingId == meetingId && p.UserId == userId);
@@ -234,6 +307,48 @@ public class MeetingServiceImpl : IMeetingService
         return participant;
     }
 
+    private async Task EnsureOrganizerHasNoOverlapAsync(Guid organizerId, DateTime startTime, DateTime endTime, Guid? excludedMeetingId = null)
+    {
+        if (endTime <= startTime)
+        {
+            throw new InvalidOperationException("Meeting end time must be after the start time");
+        }
+
+        var hasOverlap = await MeetingsForTenant()
+            .Where(meeting => meeting.OrganizerId == organizerId)
+            .Where(meeting => meeting.IsActive)
+            .Where(meeting => meeting.Status != MeetingStatus.Cancelled && meeting.Status != MeetingStatus.Completed)
+            .Where(meeting => !excludedMeetingId.HasValue || meeting.Id != excludedMeetingId.Value)
+            .AnyAsync(meeting => meeting.StartTime < endTime && (meeting.EndTime ?? meeting.StartTime.AddMinutes(meeting.DurationMinutes ?? 60)) > startTime);
+
+        if (hasOverlap)
+        {
+            throw new InvalidOperationException("You already have a meeting scheduled in this time range.");
+        }
+    }
+
+    private async Task AcceptMeetingInviteForJoinAsync(Guid meetingId, string? userEmail, DateTime respondedAt)
+    {
+        if (string.IsNullOrWhiteSpace(userEmail))
+        {
+            return;
+        }
+
+        var normalizedEmail = userEmail.Trim().ToLowerInvariant();
+        var invite = await _context.MeetingInvites
+            .FirstOrDefaultAsync(item => item.MeetingId == meetingId && item.Email.ToLower() == normalizedEmail);
+
+        if (invite == null)
+        {
+            return;
+        }
+
+        invite.HasAccepted = true;
+        invite.ResponseStatus = MeetingInviteResponseStatus.Accepted;
+        invite.RespondedAt ??= respondedAt;
+        _context.MeetingInvites.Update(invite);
+    }
+
     public async Task<bool> LeaveMeetingAsync(Guid meetingId, Guid participantId)
     {
         var participant = await _context.Participants
@@ -242,6 +357,7 @@ public class MeetingServiceImpl : IMeetingService
             return false;
 
         participant.LeftAt = DateTime.UtcNow;
+        participant.IsScreenSharing = false;
         _context.Participants.Update(participant);
         await _context.SaveChangesAsync();
         _logger.LogInformation("Participant left meeting: {ParticipantId}, {MeetingId}", participantId, meetingId);
@@ -263,6 +379,18 @@ public class MeetingServiceImpl : IMeetingService
         if (participant == null)
             return false;
 
+        if (screenSharing)
+        {
+            var otherPresenters = await _context.Participants
+                .Where(p => p.MeetingId == participant.MeetingId && p.Id != participantId && p.LeftAt == null && p.IsScreenSharing)
+                .ToListAsync();
+
+            foreach (var otherPresenter in otherPresenters)
+            {
+                otherPresenter.IsScreenSharing = false;
+            }
+        }
+
         participant.IsAudioEnabled = audioEnabled;
         participant.IsVideoEnabled = videoEnabled;
         participant.IsScreenSharing = screenSharing;
@@ -282,6 +410,32 @@ public class MeetingServiceImpl : IMeetingService
         _context.Participants.Update(participant);
         await _context.SaveChangesAsync();
         return true;
+    }
+
+    public async Task<Participant?> UpdateParticipantHandAsync(Guid participantId, bool isHandRaised)
+    {
+        var participant = await _context.Participants
+            .FirstOrDefaultAsync(p => p.Id == participantId && (!_tenantContext.OrganizationId.HasValue || p.Meeting.OrganizationId == _tenantContext.OrganizationId.Value));
+        if (participant == null)
+            return null;
+
+        participant.IsHandRaised = isHandRaised;
+        _context.Participants.Update(participant);
+        await _context.SaveChangesAsync();
+        return participant;
+    }
+
+    public async Task<Participant?> UpdateParticipantReactionAsync(Guid participantId, string? reaction)
+    {
+        var participant = await _context.Participants
+            .FirstOrDefaultAsync(p => p.Id == participantId && (!_tenantContext.OrganizationId.HasValue || p.Meeting.OrganizationId == _tenantContext.OrganizationId.Value));
+        if (participant == null)
+            return null;
+
+        participant.Reaction = string.IsNullOrWhiteSpace(reaction) ? null : reaction.Trim();
+        _context.Participants.Update(participant);
+        await _context.SaveChangesAsync();
+        return participant;
     }
 
     public async Task<MeetingChatMessage> AddChatMessageAsync(Guid meetingId, CreateChatMessageRequest request)
@@ -390,6 +544,30 @@ public class MeetingServiceImpl : IMeetingService
         return meeting;
     }
 
+    public async Task<Meeting> UpdateWhiteboardAsync(Guid meetingId, Guid userId, string userName, string? whiteboardData)
+    {
+        var meeting = await MeetingsForTenant()
+            .Include(item => item.Participants)
+            .FirstOrDefaultAsync(m => m.Id == meetingId);
+        if (meeting == null)
+            throw new InvalidOperationException("Meeting not found");
+
+        var isOrganizer = meeting.OrganizerId == userId;
+        var participant = meeting.Participants.FirstOrDefault(item => item.UserId == userId && item.LeftAt == null);
+        var canEdit = isOrganizer || participant?.Role is ParticipantRole.Organizer or ParticipantRole.Presenter;
+        if (!canEdit)
+        {
+            throw new UnauthorizedAccessException("Only organizers and presenters can edit the whiteboard");
+        }
+
+        meeting.WhiteboardData = string.IsNullOrWhiteSpace(whiteboardData) ? null : whiteboardData;
+        meeting.UpdatedAt = DateTime.UtcNow;
+        _context.Meetings.Update(meeting);
+        await AddAuditLogAsync(userId, userName, "Whiteboard edited", null, meetingId);
+        await _context.SaveChangesAsync();
+        return meeting;
+    }
+
     public async Task<Meeting> UpdateRecordingAsync(Guid meetingId, string recordingUrl)
     {
         var meeting = await MeetingsForTenant().FirstOrDefaultAsync(m => m.Id == meetingId);
@@ -458,6 +636,46 @@ public class MeetingServiceImpl : IMeetingService
         await SendInviteEmailsAsync(meeting, normalizedEmails);
 
         return existingInvites.Concat(newInvites).OrderBy(invite => invite.Email).ToList();
+    }
+
+    public async Task<MeetingInvite> UpdateInviteResponseAsync(
+        Guid meetingId,
+        Guid inviteId,
+        Guid currentUserId,
+        string? currentUserEmail,
+        MeetingInviteResponseStatus status,
+        string? reason)
+    {
+        var invite = await _context.MeetingInvites
+            .Include(item => item.Meeting)
+            .FirstOrDefaultAsync(item => item.Id == inviteId && item.MeetingId == meetingId);
+
+        if (invite == null || (_tenantContext.OrganizationId.HasValue && invite.Meeting.OrganizationId != _tenantContext.OrganizationId.Value))
+        {
+            throw new InvalidOperationException("Invite not found");
+        }
+
+        var normalizedCurrentEmail = currentUserEmail?.Trim().ToLowerInvariant();
+        var isInviteOwner = !string.IsNullOrWhiteSpace(normalizedCurrentEmail)
+            && invite.Email.Trim().ToLowerInvariant() == normalizedCurrentEmail;
+        if (!isInviteOwner)
+        {
+            throw new UnauthorizedAccessException("You cannot respond to this invite");
+        }
+
+        var trimmedReason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        if (trimmedReason?.Length > 500)
+        {
+            trimmedReason = trimmedReason[..500];
+        }
+
+        invite.ResponseStatus = status;
+        invite.HasAccepted = status == MeetingInviteResponseStatus.Accepted;
+        invite.ResponseReason = trimmedReason;
+        invite.RespondedAt = status == MeetingInviteResponseStatus.Pending ? null : DateTime.UtcNow;
+        _context.MeetingInvites.Update(invite);
+        await _context.SaveChangesAsync();
+        return invite;
     }
 
     public async Task<List<Conversation>> GetConversationsAsync(Guid userId, string? userEmail, string userName)
@@ -714,6 +932,7 @@ public class MeetingServiceImpl : IMeetingService
             ReplyToMessageId = replyToMessage?.Id,
             ReplyToSenderName = replyToMessage?.SenderName,
             ReplyToPreview = replyToMessage == null ? null : BuildReplyPreview(replyToMessage),
+            IsImportant = request.IsImportant,
             SentAt = DateTime.UtcNow
         };
 
@@ -817,6 +1036,11 @@ public class MeetingServiceImpl : IMeetingService
         }
 
         message.Message = messageText;
+        if (request.IsImportant.HasValue)
+        {
+            message.IsImportant = request.IsImportant.Value;
+        }
+
         message.EditedAt = DateTime.UtcNow;
         _context.ConversationMessages.Update(message);
 
@@ -958,6 +1182,527 @@ public class MeetingServiceImpl : IMeetingService
         await _context.SaveChangesAsync();
     }
 
+    public async Task<List<ConversationTask>> GetConversationTasksAsync(
+        Guid conversationId,
+        Guid userId,
+        string? status = null,
+        string? priority = null,
+        Guid? assigneeId = null,
+        DateTime? dueBefore = null,
+        string? query = null)
+    {
+        if (!await CanAccessConversationAsync(conversationId, userId))
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        var taskQuery = _context.ConversationTasks
+            .Include(task => task.SourceMessage)
+            .Include(task => task.Notes.OrderByDescending(note => note.CreatedAt))
+            .Include(task => task.Activities.OrderByDescending(activity => activity.CreatedAt))
+            .Where(task => task.ConversationId == conversationId && !task.IsDeleted);
+
+        if (TryParseEnum(status, out ConversationTaskStatus parsedStatus))
+        {
+            taskQuery = taskQuery.Where(task => task.Status == parsedStatus);
+        }
+
+        if (TryParseEnum(priority, out ConversationTaskPriority parsedPriority))
+        {
+            taskQuery = taskQuery.Where(task => task.Priority == parsedPriority);
+        }
+
+        if (assigneeId.HasValue)
+        {
+            taskQuery = taskQuery.Where(task => task.AssigneeId == assigneeId.Value);
+        }
+
+        if (dueBefore.HasValue)
+        {
+            taskQuery = taskQuery.Where(task => task.DueDate.HasValue && task.DueDate.Value <= dueBefore.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var normalizedQuery = query.Trim().ToLower();
+            taskQuery = taskQuery.Where(task =>
+                task.Title.ToLower().Contains(normalizedQuery) ||
+                (task.Description != null && task.Description.ToLower().Contains(normalizedQuery)) ||
+                (task.AssigneeName != null && task.AssigneeName.ToLower().Contains(normalizedQuery)) ||
+                (task.AssigneeEmail != null && task.AssigneeEmail.ToLower().Contains(normalizedQuery)));
+        }
+
+        return await taskQuery
+            .OrderBy(task => task.Status == ConversationTaskStatus.Completed)
+            .ThenBy(task => task.DueDate ?? DateTime.MaxValue)
+            .ThenByDescending(task => task.CreatedAt)
+            .AsSplitQuery()
+            .ToListAsync();
+    }
+
+    public async Task<ConversationTask> CreateConversationTaskAsync(Guid conversationId, Guid userId, string userName, CreateConversationTaskRequest request)
+    {
+        var isMember = await CanAccessConversationAsync(conversationId, userId);
+        if (!isMember)
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        ConversationMessage? sourceMessage = null;
+        if (request.SourceMessageId.HasValue)
+        {
+            sourceMessage = await _context.ConversationMessages
+                .FirstOrDefaultAsync(message => message.Id == request.SourceMessageId.Value && message.ConversationId == conversationId && !message.IsDeleted);
+
+            if (sourceMessage == null)
+            {
+                throw new InvalidOperationException("Source message not found");
+            }
+        }
+
+        var title = NormalizeTaskTitle(request.Title, sourceMessage);
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            throw new InvalidOperationException("Task title is required");
+        }
+
+        var assignee = await ResolveTaskAssigneeAsync(conversationId, request.AssigneeId, request.AssigneeEmail, request.AssigneeName);
+        var now = DateTime.UtcNow;
+        var task = new ConversationTask
+        {
+            Id = Guid.NewGuid(),
+            ConversationId = conversationId,
+            SourceMessageId = sourceMessage?.Id,
+            Title = title,
+            Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim(),
+            Priority = TryParseEnum(request.Priority, out ConversationTaskPriority priority) ? priority : ConversationTaskPriority.Normal,
+            Status = ConversationTaskStatus.Pending,
+            OwnerId = userId,
+            OwnerName = userName,
+            AssigneeId = assignee.AssigneeId,
+            AssigneeEmail = assignee.AssigneeEmail,
+            AssigneeName = assignee.AssigneeName,
+            DueDate = NormalizeOptionalDate(request.DueDate),
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        task.Activities.Add(CreateTaskActivity(task.Id, userId, userName, "Created", sourceMessage == null ? null : $"From message by {sourceMessage.SenderName}"));
+        _context.ConversationTasks.Add(task);
+        await AddAuditLogAsync(userId, userName, "Task created", task.Title, conversationId: conversationId);
+        await _context.SaveChangesAsync();
+
+        return await LoadConversationTaskAsync(conversationId, task.Id);
+    }
+
+    public async Task<ConversationTask> UpdateConversationTaskAsync(Guid conversationId, Guid taskId, Guid userId, string userName, UpdateConversationTaskRequest request)
+    {
+        var task = await LoadConversationTaskForUpdateAsync(conversationId, taskId, userId);
+        var changes = new List<string>();
+
+        if (request.Title != null)
+        {
+            var title = request.Title.Trim();
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                throw new InvalidOperationException("Task title is required");
+            }
+
+            if (!string.Equals(task.Title, title, StringComparison.Ordinal))
+            {
+                task.Title = title.Length > 240 ? title[..240] : title;
+                changes.Add("title");
+            }
+        }
+
+        if (request.Description != null && !string.Equals(task.Description ?? string.Empty, request.Description.Trim(), StringComparison.Ordinal))
+        {
+            task.Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
+            changes.Add("description");
+        }
+
+        if (TryParseEnum(request.Priority, out ConversationTaskPriority priority) && task.Priority != priority)
+        {
+            task.Priority = priority;
+            changes.Add($"priority to {priority}");
+        }
+
+        if (TryParseEnum(request.Status, out ConversationTaskStatus status) && task.Status != status)
+        {
+            task.Status = status;
+            task.CompletedAt = status == ConversationTaskStatus.Completed ? DateTime.UtcNow : null;
+            changes.Add($"status to {status}");
+        }
+
+        if (request.AssigneeId.HasValue || request.AssigneeEmail != null || request.AssigneeName != null)
+        {
+            var assignee = await ResolveTaskAssigneeAsync(conversationId, request.AssigneeId, request.AssigneeEmail, request.AssigneeName);
+            if (task.AssigneeId != assignee.AssigneeId ||
+                !string.Equals(task.AssigneeEmail, assignee.AssigneeEmail, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(task.AssigneeName, assignee.AssigneeName, StringComparison.Ordinal))
+            {
+                task.AssigneeId = assignee.AssigneeId;
+                task.AssigneeEmail = assignee.AssigneeEmail;
+                task.AssigneeName = assignee.AssigneeName;
+                changes.Add($"assignee to {task.AssigneeName ?? task.AssigneeEmail ?? "unassigned"}");
+            }
+        }
+
+        if (request.DueDate.HasValue && task.DueDate != NormalizeOptionalDate(request.DueDate))
+        {
+            task.DueDate = NormalizeOptionalDate(request.DueDate);
+            changes.Add("due date");
+        }
+
+        if (changes.Count == 0)
+        {
+            return task;
+        }
+
+        task.UpdatedAt = DateTime.UtcNow;
+        task.Activities.Add(CreateTaskActivity(task.Id, userId, userName, "Updated", string.Join(", ", changes)));
+        _context.ConversationTasks.Update(task);
+        await AddAuditLogAsync(userId, userName, "Task updated", $"{task.Title}: {string.Join(", ", changes)}", conversationId: conversationId);
+        await _context.SaveChangesAsync();
+        return await LoadConversationTaskAsync(conversationId, task.Id);
+    }
+
+    public async Task<ConversationTaskNote> AddConversationTaskNoteAsync(Guid conversationId, Guid taskId, Guid userId, string userName, AddConversationTaskNoteRequest request)
+    {
+        var task = await LoadConversationTaskForUpdateAsync(conversationId, taskId, userId);
+        var noteText = (request.Note ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(noteText))
+        {
+            throw new InvalidOperationException("Task note is required");
+        }
+
+        var note = new ConversationTaskNote
+        {
+            Id = Guid.NewGuid(),
+            TaskId = task.Id,
+            AuthorId = userId,
+            AuthorName = userName,
+            Note = noteText,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        task.UpdatedAt = DateTime.UtcNow;
+        task.Notes.Add(note);
+        task.Activities.Add(CreateTaskActivity(task.Id, userId, userName, "Note added", noteText.Length <= 160 ? noteText : $"{noteText[..157]}..."));
+        _context.ConversationTasks.Update(task);
+        await AddAuditLogAsync(userId, userName, "Task note added", task.Title, conversationId: conversationId);
+        await _context.SaveChangesAsync();
+        return note;
+    }
+
+    public async Task DeleteConversationTaskAsync(Guid conversationId, Guid taskId, Guid userId, string userName)
+    {
+        var task = await LoadConversationTaskForUpdateAsync(conversationId, taskId, userId);
+        task.IsDeleted = true;
+        task.UpdatedAt = DateTime.UtcNow;
+        task.Activities.Add(CreateTaskActivity(task.Id, userId, userName, "Deleted", null));
+        _context.ConversationTasks.Update(task);
+        await AddAuditLogAsync(userId, userName, "Task deleted", task.Title, conversationId: conversationId);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task<List<ConversationDocumentShare>> ShareConversationDocumentAsync(Guid conversationId, Guid messageId, Guid userId, string userName, ShareConversationDocumentRequest request)
+    {
+        if (!await CanAccessConversationAsync(conversationId, userId))
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        var message = await _context.ConversationMessages
+            .Include(item => item.Conversation)
+            .FirstOrDefaultAsync(item => item.Id == messageId && item.ConversationId == conversationId && !item.IsDeleted);
+
+        if (message == null || string.IsNullOrWhiteSpace(message.AttachmentUrl))
+        {
+            throw new InvalidOperationException("Document not found");
+        }
+
+        var recipients = NormalizeEmailList(request.Emails);
+        if (recipients.Count == 0)
+        {
+            throw new InvalidOperationException("At least one recipient email is required");
+        }
+
+        var shares = new List<ConversationDocumentShare>();
+        foreach (var email in recipients)
+        {
+            await _emailSender.SendDocumentShareAsync(message.Conversation, message, email, userName, request.Message);
+        }
+
+        var share = new ConversationDocumentShare
+        {
+            Id = Guid.NewGuid(),
+            ConversationId = conversationId,
+            MessageId = messageId,
+            SharedByUserId = userId,
+            SharedByName = userName,
+            RecipientEmails = string.Join(";", recipients),
+            OptionalMessage = string.IsNullOrWhiteSpace(request.Message) ? null : request.Message.Trim(),
+            CreatedAt = DateTime.UtcNow
+        };
+        _context.ConversationDocumentShares.Add(share);
+        shares.Add(share);
+        await AddAuditLogAsync(userId, userName, "Document shared via email", message.AttachmentFileName, conversationId: conversationId);
+        await _context.SaveChangesAsync();
+
+        return shares;
+    }
+
+    public async Task<List<ConversationDocumentShare>> GetConversationDocumentSharesAsync(Guid conversationId, Guid userId, Guid? messageId = null)
+    {
+        if (!await CanAccessConversationAsync(conversationId, userId))
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        var query = _context.ConversationDocumentShares
+            .Where(share => share.ConversationId == conversationId);
+
+        if (messageId.HasValue)
+        {
+            query = query.Where(share => share.MessageId == messageId.Value);
+        }
+
+        return await query
+            .OrderByDescending(share => share.CreatedAt)
+            .ToListAsync();
+    }
+
+    public async Task<List<GlobalSearchResultDto>> SearchAsync(Guid userId, string query)
+    {
+        var normalizedQuery = (query ?? string.Empty).Trim();
+        if (normalizedQuery.Length < 2)
+        {
+            return new List<GlobalSearchResultDto>();
+        }
+
+        var lowered = normalizedQuery.ToLower();
+        var conversationIds = await ConversationMembersForTenant()
+            .Where(member => member.UserId == userId)
+            .Select(member => member.ConversationId)
+            .ToListAsync();
+
+        var results = new List<GlobalSearchResultDto>();
+        var messages = await _context.ConversationMessages
+            .Where(message => conversationIds.Contains(message.ConversationId) && !message.IsDeleted)
+            .Where(message =>
+                message.Message.ToLower().Contains(lowered) ||
+                (message.AttachmentFileName != null && message.AttachmentFileName.ToLower().Contains(lowered)))
+            .OrderByDescending(message => message.SentAt)
+            .Take(20)
+            .ToListAsync();
+
+        results.AddRange(messages.Select(message => new GlobalSearchResultDto
+        {
+            Kind = string.IsNullOrWhiteSpace(message.AttachmentUrl) ? "Chat" : "Document",
+            Id = message.Id,
+            ConversationId = message.ConversationId,
+            Title = message.AttachmentFileName ?? "Chat message",
+            Snippet = BuildSearchSnippet(message.Message, normalizedQuery),
+            OccurredAt = message.SentAt
+        }));
+
+        var tasks = await _context.ConversationTasks
+            .Where(task => conversationIds.Contains(task.ConversationId) && !task.IsDeleted)
+            .Where(task =>
+                task.Title.ToLower().Contains(lowered) ||
+                (task.Description != null && task.Description.ToLower().Contains(lowered)) ||
+                (task.AssigneeName != null && task.AssigneeName.ToLower().Contains(lowered)))
+            .OrderByDescending(task => task.UpdatedAt ?? task.CreatedAt)
+            .Take(20)
+            .ToListAsync();
+
+        results.AddRange(tasks.Select(task => new GlobalSearchResultDto
+        {
+            Kind = "Task",
+            Id = task.Id,
+            ConversationId = task.ConversationId,
+            Title = task.Title,
+            Snippet = $"{task.Status} - {task.Priority}",
+            OccurredAt = task.UpdatedAt ?? task.CreatedAt
+        }));
+
+        var meetings = await MeetingsForTenant()
+            .Include(meeting => meeting.Participants)
+            .Where(meeting => meeting.OrganizerId == userId || meeting.Participants.Any(participant => participant.UserId == userId))
+            .Where(meeting =>
+                meeting.Title.ToLower().Contains(lowered) ||
+                (meeting.Description != null && meeting.Description.ToLower().Contains(lowered)) ||
+                (meeting.Location != null && meeting.Location.ToLower().Contains(lowered)))
+            .OrderByDescending(meeting => meeting.StartTime)
+            .Take(20)
+            .ToListAsync();
+
+        results.AddRange(meetings.Select(meeting => new GlobalSearchResultDto
+        {
+            Kind = "Meeting",
+            Id = meeting.Id,
+            MeetingId = meeting.Id,
+            Title = meeting.Title,
+            Snippet = meeting.Status.ToString(),
+            OccurredAt = meeting.StartTime
+        }));
+
+        return results
+            .OrderByDescending(result => result.OccurredAt ?? DateTime.MinValue)
+            .Take(40)
+            .ToList();
+    }
+
+    public async Task LogAuditAsync(Guid actorId, string actorName, string action, string? details = null, Guid? meetingId = null, Guid? conversationId = null)
+    {
+        await AddAuditLogAsync(actorId, actorName, action, details, meetingId, conversationId);
+        await _context.SaveChangesAsync();
+    }
+
+    private async Task<ConversationTask> LoadConversationTaskForUpdateAsync(Guid conversationId, Guid taskId, Guid userId)
+    {
+        if (!await CanAccessConversationAsync(conversationId, userId))
+        {
+            throw new InvalidOperationException("Conversation not found");
+        }
+
+        var task = await _context.ConversationTasks
+            .Include(item => item.Notes)
+            .Include(item => item.Activities)
+            .FirstOrDefaultAsync(item => item.Id == taskId && item.ConversationId == conversationId && !item.IsDeleted);
+
+        return task ?? throw new InvalidOperationException("Task not found");
+    }
+
+    private async Task<ConversationTask> LoadConversationTaskAsync(Guid conversationId, Guid taskId)
+    {
+        var task = await _context.ConversationTasks
+            .Include(item => item.SourceMessage)
+            .Include(item => item.Notes.OrderByDescending(note => note.CreatedAt))
+            .Include(item => item.Activities.OrderByDescending(activity => activity.CreatedAt))
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(item => item.Id == taskId && item.ConversationId == conversationId && !item.IsDeleted);
+
+        return task ?? throw new InvalidOperationException("Task not found");
+    }
+
+    private async Task<(Guid? AssigneeId, string? AssigneeEmail, string? AssigneeName)> ResolveTaskAssigneeAsync(Guid conversationId, Guid? assigneeId, string? assigneeEmail, string? assigneeName)
+    {
+        if (assigneeId.HasValue)
+        {
+            var member = await _context.ConversationMembers
+                .FirstOrDefaultAsync(item => item.ConversationId == conversationId && item.UserId == assigneeId.Value);
+
+            if (member == null)
+            {
+                throw new InvalidOperationException("Assignee is not part of this chat");
+            }
+
+            return (member.UserId, member.UserEmail, member.UserName);
+        }
+
+        if (!string.IsNullOrWhiteSpace(assigneeEmail))
+        {
+            var normalizedEmail = assigneeEmail.Trim();
+            var member = await _context.ConversationMembers
+                .FirstOrDefaultAsync(item => item.ConversationId == conversationId && item.UserEmail.ToLower() == normalizedEmail.ToLower());
+
+            if (member != null)
+            {
+                return (member.UserId, member.UserEmail, member.UserName);
+            }
+
+            return (null, normalizedEmail, string.IsNullOrWhiteSpace(assigneeName) ? normalizedEmail : assigneeName.Trim());
+        }
+
+        return (null, null, null);
+    }
+
+    private static string NormalizeTaskTitle(string? title, ConversationMessage? sourceMessage)
+    {
+        var resolved = string.IsNullOrWhiteSpace(title)
+            ? sourceMessage == null ? string.Empty : BuildReplyPreview(sourceMessage)
+            : title.Trim();
+
+        return resolved.Length <= 240 ? resolved : $"{resolved[..237]}...";
+    }
+
+    private static DateTime? NormalizeOptionalDate(DateTime? date)
+    {
+        if (!date.HasValue)
+        {
+            return null;
+        }
+
+        return date.Value.Kind == DateTimeKind.Unspecified
+            ? DateTime.SpecifyKind(date.Value, DateTimeKind.Local).ToUniversalTime()
+            : date.Value.ToUniversalTime();
+    }
+
+    private static ConversationTaskActivity CreateTaskActivity(Guid taskId, Guid actorId, string actorName, string action, string? details)
+    {
+        return new ConversationTaskActivity
+        {
+            Id = Guid.NewGuid(),
+            TaskId = taskId,
+            ActorId = actorId,
+            ActorName = actorName,
+            Action = action,
+            Details = details,
+            CreatedAt = DateTime.UtcNow
+        };
+    }
+
+    private Task AddAuditLogAsync(Guid actorId, string actorName, string action, string? details = null, Guid? meetingId = null, Guid? conversationId = null)
+    {
+        _context.PlatformAuditLogs.Add(new PlatformAuditLog
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = _tenantContext.OrganizationId,
+            MeetingId = meetingId,
+            ConversationId = conversationId,
+            ActorId = actorId,
+            ActorName = actorName,
+            Action = action,
+            Details = details,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        return Task.CompletedTask;
+    }
+
+    private static bool TryParseEnum<TEnum>(string? value, out TEnum parsed) where TEnum : struct, Enum
+    {
+        if (!string.IsNullOrWhiteSpace(value) && Enum.TryParse(value.Trim().Replace(" ", string.Empty), true, out parsed))
+        {
+            return true;
+        }
+
+        parsed = default;
+        return false;
+    }
+
+    private static string BuildSearchSnippet(string? value, string query)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var normalized = value.Replace("\r", " ").Replace("\n", " ");
+        var index = normalized.IndexOf(query, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            return normalized.Length <= 180 ? normalized : $"{normalized[..177]}...";
+        }
+
+        var start = Math.Max(0, index - 60);
+        var length = Math.Min(normalized.Length - start, query.Length + 120);
+        var snippet = normalized.Substring(start, length);
+        return $"{(start > 0 ? "..." : string.Empty)}{snippet}{(start + length < normalized.Length ? "..." : string.Empty)}";
+    }
+
     private async Task AcceptPendingConversationInvitesAsync(Guid userId, string? userEmail, string userName)
     {
         if (string.IsNullOrWhiteSpace(userEmail))
@@ -1057,7 +1802,16 @@ public class MeetingServiceImpl : IMeetingService
         {
             try
             {
-                await _emailSender.SendMeetingInviteAsync(meeting, email);
+                var invite = await _context.MeetingInvites
+                    .FirstOrDefaultAsync(item => item.MeetingId == meeting.Id && item.Email.ToLower() == email.ToLowerInvariant());
+
+                if (invite == null)
+                {
+                    _logger.LogWarning("Meeting invite email skipped because invite row was not found. Recipient: {Email}, Meeting: {MeetingId}", email, meeting.Id);
+                    continue;
+                }
+
+                await _emailSender.SendMeetingInviteAsync(meeting, invite);
             }
             catch (Exception ex)
             {

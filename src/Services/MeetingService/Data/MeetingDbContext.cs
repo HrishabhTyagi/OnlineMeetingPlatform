@@ -19,6 +19,11 @@ public class MeetingDbContext : DbContext
     public DbSet<ConversationMember> ConversationMembers { get; set; } = null!;
     public DbSet<ConversationMessage> ConversationMessages { get; set; } = null!;
     public DbSet<ConversationMessageReaction> ConversationMessageReactions { get; set; } = null!;
+    public DbSet<ConversationTask> ConversationTasks { get; set; } = null!;
+    public DbSet<ConversationTaskNote> ConversationTaskNotes { get; set; } = null!;
+    public DbSet<ConversationTaskActivity> ConversationTaskActivities { get; set; } = null!;
+    public DbSet<ConversationDocumentShare> ConversationDocumentShares { get; set; } = null!;
+    public DbSet<PlatformAuditLog> PlatformAuditLogs { get; set; } = null!;
     public DbSet<ConversationInvite> ConversationInvites { get; set; } = null!;
     public DbSet<ScheduledConversationMessage> ScheduledConversationMessages { get; set; } = null!;
     public DbSet<TeamSpace> TeamSpaces { get; set; } = null!;
@@ -80,6 +85,7 @@ public class MeetingDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Email).IsRequired().HasMaxLength(255);
             entity.Property(e => e.DisplayName).HasMaxLength(255);
+            entity.Property(e => e.ResponseReason).HasMaxLength(500);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
 
@@ -107,6 +113,8 @@ public class MeetingDbContext : DbContext
             entity.HasMany(e => e.Messages).WithOne(m => m.Conversation).HasForeignKey(m => m.ConversationId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.Invites).WithOne(i => i.Conversation).HasForeignKey(i => i.ConversationId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.ScheduledMessages).WithOne(s => s.Conversation).HasForeignKey(s => s.ConversationId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.Tasks).WithOne(task => task.Conversation).HasForeignKey(task => task.ConversationId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.DocumentShares).WithOne(share => share.Conversation).HasForeignKey(share => share.ConversationId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<ConversationMember>(entity =>
@@ -131,11 +139,13 @@ public class MeetingDbContext : DbContext
             entity.Property(e => e.ReplyToPreview).HasColumnType("text");
             entity.Property(e => e.SentAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.Property(e => e.IsPinned).HasDefaultValue(false);
+            entity.Property(e => e.IsImportant).HasDefaultValue(false);
             entity.HasIndex(e => e.ReplyToMessageId);
             entity.HasIndex(e => new { e.ConversationId, e.SenderId, e.ClientMessageId })
                 .IsUnique()
                 .HasFilter("\"ClientMessageId\" IS NOT NULL");
             entity.HasMany(e => e.Reactions).WithOne(r => r.Message).HasForeignKey(r => r.ConversationMessageId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.Tasks).WithOne(task => task.SourceMessage).HasForeignKey(task => task.SourceMessageId).OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<ConversationMessageReaction>(entity =>
@@ -145,6 +155,71 @@ public class MeetingDbContext : DbContext
             entity.Property(e => e.Emoji).IsRequired().HasMaxLength(32);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.HasIndex(e => new { e.ConversationMessageId, e.UserId, e.Emoji }).IsUnique();
+        });
+
+        modelBuilder.Entity<ConversationTask>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Title).IsRequired().HasMaxLength(240);
+            entity.Property(e => e.Description).HasColumnType("text");
+            entity.Property(e => e.Priority).HasConversion<string>().HasMaxLength(32);
+            entity.Property(e => e.Status).HasConversion<string>().HasMaxLength(32);
+            entity.Property(e => e.OwnerName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.AssigneeEmail).HasMaxLength(255);
+            entity.Property(e => e.AssigneeName).HasMaxLength(255);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.IsDeleted).HasDefaultValue(false);
+            entity.HasIndex(e => e.ConversationId);
+            entity.HasIndex(e => e.SourceMessageId);
+            entity.HasIndex(e => new { e.ConversationId, e.Status });
+            entity.HasIndex(e => new { e.ConversationId, e.AssigneeId });
+            entity.HasMany(e => e.Notes).WithOne(note => note.Task).HasForeignKey(note => note.TaskId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.Activities).WithOne(activity => activity.Task).HasForeignKey(activity => activity.TaskId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ConversationTaskNote>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.AuthorName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.Note).IsRequired().HasColumnType("text");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => e.TaskId);
+        });
+
+        modelBuilder.Entity<ConversationTaskActivity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.ActorName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.Action).IsRequired().HasMaxLength(80);
+            entity.Property(e => e.Details).HasColumnType("text");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => e.TaskId);
+        });
+
+        modelBuilder.Entity<ConversationDocumentShare>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.SharedByName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.RecipientEmails).IsRequired().HasColumnType("text");
+            entity.Property(e => e.OptionalMessage).HasColumnType("text");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => e.ConversationId);
+            entity.HasIndex(e => e.MessageId);
+            entity.HasOne(e => e.Message).WithMany().HasForeignKey(e => e.MessageId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PlatformAuditLog>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.ActorName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.Action).IsRequired().HasMaxLength(120);
+            entity.Property(e => e.Details).HasColumnType("text");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => e.OrganizationId);
+            entity.HasIndex(e => e.MeetingId);
+            entity.HasIndex(e => e.ConversationId);
+            entity.HasOne(e => e.Meeting).WithMany().HasForeignKey(e => e.MeetingId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(e => e.Conversation).WithMany().HasForeignKey(e => e.ConversationId).OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<ScheduledConversationMessage>(entity =>

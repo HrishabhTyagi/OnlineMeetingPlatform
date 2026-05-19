@@ -20,6 +20,36 @@
 }
 
 @layer components {
+  .samvaad-shell {
+    background: #e7efec;
+  }
+
+  .samvaad-shell-header {
+    background: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(14px);
+  }
+
+  .samvaad-module-strip {
+    background: #edf3f1;
+  }
+
+  .samvaad-workspace {
+    background: #e7efec;
+  }
+
+  [data-samvaad-theme='focus'] .samvaad-shell,
+  [data-samvaad-theme='focus'] .samvaad-workspace {
+    background: #08111f;
+  }
+
+  [data-samvaad-theme='focus'] .samvaad-shell-header {
+    background: rgba(15, 23, 42, 0.94);
+  }
+
+  [data-samvaad-theme='focus'] .samvaad-module-strip {
+    background: #111827;
+  }
+
   [data-samvaad-theme='focus'] .bg-slate-100,
   [data-samvaad-theme='focus'] .bg-slate-200 {
     background-color: var(--samvaad-focus-page) !important;
@@ -27,6 +57,10 @@
 
   [data-samvaad-theme='focus'] .bg-white {
     background-color: var(--samvaad-focus-panel) !important;
+  }
+
+  [data-samvaad-theme='focus'] .bg-white\/70 {
+    background-color: rgba(17, 24, 39, 0.78) !important;
   }
 
   [data-samvaad-theme='focus'] .bg-slate-50 {
@@ -111,6 +145,54 @@
   [data-samvaad-theme='focus'] .text-indigo-800 {
     color: var(--samvaad-focus-accent) !important;
   }
+
+  .samvaad-calendar {
+    background: #ffffff;
+  }
+
+  .samvaad-calendar-day-column {
+    background: #ffffff;
+  }
+
+  .samvaad-calendar-event {
+    cursor: grab;
+  }
+
+  .samvaad-calendar-event:active {
+    cursor: grabbing;
+  }
+
+  [data-samvaad-theme='focus'] .samvaad-calendar,
+  [data-samvaad-theme='focus'] .samvaad-calendar-header,
+  [data-samvaad-theme='focus'] .samvaad-calendar-time-column,
+  [data-samvaad-theme='focus'] .samvaad-calendar-day-column {
+    background: #0b1120 !important;
+    border-color: #263247 !important;
+  }
+
+  [data-samvaad-theme='focus'] .samvaad-calendar-day-column > div,
+  [data-samvaad-theme='focus'] .samvaad-calendar-time-column > div {
+    border-color: #263247 !important;
+  }
+
+  [data-samvaad-theme='focus'] .samvaad-calendar-day-column .border-dashed {
+    border-color: rgba(148, 163, 184, 0.16) !important;
+  }
+
+  [data-samvaad-theme='focus'] .samvaad-calendar-event {
+    background: rgba(56, 189, 248, 0.14) !important;
+    border-color: rgba(56, 189, 248, 0.48) !important;
+    color: #e0f2fe !important;
+  }
+
+  [data-samvaad-theme='focus'] .samvaad-calendar-event:hover {
+    background: rgba(56, 189, 248, 0.24) !important;
+    border-color: rgba(125, 211, 252, 0.82) !important;
+  }
+
+  [data-samvaad-theme='focus'] .samvaad-calendar-event p {
+    color: #bae6fd !important;
+  }
 }
 
 :root {
@@ -122,6 +204,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  cursor: default;
+  caret-color: transparent;
 }
 
 button,
@@ -129,4 +213,32 @@ input,
 textarea,
 select {
   font: inherit;
+}
+
+a,
+button,
+summary,
+select,
+[role='button'],
+[role='tab'] {
+  cursor: pointer;
+}
+
+input,
+textarea,
+[contenteditable='true'],
+[role='textbox'] {
+  cursor: text;
+  caret-color: auto;
+}
+
+[role='separator'][aria-orientation='vertical'] {
+  cursor: col-resize;
+}
+
+button:disabled,
+input:disabled,
+textarea:disabled,
+select:disabled {
+  cursor: not-allowed;
 }

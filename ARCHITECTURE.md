@@ -19,7 +19,7 @@ Client Applications
    │  - Route Management         │
    │  - Load Balancing           │
    │  - Rate Limiting            │
-   └──┬──────────┬────────────┬──┘
+   └──┬──────────┬────────────┬──┘  
       │          │            │
       ▼          ▼            ▼
    ┌──────┐  ┌────────┐   ┌──────────┐

@@ -104,13 +104,25 @@ export function getMeetingJoinPath(meetingId: string, query = '') {
 export function getMeetingJoinUrl(meetingId: string, meetingLink?: string | null, query = '') {
   const organization = getActiveOrganization();
   const normalizedQuery = normalizeQuery(query);
-  if (organization?.slug) {
-    return getOrganizationScopedUrl(`/meeting/${meetingId}${normalizedQuery}`, organization);
+  if (meetingLink) {
+    return appendQuery(meetingLink, normalizedQuery);
   }
 
-  return meetingLink
-    ? appendQuery(meetingLink, normalizedQuery)
-    : getOrganizationScopedUrl(`/meeting/${meetingId}${normalizedQuery}`, organization);
+  return getOrganizationScopedUrl(`/meeting/${meetingId}${normalizedQuery}`, organization);
+}
+
+export function openUrlInNewTab(url: string) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+export function openMeetingJoinInNewTab(meetingId: string, meetingLink?: string | null, query = '') {
+  const joinUrl = getMeetingJoinUrl(meetingId, meetingLink, query);
+  openUrlInNewTab(joinUrl);
+  return joinUrl;
 }
 
 function setHeader(config: any, name: string, value: string) {
@@ -200,6 +212,9 @@ export const meetingAPI = {
   deleteMeeting: (id: string) =>
     apiClient.delete(`/meetings/${id}`),
 
+  endMeeting: (id: string) =>
+    apiClient.post(`/meetings/${id}/end`),
+
   joinMeeting: (meetingId: string, data: any) =>
     apiClient.post(`/meetings/${meetingId}/participants/join`, data),
 
@@ -214,6 +229,12 @@ export const meetingAPI = {
 
   updateParticipantRole: (meetingId: string, participantId: string, data: any) =>
     apiClient.put(`/meetings/${meetingId}/participants/${participantId}/role`, data),
+
+  updateParticipantHand: (meetingId: string, participantId: string, data: any) =>
+    apiClient.put(`/meetings/${meetingId}/participants/${participantId}/hand`, data),
+
+  updateParticipantReaction: (meetingId: string, participantId: string, data: any) =>
+    apiClient.put(`/meetings/${meetingId}/participants/${participantId}/reaction`, data),
 
   getChatMessages: (meetingId: string) =>
     apiClient.get(`/meetings/${meetingId}/chat`),
@@ -233,11 +254,23 @@ export const meetingAPI = {
   updateNotes: (meetingId: string, data: any) =>
     apiClient.put(`/meetings/${meetingId}/notes`, data),
 
+  updateWhiteboard: (meetingId: string, data: any) =>
+    apiClient.put(`/meetings/${meetingId}/whiteboard`, data),
+
+  exportChat: (meetingId: string) =>
+    apiClient.get(`/meetings/${meetingId}/exports/chat`, { responseType: 'blob' }),
+
+  exportWhiteboard: (meetingId: string) =>
+    apiClient.get(`/meetings/${meetingId}/exports/whiteboard`, { responseType: 'blob' }),
+
   getInvites: (meetingId: string) =>
     apiClient.get(`/meetings/${meetingId}/invites`),
 
   sendInvites: (meetingId: string, data: any) =>
     apiClient.post(`/meetings/${meetingId}/invites/send`, data),
+
+  updateInviteResponse: (meetingId: string, inviteId: string, data: any) =>
+    apiClient.put(`/meetings/${meetingId}/invites/${inviteId}/response`, data),
 
   uploadRecording: (meetingId: string, data: FormData) =>
     apiClient.post(`/meetings/${meetingId}/recordings`, data),
@@ -272,6 +305,26 @@ export const calendarAPI = {
 
   disconnect: (provider: string) =>
     apiClient.delete(`/calendar-connections/${encodeURIComponent(provider)}`),
+};
+
+export interface LicensePurchaseRequest {
+  planName: string;
+  billingCycle: string;
+  seatCount: number;
+  estimatedAmount: number;
+  currency: string;
+  companyName: string;
+  companySamvaadEmail?: string;
+  contactName: string;
+  contactEmail: string;
+  phone?: string;
+  notes?: string;
+  paymentLast4?: string;
+}
+
+export const licenseAPI = {
+  requestLicense: (data: LicensePurchaseRequest) =>
+    apiClient.post('/license-requests', data),
 };
 
 export const teamSpaceAPI = {
@@ -310,6 +363,9 @@ export const conversationAPI = {
   getConversations: () =>
     apiClient.get('/conversations'),
 
+  search: (query: string) =>
+    apiClient.get('/conversations/search', { params: { query } }),
+
   createConversation: (data: any) =>
     apiClient.post('/conversations', data),
 
@@ -345,6 +401,33 @@ export const conversationAPI = {
 
   cancelScheduledMessage: (conversationId: string, scheduledMessageId: string) =>
     apiClient.delete(`/conversations/${conversationId}/scheduled-messages/${scheduledMessageId}`),
+
+  getTasks: (conversationId: string, params?: any) =>
+    apiClient.get(`/conversations/${conversationId}/tasks`, { params }),
+
+  createTask: (conversationId: string, data: any) =>
+    apiClient.post(`/conversations/${conversationId}/tasks`, data),
+
+  updateTask: (conversationId: string, taskId: string, data: any) =>
+    apiClient.put(`/conversations/${conversationId}/tasks/${taskId}`, data),
+
+  addTaskNote: (conversationId: string, taskId: string, data: any) =>
+    apiClient.post(`/conversations/${conversationId}/tasks/${taskId}/notes`, data),
+
+  deleteTask: (conversationId: string, taskId: string) =>
+    apiClient.delete(`/conversations/${conversationId}/tasks/${taskId}`),
+
+  shareDocument: (conversationId: string, messageId: string, data: any) =>
+    apiClient.post(`/conversations/${conversationId}/messages/${messageId}/share-email`, data),
+
+  getDocumentShares: (conversationId: string, messageId?: string) =>
+    apiClient.get(`/conversations/${conversationId}/document-shares`, { params: messageId ? { messageId } : undefined }),
+
+  previewAttachmentUrl: (conversationId: string, messageId: string) =>
+    `${API_BASE_URL}/conversations/${conversationId}/messages/${messageId}/attachment-preview`,
+
+  previewAttachment: (conversationId: string, messageId: string) =>
+    apiClient.get(`/conversations/${conversationId}/messages/${messageId}/attachment-preview`, { responseType: 'blob' }),
 
   uploadAttachment: (conversationId: string, data: FormData) =>
     apiClient.post(`/conversations/${conversationId}/messages/attachments`, data),

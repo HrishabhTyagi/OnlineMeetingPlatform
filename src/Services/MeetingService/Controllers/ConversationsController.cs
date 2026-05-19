@@ -35,6 +35,18 @@ public class ConversationsController : ControllerBase
         return Ok(conversations.Select(conversation => MapToDto(conversation, userId)).ToList());
     }
 
+    [HttpGet("search")]
+    public async Task<ActionResult<List<GlobalSearchResultDto>>> Search([FromQuery] string query)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var results = await _meetingService.SearchAsync(userId, query);
+        return Ok(results);
+    }
+
     [HttpPost]
     public async Task<ActionResult<ConversationDto>> CreateConversation([FromBody] CreateConversationRequest request)
     {
@@ -136,6 +148,119 @@ public class ConversationsController : ControllerBase
         catch (InvalidOperationException)
         {
             return NotFound("Conversation not found");
+        }
+    }
+
+    [HttpGet("{conversationId}/tasks")]
+    public async Task<ActionResult<List<ConversationTaskDto>>> GetTasks(
+        Guid conversationId,
+        [FromQuery] string? status,
+        [FromQuery] string? priority,
+        [FromQuery] Guid? assigneeId,
+        [FromQuery] DateTime? dueBefore,
+        [FromQuery] string? query)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            var tasks = await _meetingService.GetConversationTasksAsync(conversationId, userId, status, priority, assigneeId, dueBefore, query);
+            return Ok(tasks.Select(MapTaskToDto).ToList());
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound("Conversation not found");
+        }
+    }
+
+    [HttpPost("{conversationId}/tasks")]
+    public async Task<ActionResult<ConversationTaskDto>> CreateTask(Guid conversationId, [FromBody] CreateConversationTaskRequest request)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            var task = await _meetingService.CreateConversationTaskAsync(conversationId, userId, GetCurrentUserName(), request);
+            return Ok(MapTaskToDto(task));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("required", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("Assignee", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound("Conversation not found");
+        }
+    }
+
+    [HttpPut("{conversationId}/tasks/{taskId}")]
+    public async Task<ActionResult<ConversationTaskDto>> UpdateTask(Guid conversationId, Guid taskId, [FromBody] UpdateConversationTaskRequest request)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            var task = await _meetingService.UpdateConversationTaskAsync(conversationId, taskId, userId, GetCurrentUserName(), request);
+            return Ok(MapTaskToDto(task));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("required", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("Assignee", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound("Task not found");
+        }
+    }
+
+    [HttpPost("{conversationId}/tasks/{taskId}/notes")]
+    public async Task<ActionResult<ConversationTaskNoteDto>> AddTaskNote(Guid conversationId, Guid taskId, [FromBody] AddConversationTaskNoteRequest request)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            var note = await _meetingService.AddConversationTaskNoteAsync(conversationId, taskId, userId, GetCurrentUserName(), request);
+            return Ok(MapTaskNoteToDto(note));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("required", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound("Task not found");
+        }
+    }
+
+    [HttpDelete("{conversationId}/tasks/{taskId}")]
+    public async Task<IActionResult> DeleteTask(Guid conversationId, Guid taskId)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            await _meetingService.DeleteConversationTaskAsync(conversationId, taskId, userId, GetCurrentUserName());
+            return NoContent();
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound("Task not found");
         }
     }
 
@@ -358,6 +483,7 @@ public class ConversationsController : ControllerBase
                 SenderName = GetCurrentUserName(),
                 Message = request.Message ?? string.Empty,
                 ReplyToMessageId = request.ReplyToMessageId,
+                IsImportant = request.IsImportant,
                 AttachmentFileName = originalFileName,
                 AttachmentUrl = storedFile.PublicUrl,
                 AttachmentContentType = contentType,
@@ -374,6 +500,48 @@ public class ConversationsController : ControllerBase
         {
             _logger.LogError(ex, "Error sending conversation attachment");
             return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPost("{conversationId}/messages/{messageId}/share-email")]
+    public async Task<ActionResult<List<ConversationDocumentShareDto>>> ShareDocument(Guid conversationId, Guid messageId, [FromBody] ShareConversationDocumentRequest request)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            var shares = await _meetingService.ShareConversationDocumentAsync(conversationId, messageId, userId, GetCurrentUserName(), request);
+            return Ok(shares.Select(MapDocumentShareToDto).ToList());
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("email", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound("Document not found");
+        }
+    }
+
+    [HttpGet("{conversationId}/document-shares")]
+    public async Task<ActionResult<List<ConversationDocumentShareDto>>> GetDocumentShares(Guid conversationId, [FromQuery] Guid? messageId)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            var shares = await _meetingService.GetConversationDocumentSharesAsync(conversationId, userId, messageId);
+            return Ok(shares.Select(MapDocumentShareToDto).ToList());
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound("Conversation not found");
         }
     }
 
@@ -397,6 +565,37 @@ public class ConversationsController : ControllerBase
         }
 
         return PhysicalFile(filePath, "application/octet-stream", enableRangeProcessing: true);
+    }
+
+    [HttpGet("{conversationId}/messages/{messageId}/attachment-preview")]
+    public async Task<IActionResult> PreviewAttachment(Guid conversationId, Guid messageId)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        if (!await _meetingService.CanAccessConversationAsync(conversationId, userId))
+        {
+            return NotFound();
+        }
+
+        var message = (await _meetingService.GetConversationMessagesAsync(conversationId, userId))
+            .FirstOrDefault(item => item.Id == messageId);
+
+        if (message == null || string.IsNullOrWhiteSpace(message.AttachmentUrl))
+        {
+            return NotFound();
+        }
+
+        var fileName = Path.GetFileName(message.AttachmentUrl);
+        var filePath = await _storageService.GetPhysicalPathAsync(OrganizationFileKind.ChatAttachment, conversationId, fileName);
+        if (filePath == null)
+        {
+            return NotFound();
+        }
+
+        return PhysicalFile(filePath, message.AttachmentContentType ?? "application/octet-stream", enableRangeProcessing: true);
     }
 
     private bool TryGetCurrentUserId(out Guid userId)
@@ -481,6 +680,7 @@ public class ConversationsController : ControllerBase
             SentAt = message.SentAt,
             EditedAt = message.EditedAt,
             IsPinned = message.IsPinned,
+            IsImportant = message.IsImportant,
             Reactions = message.Reactions
                 .OrderBy(reaction => reaction.CreatedAt)
                 .Select(MapReactionToDto)
@@ -515,5 +715,92 @@ public class ConversationsController : ControllerBase
             SentAt = message.SentAt,
             Status = message.Status
         };
+    }
+
+    private static ConversationTaskDto MapTaskToDto(ConversationTask task)
+    {
+        return new ConversationTaskDto
+        {
+            Id = task.Id,
+            ConversationId = task.ConversationId,
+            SourceMessageId = task.SourceMessageId,
+            Title = task.Title,
+            Description = task.Description,
+            Priority = task.Priority.ToString(),
+            Status = task.Status.ToString(),
+            OwnerId = task.OwnerId,
+            OwnerName = task.OwnerName,
+            AssigneeId = task.AssigneeId,
+            AssigneeEmail = task.AssigneeEmail,
+            AssigneeName = task.AssigneeName,
+            DueDate = task.DueDate,
+            CreatedAt = task.CreatedAt,
+            UpdatedAt = task.UpdatedAt,
+            CompletedAt = task.CompletedAt,
+            SourceMessagePreview = task.SourceMessage == null ? null : BuildMessagePreview(task.SourceMessage),
+            Notes = task.Notes.OrderByDescending(note => note.CreatedAt).Select(MapTaskNoteToDto).ToList(),
+            Activities = task.Activities.OrderByDescending(activity => activity.CreatedAt).Select(MapTaskActivityToDto).ToList()
+        };
+    }
+
+    private static ConversationTaskNoteDto MapTaskNoteToDto(ConversationTaskNote note)
+    {
+        return new ConversationTaskNoteDto
+        {
+            Id = note.Id,
+            TaskId = note.TaskId,
+            AuthorId = note.AuthorId,
+            AuthorName = note.AuthorName,
+            Note = note.Note,
+            CreatedAt = note.CreatedAt
+        };
+    }
+
+    private static ConversationTaskActivityDto MapTaskActivityToDto(ConversationTaskActivity activity)
+    {
+        return new ConversationTaskActivityDto
+        {
+            Id = activity.Id,
+            TaskId = activity.TaskId,
+            ActorId = activity.ActorId,
+            ActorName = activity.ActorName,
+            Action = activity.Action,
+            Details = activity.Details,
+            CreatedAt = activity.CreatedAt
+        };
+    }
+
+    private static ConversationDocumentShareDto MapDocumentShareToDto(ConversationDocumentShare share)
+    {
+        return new ConversationDocumentShareDto
+        {
+            Id = share.Id,
+            ConversationId = share.ConversationId,
+            MessageId = share.MessageId,
+            SharedByUserId = share.SharedByUserId,
+            SharedByName = share.SharedByName,
+            RecipientEmails = SplitEmails(share.RecipientEmails),
+            OptionalMessage = share.OptionalMessage,
+            CreatedAt = share.CreatedAt
+        };
+    }
+
+    private static string BuildMessagePreview(ConversationMessage message)
+    {
+        var preview = string.IsNullOrWhiteSpace(message.Message)
+            ? message.AttachmentFileName ?? "Attachment"
+            : message.Message.Trim().Replace("\r", " ").Replace("\n", " ");
+
+        return preview.Length <= 160 ? preview : $"{preview[..157]}...";
+    }
+
+    private static List<string> SplitEmails(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return new List<string>();
+        }
+
+        return value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     }
 }

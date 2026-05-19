@@ -11,6 +11,7 @@ import Meet from './pages/Meet';
 import MeetingRoom from './pages/MeetingRoom';
 import Chat from './pages/Chat';
 import Teams from './pages/Teams';
+import License from './pages/License';
 import { useAuthStore } from './store/authStore';
 import IncomingCallRinger from './components/IncomingCallRinger';
 import ConversationMessageNotifier from './components/ConversationMessageNotifier';
@@ -174,6 +175,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Teams />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/license"
+              element={
+                <ProtectedRoute>
+                  <License />
                 </ProtectedRoute>
               }
             />

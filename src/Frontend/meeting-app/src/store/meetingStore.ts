@@ -21,6 +21,7 @@ export interface Meeting {
   recurrenceRule?: string;
   notes?: string;
   recap?: string;
+  whiteboardData?: string;
   status: string;
   meetingLink?: string;
   isRecorded: boolean;

@@ -22,6 +22,14 @@ public enum LobbyStatus
     Denied
 }
 
+public enum MeetingInviteResponseStatus
+{
+    Pending,
+    Accepted,
+    Declined,
+    Tentative
+}
+
 public enum ChatScope
 {
     Everyone,
@@ -52,6 +60,21 @@ public enum ExternalCalendarProvider
 {
     Google,
     Outlook
+}
+
+public enum ConversationTaskStatus
+{
+    Pending,
+    InProgress,
+    Completed
+}
+
+public enum ConversationTaskPriority
+{
+    Low,
+    Normal,
+    High,
+    Urgent
 }
 
 public class Meeting
@@ -141,6 +164,9 @@ public class MeetingInvite
     public ParticipantRole Role { get; set; } = ParticipantRole.Attendee;
     public bool IsRequired { get; set; } = true;
     public bool HasAccepted { get; set; } = false;
+    public MeetingInviteResponseStatus ResponseStatus { get; set; } = MeetingInviteResponseStatus.Pending;
+    public string? ResponseReason { get; set; }
+    public DateTime? RespondedAt { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public Meeting Meeting { get; set; } = null!;
@@ -185,6 +211,8 @@ public class Conversation
     public ICollection<ConversationMessage> Messages { get; set; } = new List<ConversationMessage>();
     public ICollection<ConversationInvite> Invites { get; set; } = new List<ConversationInvite>();
     public ICollection<ScheduledConversationMessage> ScheduledMessages { get; set; } = new List<ScheduledConversationMessage>();
+    public ICollection<ConversationTask> Tasks { get; set; } = new List<ConversationTask>();
+    public ICollection<ConversationDocumentShare> DocumentShares { get; set; } = new List<ConversationDocumentShare>();
 }
 
 public class ConversationMember
@@ -218,10 +246,12 @@ public class ConversationMessage
     public DateTime SentAt { get; set; } = DateTime.UtcNow;
     public DateTime? EditedAt { get; set; }
     public bool IsPinned { get; set; }
+    public bool IsImportant { get; set; }
     public bool IsDeleted { get; set; }
 
     public Conversation Conversation { get; set; } = null!;
     public ICollection<ConversationMessageReaction> Reactions { get; set; } = new List<ConversationMessageReaction>();
+    public ICollection<ConversationTask> Tasks { get; set; } = new List<ConversationTask>();
 }
 
 public class ConversationMessageReaction
@@ -234,6 +264,88 @@ public class ConversationMessageReaction
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public ConversationMessage Message { get; set; } = null!;
+}
+
+public class ConversationTask
+{
+    public Guid Id { get; set; }
+    public Guid ConversationId { get; set; }
+    public Guid? SourceMessageId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public ConversationTaskPriority Priority { get; set; } = ConversationTaskPriority.Normal;
+    public ConversationTaskStatus Status { get; set; } = ConversationTaskStatus.Pending;
+    public Guid OwnerId { get; set; }
+    public string OwnerName { get; set; } = string.Empty;
+    public Guid? AssigneeId { get; set; }
+    public string? AssigneeEmail { get; set; }
+    public string? AssigneeName { get; set; }
+    public DateTime? DueDate { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public bool IsDeleted { get; set; }
+
+    public Conversation Conversation { get; set; } = null!;
+    public ConversationMessage? SourceMessage { get; set; }
+    public ICollection<ConversationTaskNote> Notes { get; set; } = new List<ConversationTaskNote>();
+    public ICollection<ConversationTaskActivity> Activities { get; set; } = new List<ConversationTaskActivity>();
+}
+
+public class ConversationTaskNote
+{
+    public Guid Id { get; set; }
+    public Guid TaskId { get; set; }
+    public Guid AuthorId { get; set; }
+    public string AuthorName { get; set; } = string.Empty;
+    public string Note { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public ConversationTask Task { get; set; } = null!;
+}
+
+public class ConversationTaskActivity
+{
+    public Guid Id { get; set; }
+    public Guid TaskId { get; set; }
+    public Guid ActorId { get; set; }
+    public string ActorName { get; set; } = string.Empty;
+    public string Action { get; set; } = string.Empty;
+    public string? Details { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public ConversationTask Task { get; set; } = null!;
+}
+
+public class ConversationDocumentShare
+{
+    public Guid Id { get; set; }
+    public Guid ConversationId { get; set; }
+    public Guid MessageId { get; set; }
+    public Guid SharedByUserId { get; set; }
+    public string SharedByName { get; set; } = string.Empty;
+    public string RecipientEmails { get; set; } = string.Empty;
+    public string? OptionalMessage { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public Conversation Conversation { get; set; } = null!;
+    public ConversationMessage Message { get; set; } = null!;
+}
+
+public class PlatformAuditLog
+{
+    public Guid Id { get; set; }
+    public Guid? OrganizationId { get; set; }
+    public Guid? MeetingId { get; set; }
+    public Guid? ConversationId { get; set; }
+    public Guid ActorId { get; set; }
+    public string ActorName { get; set; } = string.Empty;
+    public string Action { get; set; } = string.Empty;
+    public string? Details { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public Meeting? Meeting { get; set; }
+    public Conversation? Conversation { get; set; }
 }
 
 public class ScheduledConversationMessage

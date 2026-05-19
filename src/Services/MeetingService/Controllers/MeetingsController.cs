@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using MeetingService.Data;
 using MeetingService.Models;
@@ -35,6 +36,10 @@ public class MeetingsController : ControllerBase
             var meeting = await _meetingService.CreateMeetingAsync(organizerId, request);
             return CreatedAtAction(nameof(GetMeetingById), new { id = meeting.Id }, MapToDto(meeting));
         }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error creating meeting");
@@ -66,8 +71,9 @@ public class MeetingsController : ControllerBase
     {
         try
         {
-            var organizerId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? Guid.Empty.ToString());
-            var meetings = await _meetingService.GetMeetingsByOrganizerAsync(organizerId);
+            var currentUserId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? Guid.Empty.ToString());
+            var currentUserEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+            var meetings = await _meetingService.GetMeetingsForUserAsync(currentUserId, currentUserEmail);
             return Ok(meetings.Select(MapToDto).ToList());
         }
         catch (Exception ex)
@@ -165,9 +171,38 @@ public class MeetingsController : ControllerBase
             var meeting = await _meetingService.UpdateMeetingAsync(id, request);
             return Ok(MapToDto(meeting));
         }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error updating meeting");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPost("{id}/end")]
+    public async Task<ActionResult<MeetingDto>> EndMeeting(Guid id)
+    {
+        try
+        {
+            var organizerId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? Guid.Empty.ToString());
+            var meeting = await _meetingService.EndMeetingAsync(id, organizerId);
+            await _meetingService.LogAuditAsync(organizerId, GetCurrentActorName(), "Meeting ended", meeting.Title, meetingId: id);
+            return Ok(MapToDto(meeting));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error ending meeting");
             return StatusCode(500, "An error occurred");
         }
     }
@@ -193,17 +228,7 @@ public class MeetingsController : ControllerBase
         try
         {
             var invites = await _meetingService.GetInvitesAsync(id);
-            return Ok(invites.Select(invite => new MeetingInviteDto
-            {
-                Id = invite.Id,
-                MeetingId = invite.MeetingId,
-                Email = invite.Email,
-                DisplayName = invite.DisplayName,
-                Role = invite.Role.ToString(),
-                IsRequired = invite.IsRequired,
-                HasAccepted = invite.HasAccepted,
-                CreatedAt = invite.CreatedAt
-            }).ToList());
+            return Ok(invites.Select(MapInviteToDto).ToList());
         }
         catch (Exception ex)
         {
@@ -223,17 +248,7 @@ public class MeetingsController : ControllerBase
             }
 
             var invites = await _meetingService.SendInvitesAsync(id, request.Emails);
-            return Ok(invites.Select(invite => new MeetingInviteDto
-            {
-                Id = invite.Id,
-                MeetingId = invite.MeetingId,
-                Email = invite.Email,
-                DisplayName = invite.DisplayName,
-                Role = invite.Role.ToString(),
-                IsRequired = invite.IsRequired,
-                HasAccepted = invite.HasAccepted,
-                CreatedAt = invite.CreatedAt
-            }).ToList());
+            return Ok(invites.Select(MapInviteToDto).ToList());
         }
         catch (InvalidOperationException ex)
         {
@@ -242,6 +257,41 @@ public class MeetingsController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error sending meeting invites");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPut("{id}/invites/{inviteId}/response")]
+    public async Task<ActionResult<MeetingInviteDto>> UpdateInviteResponse(Guid id, Guid inviteId, [FromBody] UpdateMeetingInviteResponseRequest request)
+    {
+        try
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            if (!Enum.TryParse<MeetingInviteResponseStatus>(request.Status, true, out var responseStatus))
+            {
+                return BadRequest("Response status must be Accepted, Declined, Tentative, or Pending");
+            }
+
+            var currentUserEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+            var invite = await _meetingService.UpdateInviteResponseAsync(id, inviteId, currentUserId, currentUserEmail, responseStatus, request.Reason);
+            return Ok(MapInviteToDto(invite));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating meeting invite response");
             return StatusCode(500, "An error occurred");
         }
     }
@@ -259,6 +309,87 @@ public class MeetingsController : ControllerBase
             _logger.LogError(ex, "Error updating meeting notes");
             return StatusCode(500, "An error occurred");
         }
+    }
+
+    [HttpPut("{id}/whiteboard")]
+    public async Task<ActionResult<MeetingDto>> UpdateWhiteboard(Guid id, [FromBody] UpdateWhiteboardRequest request)
+    {
+        try
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var firstName = User.FindFirst(ClaimTypes.GivenName)?.Value;
+            var lastName = User.FindFirst(ClaimTypes.Surname)?.Value;
+            var fullName = $"{firstName} {lastName}".Trim();
+            var actorName = string.IsNullOrWhiteSpace(fullName)
+                ? User.FindFirst(ClaimTypes.Email)?.Value ?? "User"
+                : fullName;
+
+            var meeting = await _meetingService.UpdateWhiteboardAsync(id, currentUserId, actorName, request.WhiteboardData);
+            return Ok(MapToDto(meeting));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating meeting whiteboard");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpGet("{id}/exports/chat")]
+    public async Task<IActionResult> ExportChat(Guid id)
+    {
+        var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+        {
+            return Unauthorized();
+        }
+
+        var meeting = await _meetingService.GetMeetingByIdAsync(id);
+        if (meeting == null)
+        {
+            return NotFound();
+        }
+
+        if (meeting.OrganizerId != currentUserId)
+        {
+            return Forbid();
+        }
+
+        var messages = await _meetingService.GetChatMessagesAsync(id);
+        var lines = messages.Select(message => $"[{message.SentAt:u}] {message.SenderName}: {message.Message}");
+        var content = string.Join(Environment.NewLine, lines);
+        return File(System.Text.Encoding.UTF8.GetBytes(content), "text/plain", $"{meeting.Title}-chat.txt");
+    }
+
+    [HttpGet("{id}/exports/whiteboard")]
+    public async Task<IActionResult> ExportWhiteboard(Guid id)
+    {
+        var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+        {
+            return Unauthorized();
+        }
+
+        var meeting = await _meetingService.GetMeetingByIdAsync(id);
+        if (meeting == null)
+        {
+            return NotFound();
+        }
+
+        if (meeting.OrganizerId != currentUserId)
+        {
+            return Forbid();
+        }
+
+        return File(System.Text.Encoding.UTF8.GetBytes(meeting.WhiteboardData ?? "[]"), "application/json", $"{meeting.Title}-whiteboard.json");
     }
 
     [HttpPost("{id}/recordings")]
@@ -305,6 +436,7 @@ public class MeetingsController : ControllerBase
             var fileName = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}.webm";
             var storedFile = await _storageService.SaveAsync(OrganizationFileKind.Recording, id, recording, fileName);
             var updatedMeeting = await _meetingService.UpdateRecordingAsync(id, storedFile.PublicUrl);
+            await _meetingService.LogAuditAsync(currentUserId, GetCurrentActorName(), "Recording stopped", storedFile.PublicUrl, meetingId: id);
             return Ok(MapToDto(updatedMeeting));
         }
         catch (Exception ex)
@@ -353,6 +485,7 @@ public class MeetingsController : ControllerBase
             RecurrenceRule = meeting.RecurrenceRule,
             Notes = meeting.Notes,
             Recap = meeting.Recap,
+            WhiteboardData = meeting.WhiteboardData,
             Status = meeting.Status.ToString(),
             MeetingLink = meeting.MeetingLink,
             IsRecorded = meeting.IsRecorded,
@@ -360,6 +493,24 @@ public class MeetingsController : ControllerBase
             MaxParticipants = meeting.MaxParticipants,
             CurrentParticipants = meeting.Participants.Count(p => p.LeftAt == null),
             CreatedAt = meeting.CreatedAt
+        };
+    }
+
+    private static MeetingInviteDto MapInviteToDto(MeetingInvite invite)
+    {
+        return new MeetingInviteDto
+        {
+            Id = invite.Id,
+            MeetingId = invite.MeetingId,
+            Email = invite.Email,
+            DisplayName = invite.DisplayName,
+            Role = invite.Role.ToString(),
+            IsRequired = invite.IsRequired,
+            HasAccepted = invite.HasAccepted,
+            ResponseStatus = invite.ResponseStatus.ToString(),
+            ResponseReason = invite.ResponseReason,
+            RespondedAt = invite.RespondedAt,
+            CreatedAt = invite.CreatedAt
         };
     }
 
@@ -388,5 +539,15 @@ public class MeetingsController : ControllerBase
         }
 
         return left.Value >= right.Value ? left : right;
+    }
+
+    private string GetCurrentActorName()
+    {
+        var firstName = User.FindFirst(ClaimTypes.GivenName)?.Value;
+        var lastName = User.FindFirst(ClaimTypes.Surname)?.Value;
+        var fullName = $"{firstName} {lastName}".Trim();
+        return string.IsNullOrWhiteSpace(fullName)
+            ? User.FindFirst(ClaimTypes.Email)?.Value ?? "User"
+            : fullName;
     }
 }
