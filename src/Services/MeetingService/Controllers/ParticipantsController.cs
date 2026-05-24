@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MeetingService.Models;
 using MeetingService.Services;
+using Samvaad.Common.Caching;
 
 namespace MeetingService.Controllers;
 
@@ -11,12 +12,16 @@ namespace MeetingService.Controllers;
 [Authorize]
 public class ParticipantsController : ControllerBase
 {
+    private static readonly TimeSpan ParticipantListTtl = TimeSpan.FromSeconds(10);
+
     private readonly IMeetingService _meetingService;
+    private readonly IAppCache _cache;
     private readonly ILogger<ParticipantsController> _logger;
 
-    public ParticipantsController(IMeetingService meetingService, ILogger<ParticipantsController> logger)
+    public ParticipantsController(IMeetingService meetingService, IAppCache cache, ILogger<ParticipantsController> logger)
     {
         _meetingService = meetingService;
+        _cache = cache;
         _logger = logger;
     }
 
@@ -32,6 +37,7 @@ public class ParticipantsController : ControllerBase
                 Guid.TryParse(userIdClaim, out userId);
 
             var participant = await _meetingService.JoinMeetingAsync(meetingId, userId, request);
+            await BumpMeetingCacheAsync();
             return Ok(MapToDto(participant));
         }
         catch (InvalidOperationException ex)
@@ -54,6 +60,7 @@ public class ParticipantsController : ControllerBase
             if (!success)
                 return NotFound();
 
+            await BumpMeetingCacheAsync();
             return NoContent();
         }
         catch (Exception ex)
@@ -69,8 +76,15 @@ public class ParticipantsController : ControllerBase
     {
         try
         {
-            var participants = await _meetingService.GetMeetingParticipantsAsync(meetingId);
-            return Ok(participants.Select(MapToDto).ToList());
+            var version = await GetMeetingCacheVersionAsync();
+            var participants = await _cache.GetOrCreateAsync(
+                $"meetings:{TenantCacheKey()}:participants:{meetingId:N}:v{version}",
+                async _ => (await _meetingService.GetMeetingParticipantsAsync(meetingId))
+                    .Select(MapToDto)
+                    .ToList(),
+                ParticipantListTtl);
+
+            return Ok(participants);
         }
         catch (Exception ex)
         {
@@ -88,6 +102,7 @@ public class ParticipantsController : ControllerBase
             if (!success)
                 return NotFound();
 
+            await BumpMeetingCacheAsync();
             return NoContent();
         }
         catch (Exception ex)
@@ -111,6 +126,7 @@ public class ParticipantsController : ControllerBase
             if (!success)
                 return NotFound();
 
+            await BumpMeetingCacheAsync();
             return NoContent();
         }
         catch (Exception ex)
@@ -129,6 +145,7 @@ public class ParticipantsController : ControllerBase
             if (participant == null)
                 return NotFound();
 
+            await BumpMeetingCacheAsync();
             return Ok(MapToDto(participant));
         }
         catch (Exception ex)
@@ -147,6 +164,7 @@ public class ParticipantsController : ControllerBase
             if (participant == null)
                 return NotFound();
 
+            await BumpMeetingCacheAsync();
             return Ok(MapToDto(participant));
         }
         catch (Exception ex)
@@ -174,6 +192,32 @@ public class ParticipantsController : ControllerBase
             IsVideoEnabled = participant.IsVideoEnabled,
             IsScreenSharing = participant.IsScreenSharing
         };
+    }
+
+    private async Task<long> GetMeetingCacheVersionAsync()
+    {
+        return await _cache.GetOrCreateAsync(MeetingVersionKey(), _ => Task.FromResult(1L), TimeSpan.FromDays(30));
+    }
+
+    private Task BumpMeetingCacheAsync()
+    {
+        return _cache.IncrementAsync(MeetingVersionKey(), TimeSpan.FromDays(30));
+    }
+
+    private string MeetingVersionKey()
+    {
+        return $"meetings:{TenantCacheKey()}:version";
+    }
+
+    private string TenantCacheKey()
+    {
+        var organizationId = Request.Headers["X-Organization-Id"].FirstOrDefault();
+        if (Guid.TryParse(organizationId, out var parsedOrganizationId))
+        {
+            return CacheKey.Tenant(parsedOrganizationId);
+        }
+
+        return CacheKey.Tenant(null, Request.Headers["X-Organization-Slug"].FirstOrDefault());
     }
 }
 

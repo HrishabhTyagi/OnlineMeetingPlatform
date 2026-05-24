@@ -14,6 +14,13 @@ public class User
     public string? ProfilePictureUrl { get; set; }
     public string? PhoneNumber { get; set; }
     public string Status { get; set; } = UserPresenceStatuses.Available;
+    public bool MfaEnabled { get; set; }
+    public string? MfaSecretProtected { get; set; }
+    public string? MfaRecoveryCodeHashes { get; set; }
+    public DateTime? MfaEnabledAt { get; set; }
+    public DateTime? MfaLastVerifiedAt { get; set; }
+    public string? MfaRememberDeviceTokenHash { get; set; }
+    public DateTime? MfaRememberDeviceExpiresAt { get; set; }
 }
 
 public static class UserPresenceStatuses

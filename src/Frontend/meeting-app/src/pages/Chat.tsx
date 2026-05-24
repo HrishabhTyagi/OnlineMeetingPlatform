@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent 
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import AppShell from '../components/AppShell';
 import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus } from '../components/UserStatus';
-import { conversationAPI, getMeetingJoinUrl, meetingAPI, openMeetingJoinInNewTab, resolveApiAssetUrl, userAPI } from '../services/api';
+import { conversationAPI, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openMeetingJoinInNewTab, openUrlInNewTab, resolveApiAssetUrl, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinConversation,
@@ -12,11 +12,8 @@ import {
   onConversationMessageReceived,
   onConversationMessageReactionUpdated,
   onConversationMessageUpdated,
+  onIncomingCallResponse,
   onUserStatusChanged,
-  sendConversationMessage,
-  sendConversationMessageReactionUpdated,
-  sendConversationMessageUpdated,
-  sendIncomingCall,
   startSignalR,
 } from '../services/signalR';
 import { useAuthStore } from '../store/authStore';
@@ -151,6 +148,28 @@ interface Conversation {
   updatedAt?: string;
 }
 
+interface MeetingCallLog {
+  id: string;
+  meetingId: string;
+  meetingTitle?: string;
+  meetingStartTime?: string;
+  meetingEndTime?: string;
+  conversationId?: string;
+  callerUserId: string;
+  callerName: string;
+  recipientUserId: string;
+  recipientEmail: string;
+  recipientName: string;
+  callType: 'audio' | 'video';
+  joinUrl?: string;
+  status: 'Ringing' | 'Accepted' | 'Declined' | 'Cancelled' | 'NoResponse' | 'Failed';
+  statusReason?: string;
+  cancellationMessage?: string;
+  isSeen: boolean;
+  createdAt: string;
+  statusChangedAt?: string;
+}
+
 interface QueuedChatMessage {
   clientMessageId: string;
   conversationId: string;
@@ -206,6 +225,32 @@ function formatScheduledDate(value?: string) {
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(value));
+}
+
+function getCallStatusLabel(call: MeetingCallLog, currentUserId?: string) {
+  const incoming = call.recipientUserId === currentUserId;
+  if (call.status === 'NoResponse') {
+    return incoming ? 'Missed' : 'No response';
+  }
+
+  return call.status;
+}
+
+function getCallStatusClass(call: MeetingCallLog, currentUserId?: string) {
+  const incoming = call.recipientUserId === currentUserId;
+  if (call.status === 'Accepted') {
+    return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+  }
+
+  if (call.status === 'Cancelled') {
+    return 'bg-slate-100 text-slate-700 ring-slate-200';
+  }
+
+  if (call.status === 'Declined' || call.status === 'Failed' || (call.status === 'NoResponse' && incoming)) {
+    return 'bg-rose-50 text-rose-700 ring-rose-100';
+  }
+
+  return 'bg-amber-50 text-amber-700 ring-amber-100';
 }
 
 function formatTaskStatus(value?: string) {
@@ -717,8 +762,11 @@ export default function Chat() {
   const [quickGroupStatus, setQuickGroupStatus] = useState('');
   const [creatingQuickGroup, setCreatingQuickGroup] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
-  const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'photos' | 'tasks'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'photos' | 'tasks' | 'calls'>('chat');
   const [startingCall, setStartingCall] = useState<'audio' | 'video' | null>(null);
+  const [callHistory, setCallHistory] = useState<MeetingCallLog[]>([]);
+  const [callHistoryLoading, setCallHistoryLoading] = useState(false);
+  const [callHistoryError, setCallHistoryError] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const [editImportant, setEditImportant] = useState(false);
@@ -861,6 +909,7 @@ export default function Chat() {
   ), 0);
   const selectedFiles = messages.filter((message) => message.attachmentUrl);
   const selectedPhotos = selectedFiles.filter(isImageAttachment);
+  const unseenCallCount = callHistory.filter((call) => !call.isSeen).length;
   const queuedMessageCount = queuedMessages.length;
   const filteredTasks = useMemo(() => {
     const query = taskQuery.trim().toLowerCase();
@@ -958,6 +1007,27 @@ export default function Chat() {
       || 'Direct chat';
   }, [selectedConversation, user]);
 
+  const loadConversationCallHistory = useCallback(async () => {
+    if (!selectedConversationId) {
+      setCallHistory([]);
+      setCallHistoryError('');
+      return;
+    }
+
+    setCallHistoryLoading(true);
+    setCallHistoryError('');
+    try {
+      const response = await meetingAPI.getRecentCallLogs('All');
+      setCallHistory((response.data as MeetingCallLog[])
+        .filter((call) => call.conversationId === selectedConversationId));
+    } catch {
+      setCallHistory([]);
+      setCallHistoryError('Unable to load call history');
+    } finally {
+      setCallHistoryLoading(false);
+    }
+  }, [selectedConversationId]);
+
   useEffect(() => {
     if (!user) {
       navigate('/login');
@@ -988,6 +1058,10 @@ export default function Chat() {
 
     load();
   }, [navigate, user?.id, setUser]);
+
+  useEffect(() => {
+    loadConversationCallHistory();
+  }, [loadConversationCallHistory]);
 
   useEffect(() => {
     if (!requestedConversationId || selectedConversationId === requestedConversationId) {
@@ -1162,6 +1236,12 @@ export default function Chat() {
 
           updateMessageReactions(messageId, reactions.map(normalizeReaction));
         });
+        onIncomingCallResponse((data) => {
+          const conversationId = data.conversationId || data.ConversationId;
+          if (!conversationId || conversationId === selectedConversationId) {
+            loadConversationCallHistory().catch(() => undefined);
+          }
+        });
       })
       .catch((err) => console.warn('Chat SignalR connection failed', err));
 
@@ -1171,7 +1251,7 @@ export default function Chat() {
       unsubscribeConversationUpdate();
       unsubscribeConversationReactionUpdate();
     };
-  }, [selectedConversationId, token, user, setUser]);
+  }, [loadConversationCallHistory, selectedConversationId, token, user, setUser]);
 
   const handleStatusChange = async (status: UserStatus) => {
     if (!user) {
@@ -1486,65 +1566,16 @@ export default function Chat() {
     }));
   };
 
-  const notifyConversationMessage = useCallback(async (message: ConversationMessage, sourceConversation = selectedConversation) => {
-    if (!user || !sourceConversation) {
-      return;
-    }
+  const notifyConversationMessage = useCallback(async (_message: ConversationMessage, _sourceConversation = selectedConversation) => {
+    await Promise.resolve();
+  }, [selectedConversation]);
 
-    await sendConversationMessage(
-      sourceConversation.id,
-      message.id,
-      user.id,
-      displayName,
-      message.message,
-      sourceConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
-      message.attachmentUrl
-        ? {
-            attachmentFileName: message.attachmentFileName,
-            attachmentUrl: message.attachmentUrl,
-            attachmentContentType: message.attachmentContentType,
-            attachmentSizeBytes: message.attachmentSizeBytes,
-          }
-        : undefined,
-      message.replyToMessageId
-        ? {
-            replyToMessageId: message.replyToMessageId,
-            replyToSenderName: message.replyToSenderName,
-            replyToPreview: message.replyToPreview,
-          }
-        : undefined,
-      Boolean(message.isImportant),
-    );
-  }, [displayName, selectedConversation, user]);
-
-  const notifyConversationMessageEdited = async (message: ConversationMessage) => {
-    if (!user || !selectedConversation || !message.editedAt) {
-      return;
-    }
-
-    await sendConversationMessageUpdated(
-      selectedConversation.id,
-      message.id,
-      user.id,
-      displayName,
-      message.message,
-      message.editedAt,
-      selectedConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
-      Boolean(message.isImportant),
-    );
+  const notifyConversationMessageEdited = async (_message: ConversationMessage) => {
+    await Promise.resolve();
   };
 
-  const notifyConversationReactionUpdated = async (messageId: string, reactions: ConversationMessageReaction[]) => {
-    if (!user || !selectedConversation) {
-      return;
-    }
-
-    await sendConversationMessageReactionUpdated(
-      selectedConversation.id,
-      messageId,
-      reactions,
-      selectedConversation.members.filter((member) => member.userId !== user.id).map((member) => member.userId),
-    );
+  const notifyConversationReactionUpdated = async (_messageId: string, _reactions: ConversationMessageReaction[]) => {
+    await Promise.resolve();
   };
 
   const appendQueuedMessage = (queuedMessage: QueuedChatMessage) => {
@@ -2093,9 +2124,8 @@ export default function Chat() {
       return;
     }
 
-    const callRecipientUserIds = selectedConversation.members
-      .filter((member) => member.userId !== user.id)
-      .map((member) => member.userId);
+    const callRecipients = selectedConversation.members
+      .filter((member) => member.userId !== user.id);
 
     const attendeeEmails = Array.from(new Set([
       ...selectedConversation.members
@@ -2151,21 +2181,70 @@ export default function Chat() {
       });
       appendSentMessage(messageResponse.data);
       await notifyConversationMessage(messageResponse.data);
-      await sendIncomingCall(
-        selectedConversation.id,
-        meetingId,
-        user.id,
-        displayName,
-        mode,
-        callUrl,
-        callRecipientUserIds,
-      ).catch(() => undefined);
+      for (const recipient of callRecipients) {
+        let callLogId = '';
+        try {
+          const callLogResponse = await meetingAPI.createCallLog(meetingId, {
+            conversationId: selectedConversation.id,
+            recipientUserId: recipient.userId,
+            recipientEmail: recipient.userEmail,
+            recipientName: recipient.userName,
+            callType: mode,
+            joinUrl: callUrl,
+          });
+          callLogId = callLogResponse.data.id;
+          window.setTimeout(() => {
+            meetingAPI.updateCallLog(meetingId, callLogId, {
+              status: 'NoResponse',
+              reason: 'No response',
+            })
+              .then((updatedCall) => {
+                setCallHistory((items) => items.map((item) => (
+                  item.id === callLogId ? { ...item, ...updatedCall.data } : item
+                )));
+              })
+              .catch(() => undefined);
+          }, 45_000);
+        } catch (callError: any) {
+          if (callLogId) {
+            const callErrorText = callError?.response?.data?.message
+              || (typeof callError?.response?.data === 'string' ? callError.response.data : '')
+              || callError?.message
+              || 'Unable to ring user';
+            await meetingAPI.updateCallLog(meetingId, callLogId, {
+              status: 'Failed',
+              reason: callErrorText,
+            }).catch(() => undefined);
+          }
+        }
+      }
+      loadConversationCallHistory().catch(() => undefined);
       openMeetingJoinInNewTab(meetingId, response.data.meetingLink, `call=${mode}&autojoin=1`);
     } catch (err: any) {
       setError(err.response?.data?.message || err.response?.data || `Unable to start ${callLabel}`);
     } finally {
       setStartingCall(null);
     }
+  };
+
+  const markCallSeen = async (call: MeetingCallLog) => {
+    setCallHistory((items) => items.map((item) => (
+      item.id === call.id ? { ...item, isSeen: true } : item
+    )));
+    await meetingAPI.markCallSeen(call.id).catch(() => undefined);
+  };
+
+  const clearCallFromChat = async (call: MeetingCallLog) => {
+    setCallHistory((items) => items.filter((item) => item.id !== call.id));
+    await meetingAPI.hideCallLog(call.id).catch(() => {
+      setCallHistory((items) => [call, ...items].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+      setCallHistoryError('Unable to clear call');
+    });
+  };
+
+  const callBackFromHistory = async (call: MeetingCallLog) => {
+    await markCallSeen(call);
+    openUrlInNewTab(call.joinUrl || getMeetingJoinUrl(call.meetingId, undefined, `call=${call.callType || 'video'}&autojoin=1`));
   };
 
   const addPendingFiles = (files: FileList | File[]) => {
@@ -2581,6 +2660,7 @@ export default function Chat() {
                       ['files', `Files${selectedFiles.length ? ` (${selectedFiles.length})` : ''}`],
                       ['photos', `Photos${selectedPhotos.length ? ` (${selectedPhotos.length})` : ''}`],
                       ['tasks', `Tasks${tasks.length ? ` (${tasks.length})` : ''}`],
+                      ['calls', `Calls${callHistory.length ? ` (${callHistory.length})` : ''}${unseenCallCount ? ` - ${unseenCallCount}` : ''}`],
                     ] as const).map(([tab, label]) => (
                       <button
                         key={tab}
@@ -2821,6 +2901,18 @@ export default function Chat() {
                       <TaskIcon className="h-4 w-4 text-slate-500" />
                       View tasks
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('calls');
+                        setHeaderMenuOpen(false);
+                      }}
+                      disabled={!selectedConversation}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <PhoneCallIcon className="h-4 w-4 text-slate-500" />
+                      View calls
+                    </button>
                   </div>
                 )}
               </div>
@@ -2876,6 +2968,116 @@ export default function Chat() {
                     <span className="block truncate px-3 py-2 text-xs text-slate-600">{message.attachmentFileName || 'Photo'}</span>
                   </button>
                 ))}
+              </div>
+            ) : activeTab === 'calls' ? (
+              <div className="mx-auto max-w-4xl space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-900">Calls in this chat</h3>
+                    <p className="text-sm text-slate-500">{unseenCallCount} unseen call{unseenCallCount === 1 ? '' : 's'}</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={loadConversationCallHistory}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Refresh
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => navigate(getOrganizationScopedPath('/calls'))}
+                      className="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-700"
+                    >
+                      All calls
+                    </button>
+                  </div>
+                </div>
+
+                {callHistoryError && (
+                  <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                    {callHistoryError}
+                  </div>
+                )}
+
+                {callHistoryLoading ? (
+                  <div className="rounded-md border border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
+                    Loading call history...
+                  </div>
+                ) : callHistory.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+                    No calls have been made in this chat yet.
+                  </div>
+                ) : callHistory.map((call) => {
+                  const incoming = call.recipientUserId === user?.id;
+                  const otherName = incoming ? call.callerName : call.recipientName;
+                  const canCallBack = call.status === 'Accepted' || call.status === 'Declined' || call.status === 'NoResponse';
+
+                  return (
+                    <article key={call.id} className={`rounded-md border bg-white p-4 shadow-sm ${call.isSeen ? 'border-slate-200' : 'border-teal-200 ring-2 ring-teal-50'}`}>
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`inline-flex h-9 w-9 items-center justify-center rounded-full ${incoming ? 'bg-indigo-100 text-indigo-700' : 'bg-teal-100 text-teal-700'}`}>
+                              {call.callType === 'video' ? <VideoCallIcon className="h-5 w-5" /> : <PhoneCallIcon className="h-5 w-5" />}
+                            </span>
+                            <div className="min-w-0">
+                              <h4 className="truncate text-sm font-semibold text-slate-950">{otherName}</h4>
+                              <p className="text-xs text-slate-500">
+                                {incoming ? 'Incoming' : 'Outgoing'} {call.callType} call - {formatScheduledDate(call.createdAt)}
+                              </p>
+                            </div>
+                            <span className={`rounded-full px-2 py-1 text-xs font-semibold ring-1 ${getCallStatusClass(call, user?.id)}`}>
+                              {getCallStatusLabel(call, user?.id)}
+                            </span>
+                            {!call.isSeen && <span className="rounded-full bg-teal-600 px-2 py-1 text-xs font-semibold text-white">New</span>}
+                          </div>
+                          <p className="mt-3 truncate text-sm text-slate-600">
+                            {call.meetingTitle || selectedTitle}{call.meetingStartTime ? ` - ${formatScheduledDate(call.meetingStartTime)}` : ''}
+                          </p>
+                          {call.cancellationMessage && (
+                            <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">{call.cancellationMessage}</p>
+                          )}
+                        </div>
+
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          {!call.isSeen && (
+                            <button
+                              type="button"
+                              onClick={() => markCallSeen(call)}
+                              className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                            >
+                              Mark seen
+                            </button>
+                          )}
+                          {canCallBack && (
+                            <button
+                              type="button"
+                              onClick={() => callBackFromHistory(call)}
+                              className="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-700"
+                            >
+                              Call back
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => openUrlInNewTab(call.joinUrl || getMeetingJoinUrl(call.meetingId))}
+                            className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            Open
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => clearCallFromChat(call)}
+                            className="rounded-md border border-rose-200 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             ) : activeTab === 'tasks' ? (
               <div className="mx-auto grid max-w-6xl gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">

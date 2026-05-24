@@ -8,6 +8,7 @@ export interface User {
   profilePictureUrl?: string;
   phoneNumber?: string;
   status?: string;
+  mfaEnabled?: boolean;
   isEmailVerified: boolean;
   createdAt: string;
 }
@@ -38,11 +39,21 @@ const ACCOUNTS_KEY = 'authAccounts';
 
 function readJson<T>(key: string, fallback: T): T {
   try {
-    const value = localStorage.getItem(key);
+    const value = sessionStorage.getItem(key) || localStorage.getItem(key);
     return value ? JSON.parse(value) as T : fallback;
   } catch {
     return fallback;
   }
+}
+
+function getStoredValue(key: string) {
+  return sessionStorage.getItem(key) || localStorage.getItem(key);
+}
+
+function clearLegacyPersistentAuth() {
+  localStorage.removeItem(ACTIVE_TOKEN_KEY);
+  localStorage.removeItem(ACTIVE_USER_KEY);
+  localStorage.removeItem(ACCOUNTS_KEY);
 }
 
 function dedupeAccounts(accounts: AuthAccount[]) {
@@ -62,23 +73,26 @@ function dedupeAccounts(accounts: AuthAccount[]) {
 function persistActiveAccount(account: AuthAccount | null) {
   if (!account) {
     sessionStorage.removeItem(ACTIVE_ACCOUNT_ID_KEY);
-    localStorage.removeItem(ACTIVE_TOKEN_KEY);
-    localStorage.removeItem(ACTIVE_USER_KEY);
+    sessionStorage.removeItem(ACTIVE_TOKEN_KEY);
+    sessionStorage.removeItem(ACTIVE_USER_KEY);
+    clearLegacyPersistentAuth();
     return;
   }
 
   sessionStorage.setItem(ACTIVE_ACCOUNT_ID_KEY, account.user.id);
-  localStorage.setItem(ACTIVE_TOKEN_KEY, account.token);
-  localStorage.setItem(ACTIVE_USER_KEY, JSON.stringify(account.user));
+  sessionStorage.setItem(ACTIVE_TOKEN_KEY, account.token);
+  sessionStorage.setItem(ACTIVE_USER_KEY, JSON.stringify(account.user));
+  clearLegacyPersistentAuth();
 }
 
 function persistAccounts(accounts: AuthAccount[]) {
-  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+  sessionStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+  localStorage.removeItem(ACCOUNTS_KEY);
 }
 
 const storedAccounts = readJson<AuthAccount[]>(ACCOUNTS_KEY, []);
 const storedUser = readJson<User | null>(ACTIVE_USER_KEY, null);
-const storedToken = localStorage.getItem(ACTIVE_TOKEN_KEY);
+const storedToken = getStoredValue(ACTIVE_TOKEN_KEY);
 const sessionAccountId = sessionStorage.getItem(ACTIVE_ACCOUNT_ID_KEY);
 const initialAccounts = dedupeAccounts([
   ...storedAccounts,

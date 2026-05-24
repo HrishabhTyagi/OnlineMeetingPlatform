@@ -322,6 +322,7 @@ export const sendIncomingCall = async (
   callType: 'audio' | 'video',
   joinUrl: string,
   recipientUserIds: string[],
+  callLogId?: string,
 ) => {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     await connection.invoke(
@@ -333,6 +334,7 @@ export const sendIncomingCall = async (
       callType,
       joinUrl,
       recipientUserIds,
+      callLogId || null,
     );
   }
 };
@@ -344,6 +346,7 @@ export const sendIncomingCallCancelled = async (
   callerName: string,
   recipientUserId: string,
   message: string,
+  reason = 'Cancelled',
 ) => {
   if (connection && connection.state === signalR.HubConnectionState.Connected) {
     await connection.invoke(
@@ -354,11 +357,37 @@ export const sendIncomingCallCancelled = async (
       callerName,
       recipientUserId,
       message,
+      reason,
     );
     return true;
   }
 
   return false;
+};
+
+export const sendIncomingCallResponse = async (
+  conversationId: string,
+  meetingId: string,
+  callLogId: string | null | undefined,
+  callerUserId: string,
+  recipientUserId: string,
+  recipientName: string,
+  status: 'Accepted' | 'Declined' | 'NoResponse',
+  reason?: string,
+) => {
+  if (connection && connection.state === signalR.HubConnectionState.Connected) {
+    await connection.invoke(
+      'SendIncomingCallResponse',
+      conversationId,
+      meetingId,
+      callLogId || null,
+      callerUserId,
+      recipientUserId,
+      recipientName,
+      status,
+      reason || null,
+    );
+  }
 };
 
 export const sendConversationMessageUpdated = async (
@@ -531,6 +560,13 @@ export const onIncomingCallCancelled = (callback: (data: any) => void) => {
   if (connection) {
     connection.off('IncomingCallCancelled');
     connection.on('IncomingCallCancelled', callback);
+  }
+};
+
+export const onIncomingCallResponse = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.off('IncomingCallResponse');
+    connection.on('IncomingCallResponse', callback);
   }
 };
 

@@ -6,12 +6,14 @@ import {
   joinUserNotifications,
   onIncomingCall,
   onIncomingCallCancelled,
+  sendIncomingCallResponse,
   startSignalR,
 } from '../services/signalR';
-import { getMeetingJoinUrl, getOrganizationScopedPath, openUrlInNewTab } from '../services/api';
+import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openUrlInNewTab } from '../services/api';
 import { readStoredMissedCalls, writeStoredMissedCalls, type StoredMissedCall } from '../services/activityFeed';
 
 interface IncomingCall {
+  callLogId?: string;
   conversationId: string;
   meetingId: string;
   callerUserId: string;
@@ -28,6 +30,7 @@ interface CancelledCallNotice {
   callerUserId: string;
   callerName: string;
   message: string;
+  reason: string;
   timestamp: string;
 }
 
@@ -37,6 +40,7 @@ const MAX_MISSED_CALLS = 5;
 
 function normalizeIncomingCall(data: any): IncomingCall {
   return {
+    callLogId: data.callLogId || data.CallLogId || undefined,
     conversationId: data.conversationId || data.ConversationId || '',
     meetingId: data.meetingId || data.MeetingId || '',
     callerUserId: data.callerUserId || data.CallerUserId || '',
@@ -59,6 +63,7 @@ function normalizeCancelledCall(data: any): CancelledCallNotice {
     callerUserId,
     callerName: data.callerName || data.CallerName || 'Someone',
     message: data.message || data.Message || 'Sorry, I called you by mistake.',
+    reason: data.reason || data.Reason || 'Cancelled',
     timestamp,
   };
 }
@@ -98,6 +103,7 @@ export default function IncomingCallRinger() {
   const [missedCalls, setMissedCalls] = useState<StoredMissedCall[]>([]);
   const [cancelledNotices, setCancelledNotices] = useState<CancelledCallNotice[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const incomingCallRef = useRef<IncomingCall | null>(null);
 
   const persistMissedCalls = useCallback((nextCalls: StoredMissedCall[]) => {
     if (user?.id) {
@@ -129,9 +135,42 @@ export default function IncomingCallRinger() {
     });
   }, [persistMissedCalls]);
 
+  const respondToIncomingCall = useCallback(async (
+    call: IncomingCall,
+    status: 'Accepted' | 'Declined' | 'NoResponse',
+    reason?: string,
+  ) => {
+    if (!user) {
+      return;
+    }
+
+    if (call.callLogId) {
+      await meetingAPI.updateCallLog(call.meetingId, call.callLogId, {
+        status,
+        reason,
+      }).catch(() => undefined);
+    }
+
+    const displayName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
+    await sendIncomingCallResponse(
+      call.conversationId,
+      call.meetingId,
+      call.callLogId || '',
+      call.callerUserId,
+      user.id,
+      displayName,
+      status,
+      reason || status,
+    ).catch(() => undefined);
+  }, [user]);
+
   useEffect(() => {
     setMissedCalls(user?.id ? readStoredMissedCalls(user.id) : []);
   }, [user?.id]);
+
+  useEffect(() => {
+    incomingCallRef.current = incomingCall;
+  }, [incomingCall]);
 
   useEffect(() => {
     if (!token || !user) {
@@ -153,6 +192,30 @@ export default function IncomingCallRinger() {
         onIncomingCallCancelled((data) => {
           const notice = normalizeCancelledCall(data);
           if (!notice.meetingId || notice.callerUserId === user.id) {
+            return;
+          }
+
+          if (notice.reason === 'NoResponse') {
+            const currentCall = incomingCallRef.current;
+            if (
+              currentCall
+              && currentCall.meetingId === notice.meetingId
+              && currentCall.callerUserId === notice.callerUserId
+            ) {
+              addMissedCall(currentCall);
+            }
+
+            setIncomingCall((current) => {
+              if (
+                current
+                && current.meetingId === notice.meetingId
+                && current.callerUserId === notice.callerUserId
+              ) {
+                return null;
+              }
+
+              return current;
+            });
             return;
           }
 
@@ -178,7 +241,7 @@ export default function IncomingCallRinger() {
         });
       })
       .catch((error) => console.warn('Incoming call connection failed', error));
-  }, [persistMissedCalls, token, user]);
+  }, [addMissedCall, persistMissedCalls, token, user]);
 
   useEffect(() => {
     if (!incomingCall) {
@@ -186,6 +249,7 @@ export default function IncomingCallRinger() {
     }
 
     const missedTimer = window.setTimeout(() => {
+      respondToIncomingCall(incomingCall, 'NoResponse', 'No response').catch(() => undefined);
       addMissedCall(incomingCall);
       setIncomingCall(null);
     }, RING_TIMEOUT_MS);
@@ -227,7 +291,7 @@ export default function IncomingCallRinger() {
       window.clearTimeout(missedTimer);
       window.clearInterval(interval);
     };
-  }, [addMissedCall, incomingCall]);
+  }, [addMissedCall, incomingCall, respondToIncomingCall]);
 
   if (!incomingCall && missedCalls.length === 0 && cancelledNotices.length === 0) {
     return null;
@@ -251,7 +315,11 @@ export default function IncomingCallRinger() {
           <div className="mt-4 flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => setIncomingCall(null)}
+              onClick={() => {
+                const call = incomingCall;
+                setIncomingCall(null);
+                respondToIncomingCall(call, 'Declined', 'Declined').catch(() => undefined);
+              }}
               className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
             >
               Decline
@@ -261,6 +329,7 @@ export default function IncomingCallRinger() {
               onClick={() => {
                 const call = incomingCall;
                 setIncomingCall(null);
+                respondToIncomingCall(call, 'Accepted', 'Accepted').catch(() => undefined);
                 openUrlInNewTab(resolveJoinUrl(call.joinUrl, call.meetingId, call.callType));
               }}
               className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"

@@ -12,6 +12,7 @@ public class LoginRequest
 {
     public string Email { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
+    public string? RememberDeviceToken { get; set; }
 }
 
 public class LoginResponse
@@ -24,6 +25,10 @@ public class LoginResponse
     public string Status { get; set; } = UserPresenceStatuses.Available;
     public string Token { get; set; } = string.Empty;
     public DateTime ExpiresAt { get; set; }
+    public bool RequiresMfa { get; set; }
+    public string? MfaToken { get; set; }
+    public bool MfaEnabled { get; set; }
+    public string? RememberDeviceToken { get; set; }
 }
 
 public class UserProfileDto
@@ -37,7 +42,51 @@ public class UserProfileDto
     public string? PhoneNumber { get; set; }
     public string Status { get; set; } = UserPresenceStatuses.Available;
     public bool IsEmailVerified { get; set; }
+    public bool MfaEnabled { get; set; }
     public DateTime CreatedAt { get; set; }
+}
+
+public class VerifyMfaLoginRequest
+{
+    public string MfaToken { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+    public bool RememberDevice { get; set; }
+}
+
+public class MfaStatusResponse
+{
+    public bool Enabled { get; set; }
+    public DateTime? EnabledAt { get; set; }
+    public DateTime? LastVerifiedAt { get; set; }
+    public bool RememberDeviceActive { get; set; }
+    public DateTime? RememberDeviceExpiresAt { get; set; }
+}
+
+public class MfaSetupResponse
+{
+    public string Secret { get; set; } = string.Empty;
+    public string OtpAuthUri { get; set; } = string.Empty;
+}
+
+public class MfaEnableRequest
+{
+    public string Code { get; set; } = string.Empty;
+}
+
+public class MfaDisableRequest
+{
+    public string Password { get; set; } = string.Empty;
+    public string? Code { get; set; }
+}
+
+public class MfaRecoveryCodesResponse
+{
+    public List<string> RecoveryCodes { get; set; } = new();
+}
+
+public class MfaRegenerateRecoveryCodesRequest
+{
+    public string Code { get; set; } = string.Empty;
 }
 
 public class UpdateProfileRequest

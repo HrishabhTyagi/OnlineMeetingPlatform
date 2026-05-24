@@ -1,9 +1,12 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrganizationService.Data;
 using OrganizationService.Models;
+using Samvaad.Common.Caching;
 
 namespace OrganizationService.Controllers;
 
@@ -11,40 +14,108 @@ namespace OrganizationService.Controllers;
 [Route("api/[controller]")]
 public class OrganizationsController : ControllerBase
 {
-    private readonly OrganizationDbContext _context;
-    private readonly ILogger<OrganizationsController> _logger;
+    private static readonly TimeSpan OrganizationSettingsTtl = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan OrganizationUsageTtl = TimeSpan.FromSeconds(60);
 
-    public OrganizationsController(OrganizationDbContext context, ILogger<OrganizationsController> logger)
+    private readonly OrganizationDbContext _context;
+    private readonly IAppCache _cache;
+    private readonly ILogger<OrganizationsController> _logger;
+    private readonly IConfiguration _configuration;
+    private readonly IWebHostEnvironment _environment;
+
+    public OrganizationsController(
+        OrganizationDbContext context,
+        IAppCache cache,
+        ILogger<OrganizationsController> logger,
+        IConfiguration configuration,
+        IWebHostEnvironment environment)
     {
         _context = context;
+        _cache = cache;
         _logger = logger;
+        _configuration = configuration;
+        _environment = environment;
     }
 
     [HttpGet]
     [Authorize]
     public async Task<ActionResult<List<OrganizationSettingsDto>>> GetOrganizations()
     {
-        var organizations = await _context.OrganizationSettings
-            .OrderBy(item => item.Name)
-            .ThenBy(item => item.CreatedAt)
-            .ToListAsync();
+        var version = await GetOrganizationCacheVersionAsync();
+        var organizations = await _cache.GetOrCreateAsync(
+            $"organizations:list:v{version}",
+            async _ =>
+            {
+                var settings = await _context.OrganizationSettings
+                    .OrderBy(item => item.Name)
+                    .ThenBy(item => item.CreatedAt)
+                    .ToListAsync();
 
-        await EnsureSlugsAsync(organizations);
-        return Ok(organizations.Select(MapToDto).ToList());
+                await EnsureSlugsAsync(settings);
+                return settings.Select(MapToDto).ToList();
+            },
+            OrganizationSettingsTtl);
+
+        return Ok(organizations);
+    }
+
+    [HttpGet("mine")]
+    [Authorize]
+    public async Task<ActionResult<List<OrganizationSettingsDto>>> GetMyOrganizations()
+    {
+        var userIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var email = User.FindFirst(ClaimTypes.Email)?.Value?.Trim().ToLowerInvariant();
+        Guid? userId = Guid.TryParse(userIdText, out var parsedUserId) ? parsedUserId : null;
+
+        var version = await GetOrganizationCacheVersionAsync();
+        var cacheKey = $"organizations:mine:v{version}:user-{userId?.ToString("N") ?? "none"}:email-{(string.IsNullOrWhiteSpace(email) ? "none" : CacheKey.Hash(email))}";
+        var organizations = await _cache.GetOrCreateAsync(cacheKey, async _ =>
+        {
+            var settings = await _context.OrganizationMembers
+                .Include(member => member.Organization)
+                .Where(member =>
+                    (userId.HasValue && member.UserId == userId.Value) ||
+                    (!string.IsNullOrWhiteSpace(email) && member.Email.ToLower() == email))
+                .Where(member => member.Organization != null)
+                .Select(member => member.Organization!)
+                .Distinct()
+                .OrderBy(item => item.Name)
+                .ThenBy(item => item.CreatedAt)
+                .ToListAsync();
+
+            await EnsureSlugsAsync(settings);
+            return settings.Select(MapToDto).ToList();
+        }, OrganizationSettingsTtl);
+
+        return Ok(organizations);
     }
 
     [HttpGet("{id:guid}")]
     [Authorize]
     public async Task<ActionResult<OrganizationSettingsDto>> GetOrganization(Guid id)
     {
-        var settings = await _context.OrganizationSettings.FirstOrDefaultAsync(item => item.Id == id);
-        if (settings == null)
+        var version = await GetOrganizationCacheVersionAsync();
+        var dto = await _cache.GetOrCreateAsync<OrganizationSettingsDto?>(
+            $"organizations:id:{id:N}:v{version}",
+            async _ =>
+            {
+                var settings = await _context.OrganizationSettings.FirstOrDefaultAsync(item => item.Id == id);
+                if (settings == null)
+                {
+                    return null;
+                }
+
+                await EnsureSlugAsync(settings);
+                return MapToDto(settings);
+            },
+            OrganizationSettingsTtl);
+
+        if (dto == null)
         {
             return NotFound("Organization not found");
         }
 
-        await EnsureSlugAsync(settings);
-        return Ok(MapToDto(settings));
+        return Ok(dto);
     }
 
     [HttpGet("slug/{slug}")]
@@ -52,13 +123,22 @@ public class OrganizationsController : ControllerBase
     public async Task<ActionResult<OrganizationSettingsDto>> GetOrganizationBySlug(string slug)
     {
         var normalizedSlug = NormalizeSlug(slug);
-        var settings = await _context.OrganizationSettings.FirstOrDefaultAsync(item => item.Slug == normalizedSlug);
-        if (settings == null)
+        var version = await GetOrganizationCacheVersionAsync();
+        var dto = await _cache.GetOrCreateAsync<OrganizationSettingsDto?>(
+            $"organizations:slug:{normalizedSlug}:v{version}",
+            async _ =>
+            {
+                var settings = await _context.OrganizationSettings.FirstOrDefaultAsync(item => item.Slug == normalizedSlug);
+                return settings == null ? null : MapToDto(settings);
+            },
+            OrganizationSettingsTtl);
+
+        if (dto == null)
         {
             return NotFound("Organization not found");
         }
 
-        return Ok(MapToDto(settings));
+        return Ok(dto);
     }
 
     [HttpPost]
@@ -90,6 +170,7 @@ public class OrganizationsController : ControllerBase
 
         AddAuditEvent(settings, "OrganizationCreated", "Organization", settings.Id.ToString(), $"Created organization {settings.Name}.");
         await _context.SaveChangesAsync();
+        await BumpOrganizationCacheAsync();
 
         return CreatedAtAction(nameof(GetOrganization), new { id = settings.Id }, MapToDto(settings));
     }
@@ -98,55 +179,74 @@ public class OrganizationsController : ControllerBase
     [Authorize]
     public async Task<ActionResult<OrganizationSettingsDto>> GetCurrent()
     {
-        var settings = await GetOrCreateSettingsAsync();
-        return Ok(MapToDto(settings));
+        var version = await GetOrganizationCacheVersionAsync();
+        var dto = await _cache.GetOrCreateAsync(
+            $"organizations:current:{TenantHeaderCacheKey()}:v{version}",
+            async _ => MapToDto(await GetOrCreateSettingsAsync()),
+            OrganizationSettingsTtl);
+
+        return Ok(dto);
     }
 
     [HttpGet("{id:guid}/usage")]
     [Authorize]
     public async Task<ActionResult<OrganizationUsageDto>> GetUsage(Guid id)
     {
-        var settings = await _context.OrganizationSettings.FirstOrDefaultAsync(item => item.Id == id);
-        if (settings == null)
+        var version = await GetOrganizationCacheVersionAsync();
+        var usage = await _cache.GetOrCreateAsync<OrganizationUsageDto?>(
+            $"organizations:usage:{id:N}:v{version}",
+            async _ =>
+            {
+                var settings = await _context.OrganizationSettings.FirstOrDefaultAsync(item => item.Id == id);
+                if (settings == null)
+                {
+                    return null;
+                }
+
+                var roleCounts = await _context.OrganizationMembers
+                    .Where(member => member.OrganizationId == id)
+                    .GroupBy(member => member.Role)
+                    .Select(group => new OrganizationRoleUsageDto
+                    {
+                        Role = group.Key.ToString(),
+                        Count = group.Count()
+                    })
+                    .ToListAsync();
+
+                var memberCount = roleCounts.Sum(item => item.Count);
+                var since = DateTime.UtcNow.AddDays(-30);
+                var auditEventsLast30Days = await _context.OrganizationAuditEvents
+                    .CountAsync(item => item.OrganizationId == id && item.CreatedAt >= since);
+                var lastAuditAt = await _context.OrganizationAuditEvents
+                    .Where(item => item.OrganizationId == id)
+                    .OrderByDescending(item => item.CreatedAt)
+                    .Select(item => (DateTime?)item.CreatedAt)
+                    .FirstOrDefaultAsync();
+
+                return new OrganizationUsageDto
+                {
+                    OrganizationId = settings.Id,
+                    OrganizationName = settings.Name,
+                    StorageProvider = settings.StorageProvider.ToString(),
+                    MemberCount = memberCount,
+                    RoleCounts = roleCounts,
+                    EstimatedActiveStorageGb = EstimateActiveStorageGb(settings),
+                    MaxRecordingMegabytes = settings.MaxRecordingMegabytes,
+                    MaxAttachmentMegabytes = settings.MaxAttachmentMegabytes,
+                    RecordingRetentionDays = settings.RecordingRetentionDays,
+                    AttachmentRetentionDays = settings.AttachmentRetentionDays,
+                    AuditEventsLast30Days = auditEventsLast30Days,
+                    LastActivityAt = lastAuditAt ?? settings.UpdatedAt
+                };
+            },
+            OrganizationUsageTtl);
+
+        if (usage == null)
         {
             return NotFound("Organization not found");
         }
 
-        var roleCounts = await _context.OrganizationMembers
-            .Where(member => member.OrganizationId == id)
-            .GroupBy(member => member.Role)
-            .Select(group => new OrganizationRoleUsageDto
-            {
-                Role = group.Key.ToString(),
-                Count = group.Count()
-            })
-            .ToListAsync();
-
-        var memberCount = roleCounts.Sum(item => item.Count);
-        var since = DateTime.UtcNow.AddDays(-30);
-        var auditEventsLast30Days = await _context.OrganizationAuditEvents
-            .CountAsync(item => item.OrganizationId == id && item.CreatedAt >= since);
-        var lastAuditAt = await _context.OrganizationAuditEvents
-            .Where(item => item.OrganizationId == id)
-            .OrderByDescending(item => item.CreatedAt)
-            .Select(item => (DateTime?)item.CreatedAt)
-            .FirstOrDefaultAsync();
-
-        return Ok(new OrganizationUsageDto
-        {
-            OrganizationId = settings.Id,
-            OrganizationName = settings.Name,
-            StorageProvider = settings.StorageProvider.ToString(),
-            MemberCount = memberCount,
-            RoleCounts = roleCounts,
-            EstimatedActiveStorageGb = EstimateActiveStorageGb(settings),
-            MaxRecordingMegabytes = settings.MaxRecordingMegabytes,
-            MaxAttachmentMegabytes = settings.MaxAttachmentMegabytes,
-            RecordingRetentionDays = settings.RecordingRetentionDays,
-            AttachmentRetentionDays = settings.AttachmentRetentionDays,
-            AuditEventsLast30Days = auditEventsLast30Days,
-            LastActivityAt = lastAuditAt ?? settings.UpdatedAt
-        });
+        return Ok(usage);
     }
 
     [HttpGet("{id:guid}/audit")]
@@ -203,6 +303,7 @@ public class OrganizationsController : ControllerBase
         AddAuditEvent(settings, "OrganizationDeleted", "Organization", settings.Id.ToString(), $"Deleted organization {settings.Name}.");
         _context.OrganizationSettings.Remove(settings);
         await _context.SaveChangesAsync();
+        await BumpOrganizationCacheAsync();
 
         return NoContent();
     }
@@ -232,6 +333,7 @@ public class OrganizationsController : ControllerBase
 
         AddAuditEvent(settings, "OrganizationUpdated", "Organization", settings.Id.ToString(), $"Updated organization settings for {settings.Name}.");
         await _context.SaveChangesAsync();
+        await BumpOrganizationCacheAsync();
         return Ok(MapToDto(settings));
     }
 
@@ -266,13 +368,19 @@ public class OrganizationsController : ControllerBase
             return NotFound("Organization not found");
         }
 
-        var members = await _context.OrganizationMembers
-            .Where(member => member.OrganizationId == id)
-            .OrderBy(member => member.DisplayName)
-            .ThenBy(member => member.Email)
-            .ToListAsync();
+        var version = await GetOrganizationCacheVersionAsync();
+        var members = await _cache.GetOrCreateAsync(
+            $"organizations:{id:N}:members:v{version}",
+            async _ => (await _context.OrganizationMembers
+                .Where(member => member.OrganizationId == id)
+                .OrderBy(member => member.DisplayName)
+                .ThenBy(member => member.Email)
+                .ToListAsync())
+                .Select(MapMemberToDto)
+                .ToList(),
+            OrganizationSettingsTtl);
 
-        return Ok(members.Select(MapMemberToDto).ToList());
+        return Ok(members);
     }
 
     [HttpPost("{id:guid}/members")]
@@ -327,6 +435,7 @@ public class OrganizationsController : ControllerBase
         var settings = await _context.OrganizationSettings.FirstAsync(item => item.Id == id);
         AddAuditEvent(settings, "MemberAdded", "Member", member.Id.ToString(), $"Added {member.DisplayName} as {member.Role}.");
         await _context.SaveChangesAsync();
+        await BumpOrganizationCacheAsync();
 
         return CreatedAtAction(nameof(GetMembers), new { id }, MapMemberToDto(member));
     }
@@ -352,6 +461,7 @@ public class OrganizationsController : ControllerBase
         var settings = await _context.OrganizationSettings.FirstAsync(item => item.Id == id);
         AddAuditEvent(settings, "MemberRoleUpdated", "Member", member.Id.ToString(), $"Changed {member.DisplayName} role to {member.Role}.");
         await _context.SaveChangesAsync();
+        await BumpOrganizationCacheAsync();
         return Ok(MapMemberToDto(member));
     }
 
@@ -369,6 +479,7 @@ public class OrganizationsController : ControllerBase
         AddAuditEvent(settings, "MemberRemoved", "Member", member.Id.ToString(), $"Removed {member.DisplayName} from the organization.");
         _context.OrganizationMembers.Remove(member);
         await _context.SaveChangesAsync();
+        await BumpOrganizationCacheAsync();
         return NoContent();
     }
 
@@ -400,8 +511,38 @@ public class OrganizationsController : ControllerBase
     [AllowAnonymous]
     public async Task<ActionResult<OrganizationSettingsDto>> GetCurrentInternal()
     {
-        var settings = await GetOrCreateSettingsAsync();
-        return Ok(MapToDto(settings));
+        if (!IsAuthorizedInternalRequest())
+        {
+            return Unauthorized();
+        }
+
+        var version = await GetOrganizationCacheVersionAsync();
+        var dto = await _cache.GetOrCreateAsync(
+            $"organizations:current-internal:{TenantHeaderCacheKey()}:v{version}",
+            async _ => MapToDto(await GetOrCreateSettingsAsync()),
+            OrganizationSettingsTtl);
+
+        return Ok(dto);
+    }
+
+    private bool IsAuthorizedInternalRequest()
+    {
+        var expected = _configuration["InternalService:ApiKey"];
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            return _environment.IsDevelopment();
+        }
+
+        var provided = Request.Headers["X-Samvaad-Internal-Key"].ToString();
+        if (string.IsNullOrWhiteSpace(provided))
+        {
+            return false;
+        }
+
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        var providedBytes = Encoding.UTF8.GetBytes(provided);
+        return expectedBytes.Length == providedBytes.Length
+            && CryptographicOperations.FixedTimeEquals(expectedBytes, providedBytes);
     }
 
     private async Task<OrganizationSettings> GetOrCreateSettingsAsync()
@@ -668,5 +809,26 @@ public class OrganizationsController : ControllerBase
     private static string BuildLocalAppUrl(string slug)
     {
         return $"http://localhost:5173/org/{Uri.EscapeDataString(slug)}";
+    }
+
+    private async Task<long> GetOrganizationCacheVersionAsync()
+    {
+        return await _cache.GetOrCreateAsync("organizations:version", _ => Task.FromResult(1L), TimeSpan.FromDays(30));
+    }
+
+    private Task BumpOrganizationCacheAsync()
+    {
+        return _cache.IncrementAsync("organizations:version", TimeSpan.FromDays(30));
+    }
+
+    private string TenantHeaderCacheKey()
+    {
+        var organizationId = Request.Headers["X-Organization-Id"].FirstOrDefault();
+        if (Guid.TryParse(organizationId, out var parsedOrganizationId))
+        {
+            return CacheKey.Tenant(parsedOrganizationId);
+        }
+
+        return CacheKey.Tenant(null, Request.Headers["X-Organization-Slug"].FirstOrDefault());
     }
 }

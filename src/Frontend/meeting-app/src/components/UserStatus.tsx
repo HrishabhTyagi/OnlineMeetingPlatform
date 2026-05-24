@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { resolveApiAssetUrl } from '../services/api';
+import { resolveApiAssetUrl, userAPI } from '../services/api';
 import { SAMVAAD_THEMES, useSamvaadTheme } from './ThemeProvider';
 
 export type UserStatus = 'Available' | 'Busy' | 'DoNotDisturb' | 'BeRightBack' | 'Away' | 'Offline';
@@ -222,6 +222,13 @@ export function ProfileStatusMenu({
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const normalized = normalizeStatus(status);
   const { theme, setTheme } = useSamvaadTheme();
+  const [mfaStatus, setMfaStatus] = useState<any>(null);
+  const [mfaSetup, setMfaSetup] = useState<any>(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaPassword, setMfaPassword] = useState('');
+  const [mfaRecoveryCodes, setMfaRecoveryCodes] = useState<string[]>([]);
+  const [mfaMessage, setMfaMessage] = useState('');
+  const [mfaBusy, setMfaBusy] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -238,9 +245,85 @@ export function ProfileStatusMenu({
     return () => window.removeEventListener('mousedown', closeOnOutsideClick);
   }, [open]);
 
+  useEffect(() => {
+    if (!open || !currentUserId) {
+      return;
+    }
+
+    setMfaMessage('');
+    setMfaRecoveryCodes([]);
+    userAPI.getMfaStatus()
+      .then((response) => setMfaStatus(response.data))
+      .catch(() => setMfaStatus(null));
+  }, [open, currentUserId]);
+
   const chooseStatus = (nextStatus: UserStatus) => {
     onChange(nextStatus);
     setOpen(false);
+  };
+
+  const startMfaSetup = async () => {
+    setMfaBusy(true);
+    setMfaMessage('');
+    setMfaRecoveryCodes([]);
+    try {
+      const response = await userAPI.setupMfa();
+      setMfaSetup(response.data);
+      setMfaMessage('Add this setup key to your authenticator app, then enter the code.');
+    } catch (error: any) {
+      setMfaMessage(typeof error.response?.data === 'string' ? error.response.data : 'Unable to start MFA setup');
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
+  const enableMfa = async () => {
+    setMfaBusy(true);
+    setMfaMessage('');
+    try {
+      const response = await userAPI.enableMfa(mfaCode);
+      setMfaRecoveryCodes(response.data.recoveryCodes || []);
+      setMfaStatus({ enabled: true });
+      setMfaSetup(null);
+      setMfaCode('');
+      setMfaMessage('MFA is enabled. Save these recovery codes in a safe place.');
+    } catch (error: any) {
+      setMfaMessage(typeof error.response?.data === 'string' ? error.response.data : 'Unable to enable MFA');
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
+  const disableMfa = async () => {
+    setMfaBusy(true);
+    setMfaMessage('');
+    try {
+      const response = await userAPI.disableMfa(mfaPassword, mfaCode);
+      setMfaStatus(response.data);
+      setMfaCode('');
+      setMfaPassword('');
+      setMfaRecoveryCodes([]);
+      setMfaMessage('MFA is disabled for this account.');
+    } catch (error: any) {
+      setMfaMessage(typeof error.response?.data === 'string' ? error.response.data : 'Unable to disable MFA');
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
+  const regenerateRecoveryCodes = async () => {
+    setMfaBusy(true);
+    setMfaMessage('');
+    try {
+      const response = await userAPI.regenerateMfaRecoveryCodes(mfaCode);
+      setMfaRecoveryCodes(response.data.recoveryCodes || []);
+      setMfaCode('');
+      setMfaMessage('New recovery codes generated. Older recovery codes no longer work.');
+    } catch (error: any) {
+      setMfaMessage(typeof error.response?.data === 'string' ? error.response.data : 'Unable to regenerate recovery codes');
+    } finally {
+      setMfaBusy(false);
+    }
   };
 
   return (
@@ -336,6 +419,116 @@ export function ProfileStatusMenu({
                       Remove
                     </button>
                   )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-5 border-t border-slate-100 pt-3">
+            <div className="px-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Security</p>
+            </div>
+            <div className="mx-3 mt-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">Authenticator app</p>
+                  <p className="text-xs text-slate-600">
+                    {mfaStatus?.enabled ? 'Enabled for this account.' : 'Use a free app like Microsoft Authenticator or Google Authenticator.'}
+                  </p>
+                </div>
+                <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                  mfaStatus?.enabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
+                }`}>
+                  {mfaStatus?.enabled ? 'On' : 'Off'}
+                </span>
+              </div>
+
+              {mfaMessage && (
+                <p className="mt-2 rounded-md bg-white px-2 py-1.5 text-xs text-slate-700">{mfaMessage}</p>
+              )}
+
+              {mfaSetup && (
+                <div className="mt-3 space-y-2">
+                  <div className="rounded-md bg-white p-2">
+                    <p className="text-xs font-semibold text-slate-500">Setup key</p>
+                    <p className="mt-1 break-all font-mono text-xs text-slate-900">{mfaSetup.secret}</p>
+                    <a
+                      href={mfaSetup.otpAuthUri}
+                      className="mt-1 inline-block text-xs font-semibold text-blue-700 hover:underline"
+                    >
+                      Open authenticator link
+                    </a>
+                  </div>
+                  <input
+                    type="text"
+                    value={mfaCode}
+                    onChange={(event) => setMfaCode(event.target.value)}
+                    placeholder="6-digit code"
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={mfaBusy || !mfaCode.trim()}
+                    onClick={enableMfa}
+                    className="w-full rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    Enable MFA
+                  </button>
+                </div>
+              )}
+
+              {mfaRecoveryCodes.length > 0 && (
+                <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2">
+                  <p className="text-xs font-semibold text-amber-900">Recovery codes</p>
+                  <div className="mt-1 grid grid-cols-2 gap-1 font-mono text-xs text-amber-950">
+                    {mfaRecoveryCodes.map((code) => <span key={code}>{code}</span>)}
+                  </div>
+                </div>
+              )}
+
+              {!mfaStatus?.enabled && !mfaSetup && (
+                <button
+                  type="button"
+                  disabled={mfaBusy}
+                  onClick={startMfaSetup}
+                  className="mt-3 w-full rounded-md border border-blue-200 bg-white px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                >
+                  Set up MFA
+                </button>
+              )}
+
+              {mfaStatus?.enabled && (
+                <div className="mt-3 space-y-2">
+                  <input
+                    type="text"
+                    value={mfaCode}
+                    onChange={(event) => setMfaCode(event.target.value)}
+                    placeholder="Authenticator or recovery code"
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={mfaBusy || !mfaCode.trim()}
+                    onClick={regenerateRecoveryCodes}
+                    className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    Regenerate recovery codes
+                  </button>
+                  <input
+                    type="password"
+                    value={mfaPassword}
+                    onChange={(event) => setMfaPassword(event.target.value)}
+                    placeholder="Password to disable"
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={mfaBusy || !mfaPassword.trim() || !mfaCode.trim()}
+                    onClick={disableMfa}
+                    className="w-full rounded-md border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    Disable MFA
+                  </button>
                 </div>
               )}
             </div>

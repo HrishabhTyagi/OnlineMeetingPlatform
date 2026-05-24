@@ -5,6 +5,7 @@ export const API_ORIGIN = API_BASE_URL.replace(/\/api$/, '');
 const ACTIVE_ACCOUNT_ID_KEY = 'activeAuthAccountId';
 const ACCOUNTS_KEY = 'authAccounts';
 const ACTIVE_ORGANIZATION_KEY = 'samvaadActiveOrganization';
+const ACTIVE_WORKSPACE_KEY = 'samvaadActiveWorkspace';
 
 export interface ActiveOrganization {
   id: string;
@@ -12,6 +13,14 @@ export interface ActiveOrganization {
   slug: string;
   localAppUrl?: string;
   primaryDomain?: string;
+}
+
+export interface ActiveWorkspace {
+  kind: 'personal' | 'organization';
+  id: string;
+  name: string;
+  slug?: string;
+  organization?: ActiveOrganization;
 }
 
 export const apiClient = axios.create({
@@ -36,7 +45,7 @@ export function resolveApiAssetUrl(url?: string | null) {
 function getStoredAuthToken() {
   try {
     const activeAccountId = sessionStorage.getItem(ACTIVE_ACCOUNT_ID_KEY);
-    const accounts = JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || '[]');
+    const accounts = JSON.parse(sessionStorage.getItem(ACCOUNTS_KEY) || localStorage.getItem(ACCOUNTS_KEY) || '[]');
     const activeAccount = activeAccountId
       ? accounts.find((account: any) => account.user?.id === activeAccountId)
       : null;
@@ -48,7 +57,7 @@ function getStoredAuthToken() {
     // Fall back to the legacy single-account token below.
   }
 
-  return localStorage.getItem('authToken');
+  return sessionStorage.getItem('authToken') || localStorage.getItem('authToken');
 }
 
 export function getActiveOrganization(): ActiveOrganization | null {
@@ -60,21 +69,59 @@ export function getActiveOrganization(): ActiveOrganization | null {
   }
 }
 
+export function getPersonalWorkspace(): ActiveWorkspace {
+  return {
+    kind: 'personal',
+    id: 'personal',
+    name: 'Personal',
+    slug: 'personal',
+  };
+}
+
+export function getActiveWorkspace(): ActiveWorkspace {
+  const organization = getActiveOrganization();
+  if (organization?.id) {
+    return {
+      kind: 'organization',
+      id: organization.id,
+      name: organization.name,
+      slug: organization.slug,
+      organization,
+    };
+  }
+
+  return getPersonalWorkspace();
+}
+
+export function setPersonalWorkspace() {
+  localStorage.removeItem(ACTIVE_ORGANIZATION_KEY);
+  localStorage.setItem(ACTIVE_WORKSPACE_KEY, JSON.stringify(getPersonalWorkspace()));
+  window.dispatchEvent(new CustomEvent('samvaad-organization-changed'));
+  window.dispatchEvent(new CustomEvent('samvaad-workspace-changed', { detail: getPersonalWorkspace() }));
+}
+
 export function setActiveOrganization(organization: ActiveOrganization) {
   localStorage.setItem(ACTIVE_ORGANIZATION_KEY, JSON.stringify(organization));
+  localStorage.setItem(ACTIVE_WORKSPACE_KEY, JSON.stringify({
+    kind: 'organization',
+    id: organization.id,
+    name: organization.name,
+    slug: organization.slug,
+    organization,
+  }));
   window.dispatchEvent(new CustomEvent('samvaad-organization-changed', { detail: organization }));
+  window.dispatchEvent(new CustomEvent('samvaad-workspace-changed', { detail: getActiveWorkspace() }));
 }
 
 export function clearActiveOrganization() {
-  localStorage.removeItem(ACTIVE_ORGANIZATION_KEY);
-  window.dispatchEvent(new CustomEvent('samvaad-organization-changed'));
+  setPersonalWorkspace();
 }
 
 export function getOrganizationScopedPath(path: string, organization = getActiveOrganization()) {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   return organization?.slug
     ? `/org/${encodeURIComponent(organization.slug)}${normalizedPath}`
-    : normalizedPath;
+    : `/personal${normalizedPath}`;
 }
 
 export function getOrganizationScopedUrl(path: string, organization = getActiveOrganization()) {
@@ -151,6 +198,8 @@ apiClient.interceptors.request.use((config) => {
   const organization = getActiveOrganization();
   if (organization?.id) {
     setHeader(config, 'X-Organization-Id', organization.id);
+  } else {
+    setHeader(config, 'X-Workspace-Type', 'Personal');
   }
 
   if (organization?.slug) {
@@ -165,8 +214,11 @@ export const authAPI = {
   register: (email: string, firstName: string, lastName: string, password: string) =>
     apiClient.post('/auth/register', { email, firstName, lastName, password }),
 
-  login: (email: string, password: string) =>
-    apiClient.post('/auth/login', { email, password }),
+  login: (email: string, password: string, rememberDeviceToken?: string | null) =>
+    apiClient.post('/auth/login', { email, password, rememberDeviceToken }),
+
+  verifyMfa: (mfaToken: string, code: string, rememberDevice: boolean) =>
+    apiClient.post('/auth/mfa/verify', { mfaToken, code, rememberDevice }),
 };
 
 // User API
@@ -190,6 +242,21 @@ export const userAPI = {
 
   getUserById: (id: string) =>
     apiClient.get(`/users/${id}`),
+
+  getMfaStatus: () =>
+    apiClient.get('/users/mfa/status'),
+
+  setupMfa: () =>
+    apiClient.post('/users/mfa/setup'),
+
+  enableMfa: (code: string) =>
+    apiClient.post('/users/mfa/enable', { code }),
+
+  disableMfa: (password: string, code?: string) =>
+    apiClient.post('/users/mfa/disable', { password, code }),
+
+  regenerateMfaRecoveryCodes: (code: string) =>
+    apiClient.post('/users/mfa/recovery-codes/regenerate', { code }),
 };
 
 // Meeting API
@@ -242,6 +309,27 @@ export const meetingAPI = {
   sendChatMessage: (meetingId: string, data: any) =>
     apiClient.post(`/meetings/${meetingId}/chat`, data),
 
+  getCallLogs: (meetingId: string) =>
+    apiClient.get(`/meetings/${meetingId}/calls`),
+
+  getRecentCallLogs: (status?: string) =>
+    apiClient.get('/meetings/calls/recent', { params: status && status !== 'All' ? { status } : undefined }),
+
+  markCallSeen: (callLogId: string) =>
+    apiClient.put(`/meetings/calls/${callLogId}/seen`),
+
+  hideCallLog: (callLogId: string) =>
+    apiClient.delete(`/meetings/calls/${callLogId}`),
+
+  clearCallLogs: (status?: string) =>
+    apiClient.delete('/meetings/calls', { params: status && status !== 'All' ? { status } : undefined }),
+
+  createCallLog: (meetingId: string, data: any) =>
+    apiClient.post(`/meetings/${meetingId}/calls`, data),
+
+  updateCallLog: (meetingId: string, callLogId: string, data: any) =>
+    apiClient.put(`/meetings/${meetingId}/calls/${callLogId}`, data),
+
   requestLobbyAccess: (meetingId: string, data: any) =>
     apiClient.post(`/meetings/${meetingId}/lobby/request`, data),
 
@@ -279,6 +367,9 @@ export const meetingAPI = {
 export const organizationAPI = {
   getCurrent: () =>
     apiClient.get('/organizations/current'),
+
+  getMine: () =>
+    apiClient.get('/organizations/mine'),
 
   getBySlug: (slug: string) =>
     apiClient.get(`/organizations/slug/${encodeURIComponent(slug)}`),

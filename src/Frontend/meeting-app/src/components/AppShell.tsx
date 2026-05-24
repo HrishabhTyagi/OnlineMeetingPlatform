@@ -1,9 +1,16 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import BrandMark from './BrandMark';
-import { getActiveOrganization, getOrganizationScopedPath, type ActiveOrganization } from '../services/api';
+import {
+  clearActiveOrganization,
+  getActiveOrganization,
+  getOrganizationScopedPath,
+  organizationAPI,
+  setActiveOrganization,
+  type ActiveOrganization,
+} from '../services/api';
 
-type AppSection = 'activity' | 'teams' | 'calendar' | 'chat' | 'meet' | 'license';
+type AppSection = 'activity' | 'teams' | 'calendar' | 'chat' | 'calls' | 'meet' | 'license';
 
 interface AppShellProps {
   active: AppSection;
@@ -61,6 +68,15 @@ function MeetIcon() {
   );
 }
 
+function CallsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M7.2 4.5 9.4 9l-1.7 1.4a11.5 11.5 0 0 0 5.9 5.9l1.4-1.7 4.5 2.2v2.9c0 .8-.7 1.5-1.5 1.5A15.2 15.2 0 0 1 2.8 6c0-.8.7-1.5 1.5-1.5h2.9Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M15 4.5h4.5V9M14.5 9.5 19 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function LicenseIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
@@ -75,6 +91,7 @@ const navItems: Array<{ id: AppSection; label: string; path: string; icon: React
   { id: 'teams', label: 'Spaces', path: '/teams', icon: <TeamsIcon /> },
   { id: 'calendar', label: 'Plan', path: '/dashboard', icon: <CalendarIcon /> },
   { id: 'chat', label: 'Talk', path: '/chat', icon: <ChatIcon /> },
+  { id: 'calls', label: 'Calls', path: '/calls', icon: <CallsIcon /> },
   { id: 'meet', label: 'Meet', path: '/meet', icon: <MeetIcon /> },
   { id: 'license', label: 'License', path: '/license', icon: <LicenseIcon />, global: true },
 ];
@@ -82,6 +99,9 @@ const navItems: Array<{ id: AppSection; label: string; path: string; icon: React
 export default function AppShell({ active, title, subtitle, actions, children }: AppShellProps) {
   const navigate = useNavigate();
   const [activeOrganization, setActiveOrganizationState] = useState<ActiveOrganization | null>(() => getActiveOrganization());
+  const [organizations, setOrganizations] = useState<ActiveOrganization[]>([]);
+  const activeNavItem = navItems.find((item) => item.id === active);
+  const activePath = activeNavItem?.path || '/dashboard';
 
   useEffect(() => {
     const syncOrganization = () => setActiveOrganizationState(getActiveOrganization());
@@ -92,6 +112,50 @@ export default function AppShell({ active, title, subtitle, actions, children }:
       window.removeEventListener('storage', syncOrganization);
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    organizationAPI.getMine()
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+
+        const availableOrganizations = (response.data || []).map((organization: any) => ({
+          id: organization.id,
+          name: organization.name,
+          slug: organization.slug,
+          localAppUrl: organization.localAppUrl,
+          primaryDomain: organization.primaryDomain,
+        })) as ActiveOrganization[];
+        setOrganizations(availableOrganizations);
+      })
+      .catch(() => setOrganizations([]));
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const workspaceOptions = activeOrganization && !organizations.some((organization) => organization.id === activeOrganization.id)
+    ? [activeOrganization, ...organizations]
+    : organizations;
+
+  const switchWorkspace = (value: string) => {
+    if (value === 'personal') {
+      clearActiveOrganization();
+      navigate(activeNavItem?.global ? activePath : `/personal${activePath}`);
+      return;
+    }
+
+    const organization = workspaceOptions.find((item) => item.id === value);
+    if (!organization) {
+      return;
+    }
+
+    setActiveOrganization(organization);
+    navigate(activeNavItem?.global ? activePath : `/org/${encodeURIComponent(organization.slug)}${activePath}`);
+  };
 
   return (
     <div className="samvaad-shell h-screen overflow-hidden text-slate-950">
@@ -140,11 +204,22 @@ export default function AppShell({ active, title, subtitle, actions, children }:
               </div>
             </nav>
 
-            {activeOrganization && (
-              <span className="hidden max-w-[220px] truncate rounded-md border border-teal-100 bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-800 xl:inline-flex">
-                {activeOrganization.name}
-              </span>
-            )}
+            <label className="hidden items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 shadow-sm xl:inline-flex">
+              <span className="text-teal-700">Workspace</span>
+              <select
+                value={activeOrganization?.id || 'personal'}
+                onChange={(event) => switchWorkspace(event.target.value)}
+                className="max-w-[220px] bg-transparent text-sm font-semibold text-slate-950 outline-none"
+                title="Switch workspace"
+              >
+                <option value="personal">Personal</option>
+                {workspaceOptions.map((organization) => (
+                  <option key={organization.id} value={organization.id}>
+                    {organization.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
           </div>
         </header>

@@ -1,7 +1,10 @@
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims;
 
 namespace NotificationService.Hubs;
 
+[Authorize]
 public class NotificationHub : Hub
 {
     private readonly ILogger<NotificationHub> _logger;
@@ -37,6 +40,11 @@ public class NotificationHub : Hub
 
     public async Task JoinUserNotifications(string userId)
     {
+        if (!IsCurrentUser(userId))
+        {
+            throw new HubException("You can only join notifications for your signed-in user.");
+        }
+
         await Groups.AddToGroupAsync(Context.ConnectionId, $"user_{userId}");
         _logger.LogInformation("Client joined user notifications: {ConnectionId}, {UserId}", Context.ConnectionId, userId);
     }
@@ -226,15 +234,32 @@ public class NotificationHub : Hub
         string callerName,
         string callType,
         string joinUrl,
-        List<string> recipientUserIds)
+        List<string> recipientUserIds,
+        string? callLogId = null)
     {
         if (string.IsNullOrWhiteSpace(meetingId) || string.IsNullOrWhiteSpace(joinUrl))
         {
             return;
         }
 
+        if (!IsCurrentUser(callerUserId))
+        {
+            throw new HubException("You can only start calls as your signed-in user.");
+        }
+
+        var recipients = recipientUserIds
+            .Where(id => !string.IsNullOrWhiteSpace(id) && id != callerUserId)
+            .Distinct()
+            .Take(10)
+            .ToList();
+        if (recipients.Count == 0)
+        {
+            throw new HubException("Select at least one recipient to call.");
+        }
+
         var payload = new
         {
+            CallLogId = callLogId,
             ConversationId = conversationId,
             MeetingId = meetingId,
             CallerUserId = callerUserId,
@@ -244,9 +269,7 @@ public class NotificationHub : Hub
             Timestamp = DateTime.UtcNow
         };
 
-        foreach (var recipientUserId in recipientUserIds
-            .Where(id => !string.IsNullOrWhiteSpace(id) && id != callerUserId)
-            .Distinct())
+        foreach (var recipientUserId in recipients)
         {
             await Clients.Group($"user_{recipientUserId}").SendAsync("IncomingCall", payload);
         }
@@ -258,11 +281,17 @@ public class NotificationHub : Hub
         string callerUserId,
         string callerName,
         string recipientUserId,
-        string message)
+        string message,
+        string? reason = null)
     {
         if (string.IsNullOrWhiteSpace(meetingId) || string.IsNullOrWhiteSpace(recipientUserId))
         {
             return;
+        }
+
+        if (!IsCurrentUser(callerUserId))
+        {
+            throw new HubException("You can only cancel calls from your signed-in user.");
         }
 
         var payload = new
@@ -272,10 +301,53 @@ public class NotificationHub : Hub
             CallerUserId = callerUserId,
             CallerName = string.IsNullOrWhiteSpace(callerName) ? "Someone" : callerName,
             Message = string.IsNullOrWhiteSpace(message) ? "Sorry, I called you by mistake." : message.Trim(),
+            Reason = string.IsNullOrWhiteSpace(reason) ? "Cancelled" : reason.Trim(),
             Timestamp = DateTime.UtcNow
         };
 
         await Clients.Group($"user_{recipientUserId}").SendAsync("IncomingCallCancelled", payload);
+    }
+
+    public async Task SendIncomingCallResponse(
+        string conversationId,
+        string meetingId,
+        string? callLogId,
+        string callerUserId,
+        string recipientUserId,
+        string recipientName,
+        string status,
+        string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(meetingId) || string.IsNullOrWhiteSpace(callerUserId) || string.IsNullOrWhiteSpace(recipientUserId))
+        {
+            return;
+        }
+
+        if (!IsCurrentUser(recipientUserId))
+        {
+            throw new HubException("You can only answer calls as your signed-in user.");
+        }
+
+        var normalizedStatus = status?.Trim() switch
+        {
+            "Accepted" => "Accepted",
+            "Declined" => "Declined",
+            "NoResponse" => "NoResponse",
+            _ => "NoResponse"
+        };
+
+        await Clients.Group($"user_{callerUserId}").SendAsync("IncomingCallResponse", new
+        {
+            CallLogId = callLogId,
+            ConversationId = conversationId,
+            MeetingId = meetingId,
+            CallerUserId = callerUserId,
+            RecipientUserId = recipientUserId,
+            RecipientName = string.IsNullOrWhiteSpace(recipientName) ? "Participant" : recipientName,
+            Status = normalizedStatus,
+            Reason = reason,
+            Timestamp = DateTime.UtcNow
+        });
     }
 
     public async Task SendWebRtcOffer(string meetingId, string senderUserId, string targetUserId, string sdp)
@@ -440,5 +512,12 @@ public class NotificationHub : Hub
             OrganizerName = organizerName,
             Timestamp = DateTime.UtcNow
         });
+    }
+
+    private bool IsCurrentUser(string userId)
+    {
+        var currentUserId = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return !string.IsNullOrWhiteSpace(currentUserId)
+            && string.Equals(currentUserId, userId, StringComparison.OrdinalIgnoreCase);
     }
 }

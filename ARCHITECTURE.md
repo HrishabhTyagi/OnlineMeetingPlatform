@@ -1,411 +1,338 @@
-# Architecture Guide - Online Meeting Platform
+# Samvaad Architecture
 
-## System Architecture
+Samvaad uses a microservice architecture with a YARP API Gateway, independent ASP.NET Core services, PostgreSQL databases, RabbitMQ async events, SignalR realtime messaging, and React frontends. Azure is the selected production platform.
 
-### Microservices Pattern
+## High-Level Topology
 
-The application follows a **microservices architecture** with the following benefits:
-- **Scalability**: Each service can scale independently
-- **Resilience**: Failure in one service doesn't crash others
-- **Flexibility**: Technology stack can differ per service
-- **Maintainability**: Teams can own specific services
-
-```
-Client Applications
-       │
-       ▼
-   ┌─────────────────────────────┐
-   │   API Gateway (YARP)        │
-   │  - Route Management         │
-   │  - Load Balancing           │
-   │  - Rate Limiting            │
-   └──┬──────────┬────────────┬──┘  
-      │          │            │
-      ▼          ▼            ▼
-   ┌──────┐  ┌────────┐   ┌──────────┐
-   │User  │  │Meeting │   │Notification
-   │Svc   │  │Svc     │   │Svc
-   └──────┘  └────────┘   └──────────┘
-      │          │            │
-      └──────────┼────────────┘
-                 │
-        ┌────────▼────────┐
-        │  Data Layer     │
-        ├─────────────────┤
-        │ PostgreSQL      │ (Primary DB)
-        │ Redis           │ (Cache & Sessions)
-        │ Message Queue   │ (Event Bus)
-        └─────────────────┘
+```text
+Browser
+  |
+  | HTTP, WebSocket, WebRTC media/signaling
+  v
+Samvaad app (5173)        Samvaad Admin (5174)
+  |                         |
+  +-----------+-------------+
+              |
+              v
+        API Gateway (5000)
+              |
+   +----------+----------+----------+----------+
+   |          |          |          |          |
+   v          v          v          v          v
+User      Meeting    Notification Organization Swagger aggregation
+Service   Service    Service      Service
+5001      5002       5003         5004
+   |          |          |          |
+   +----------+----------+----------+
+              |
+              v
+PostgreSQL, Redis, RabbitMQ, Mailpit
 ```
 
-## Service Breakdown
+## Service Ownership
 
-### 1. User Service (Port 5001)
-**Responsibilities:**
-- User registration and authentication
-- JWT token generation and validation
-- User profile management
-- Account settings
+### API Gateway
 
-**Database:** PostgreSQL (meeting_users)
+Location: `src/Gateway/ApiGateway`
 
-**Key Entities:**
-```csharp
-User
-├── Id (GUID)
-├── Email (unique)
-├── FirstName
-├── LastName
-├── PasswordHash
-├── IsEmailVerified
-├── ProfilePictureUrl
-├── CreatedAt
-└── UpdatedAt
+Responsibilities:
+
+- Reverse proxy routing with YARP.
+- Aggregated Swagger entries for User, Meeting, Notification, and Organization services.
+- CORS and security header handling.
+- Routes for REST APIs, static avatar files, and SignalR hubs.
+
+Key routes:
+
+- `/api/auth/**` and `/api/users/**` to User Service.
+- `/api/meetings/**`, `/api/conversations/**`, `/api/team-spaces/**`, `/api/calendar-connections/**`, and `/api/license-requests/**` to Meeting Service.
+- `/api/messaging/**` to Meeting Service for RabbitMQ outbox monitoring and retry operations.
+- `/api/organizations/**` to Organization Service.
+- `/hubs/**` to Notification Service.
+
+### User Service
+
+Location: `src/Services/UserService`
+
+Responsibilities:
+
+- Register and login users.
+- Hash and verify passwords.
+- Issue JWT tokens with shared local key metadata.
+- Manage profile, avatar, and user search.
+- Store and update user presence/status.
+- Rate-limit auth endpoints.
+
+Database: `meeting_users`
+
+Main entities:
+
+- `User`
+
+### Meeting Service
+
+Location: `src/Services/MeetingService`
+
+Responsibilities:
+
+- Meeting scheduling, update, cancellation, end, and participant join/leave.
+- Calendar overlap prevention and calendar display data.
+- Meeting invite emails and response status/reason.
+- Transactional RabbitMQ outbox publishing for invite emails, chat notifications, call notifications, task assignment, recording-ready notifications, document-share emails, and license requests.
+- Direct and group conversations.
+- Chat messages, formatting, edit, delete, pin, important flag, reactions, unread markers, scheduled messages.
+- Attachments, document previews, share-via-email history.
+- Tasks created from chat comments with notes and activity history.
+- Meeting chat, recordings, whiteboard data, exports, lobby, raised hand, reactions, participant roles.
+- In-meeting direct calls and call history.
+- Team spaces, channels, tabs, and channel meetings.
+- License purchase/request email flow.
+- Google and Outlook calendar connection/sync adapter endpoints.
+- Organization-aware storage paths and retention worker.
+
+Database: `meeting_meetings`
+
+Main entities:
+
+- `Meeting`
+- `Participant`
+- `MeetingInvite`
+- `MeetingChatMessage`
+- `MeetingCallLog`
+- `Conversation`
+- `ConversationMember`
+- `ConversationMessage`
+- `ConversationMessageReaction`
+- `ScheduledConversationMessage`
+- `ConversationTask`
+- `ConversationTaskNote`
+- `ConversationTaskActivity`
+- `ConversationDocumentShare`
+- `TeamSpace`, `TeamChannel`, `TeamChannelTab`
+- `CalendarConnection`, `ExternalCalendarEvent`
+- `PlatformAuditLog`
+- `IntegrationEventOutboxMessage`
+- `IntegrationEventConsumerCheckpoint`
+
+### Notification Service
+
+Location: `src/Services/NotificationService`
+
+Responsibilities:
+
+- SignalR hub at `/hubs/notifications`.
+- User notification groups and meeting groups.
+- Incoming call, call cancel, call response, missed call, conversation, meeting, whiteboard, hand, reaction, recording, and invite events.
+- RabbitMQ event consumers that convert backend events into SignalR notifications.
+- Persistent event checkpoints so duplicate RabbitMQ deliveries do not fan out completed notifications again.
+- WebRTC offer, answer, and ICE candidate signaling.
+
+Database: `meeting_notifications`
+
+Main entities:
+
+- `ProcessedNotificationEvent`
+
+## RabbitMQ Consistency Model
+
+Samvaad uses RabbitMQ for async service communication and keeps data consistent through these rules:
+
+- Meeting Service writes business data and outgoing integration events into PostgreSQL together through `IntegrationEventOutboxMessages`.
+- The outbox dispatcher publishes pending events to RabbitMQ with publisher confirms and strict routable-message checks.
+- Consumers use durable quorum queues, manual acknowledgements, prefetch, and dead-letter queues.
+- Meeting Service email consumers write `IntegrationEventConsumerCheckpoint` rows so duplicate deliveries do not resend completed emails.
+- Notification Service writes `ProcessedNotificationEvent` rows so duplicate deliveries do not fan out completed realtime notifications again.
+- `GET /api/messaging/outbox/summary` exposes pending, failed, locked, and recently processed outbox counts.
+- `POST /api/messaging/outbox/{id}/retry` requeues a failed outbox event.
+
+### Organization Service
+
+Location: `src/Services/OrganizationService`
+
+Responsibilities:
+
+- Organization records, slugs, and membership.
+- Resolve organizations by id or slug.
+- Current organization resolution from tenant headers.
+- Product-owner SaaS configuration.
+- Storage provider, local/on-prem/cloud path configuration, limits, retention, guest access, and meeting defaults.
+- Usage metrics and audit logs.
+- Local tenant hosting metadata and launch actions.
+
+Database: `meeting_organizations`
+
+Main entities:
+
+- `Organization`
+- `OrganizationMember`
+- `OrganizationAuditLog`
+
+## Frontend Applications
+
+### Samvaad User App
+
+Location: `src/Frontend/meeting-app`
+
+Primary routes:
+
+- `/personal/dashboard`
+- `/personal/activity`
+- `/personal/chat`
+- `/personal/meet`
+- `/personal/calls`
+- `/personal/create-meeting`
+- `/personal/teams`
+- `/personal/meeting/{meetingId}`
+- `/org/{organizationSlug}/dashboard`
+- `/org/{organizationSlug}/chat`
+- `/org/{organizationSlug}/meet`
+- `/org/{organizationSlug}/meeting/{meetingId}`
+
+Key UI areas:
+
+- Compact shell/navigation.
+- Personal and organization workspace switching.
+- Calendar week/full-week/month views.
+- Chat with tabs for chat, files, photos, tasks, and calls.
+- Calls page and incoming call ringer.
+- Meeting room with responsive main stage and side panel.
+- Theme selection.
+- License request page.
+
+### Samvaad Admin
+
+Location: `src/Frontend/organization-admin`
+
+Purpose:
+
+- Product-owner/admin sign-in and registration.
+- Organization list and configuration.
+- Storage, retention, feature flags, meeting defaults, guest access, usage, audit, and local hosting controls.
+- Company-facing license request follow-up.
+
+## Workspace And Tenant Model
+
+Samvaad supports both individual and company use:
+
+- Personal workspace: no organization header, routes under `/personal`.
+- Organization workspace: selected organization is stored client-side and sent with `X-Organization-Id` and `X-Organization-Slug`; routes include `/org/{slug}`.
+- Meeting, chat, files, recordings, teams, calls, and tasks are filtered by tenant where applicable.
+- Organization settings control storage and retention behavior for tenant data.
+
+## Authentication Model
+
+1. User registers or logs in through User Service.
+2. User Service returns a JWT.
+3. Frontend stores the active account in session storage and supports multiple saved accounts.
+4. API Gateway forwards the bearer token.
+5. Services validate issuer, audience, lifetime, and a shared signing key.
+6. Development uses a shared local key id: `samvaad-shared-jwt-key`.
+7. Production must provide a strong shared secret through secure configuration.
+
+## Realtime And Calling Model
+
+SignalR handles coordination:
+
+- User notification groups for incoming calls, chat alerts, invite notifications, task notifications, and call responses.
+- Meeting groups for participant changes, raised hands, reactions, whiteboard updates, recording changes, and meeting end events.
+- WebRTC signaling messages are relayed through Notification Service.
+
+Browser media is handled in the meeting app:
+
+- Camera/microphone through browser media APIs.
+- Screen sharing through display capture.
+- Peer signaling through SignalR.
+- Call logs persisted in Meeting Service.
+
+## Calendar And Meeting Flow
+
+1. User selects a future calendar slot or uses New meeting.
+2. Meeting Service validates time range and organizer overlap.
+3. Meeting and invites are stored.
+4. Emails are sent through SMTP; local development uses Mailpit.
+5. Connected Google/Outlook adapters are invoked when configured.
+6. Attendees can accept, decline, or mark tentative with a reason.
+7. Accepted invites appear in the attendee calendar list.
+8. Past meetings cannot be joined, but chats and recordings remain accessible.
+
+## Chat, Files, And Tasks Flow
+
+1. User sends direct or group message.
+2. Message is persisted with formatting, attachment metadata, important/pinned flags, reply linkage, and optional client message id for retry/deduplication.
+3. Meeting Service stores a transactional outbox event with the message.
+4. The outbox dispatcher publishes the event to RabbitMQ with publisher confirms and strict routing checks.
+5. Notification Service consumes the event and sends SignalR notifications to active recipients.
+6. Unread counts update until the conversation is marked read.
+7. Messages can become tasks; tasks retain a source-message reference.
+8. Files can be previewed, downloaded, shared by email, and audited.
+
+## Storage Model
+
+Local development stores files under service-managed storage paths and exposes API URLs through the gateway.
+
+Organization configuration supports:
+
+- Storage provider selection.
+- Attachment and recording size limits.
+- Retention settings.
+- Local/on-prem/cloud path metadata.
+- Public base URL normalization.
+
+Production storage provider implementations should be wired to the chosen provider credentials and network policies.
+
+## Database Initialization
+
+`init-db.sql` creates:
+
+- `meeting_users`
+- `meeting_meetings`
+- `meeting_notifications`
+- `meeting_organizations`
+
+Each EF Core service applies its own migrations on startup.
+
+## Security Boundaries
+
+- JWT required for secured endpoints.
+- Services reject placeholder secrets outside development.
+- CORS origins are configurable.
+- Security headers are applied by services/gateway.
+- Organization data is tenant-scoped.
+- File uploads block unsafe extension/content-type combinations.
+- Auth endpoints are rate-limited.
+- Organizers/presenters have elevated meeting permissions.
+- Unauthorized users cannot edit/delete protected meeting, chat, recording, or whiteboard data.
+
+## Testing Architecture
+
+Test layers:
+
+- Server unit tests for each service.
+- Infrastructure tests for assemblies, routes, docker compose, migrations, and project references.
+- Client unit tests with Vitest.
+- Functional tests with Playwright.
+- Manual smoke flow for multi-user chat, calls, meetings, files, and calendar.
+
+Run all tests:
+
+```powershell
+.\run-all-tests.ps1
 ```
 
-**APIs:**
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - User login
-- `GET /api/users/profile` - Get authenticated user profile
-- `PUT /api/users/profile` - Update profile
-- `GET /api/users/{id}` - Get public user info
+## Azure Production Mapping
 
-### 2. Meeting Service (Port 5002)
-**Responsibilities:**
-- Meeting lifecycle management (CRUD)
-- Meeting scheduling
-- Participant management
-- Recording metadata
-
-**Database:** PostgreSQL (meeting_meetings)
-
-**Key Entities:**
-```csharp
-Meeting
-├── Id (GUID)
-├── OrganizerId (FK to User)
-├── Title
-├── Description
-├── StartTime
-├── EndTime
-├── DurationMinutes
-├── Status (Scheduled, InProgress, Completed, Cancelled)
-├── MeetingLink
-├── IsRecorded
-├── RecordingUrl
-├── MaxParticipants
-└── Participants (1:Many relationship)
-
-Participant
-├── Id (GUID)
-├── MeetingId (FK to Meeting)
-├── UserId (FK to User)
-├── UserEmail
-├── UserName
-├── JoinedAt
-├── LeftAt
-├── IsAudioEnabled
-├── IsVideoEnabled
-└── IsScreenSharing
-```
-
-**APIs:**
-- `POST /api/meetings` - Create meeting
-- `GET /api/meetings/{id}` - Get meeting details
-- `PUT /api/meetings/{id}` - Update meeting
-- `DELETE /api/meetings/{id}` - Delete meeting
-- `GET /api/meetings/organizer/list` - List user's meetings
-- `POST /api/meetings/{id}/participants/join` - Join meeting
-- `POST /api/meetings/{id}/participants/{pid}/leave` - Leave meeting
-- `GET /api/meetings/{id}/participants` - Get participants
-
-### 3. Notification Service (Port 5003)
-**Responsibilities:**
-- Real-time notifications via SignalR
-- Event broadcasting
-- Participant status updates
-- Meeting state changes
-
-**Technology:** ASP.NET Core SignalR
-
-**SignalR Hub: `/hubs/notifications`**
-
-**Supported Methods:**
-```typescript
-// Client Methods (called from frontend)
-JoinMeetingGroup(meetingId: string)
-LeaveMeetingGroup(meetingId: string)
-JoinUserNotifications(userId: string)
-SendPrivateMessage(userId: string, message: string)
-NotifyParticipantJoined(meetingId: string, participantName: string)
-NotifyParticipantLeft(meetingId: string, participantName: string)
-NotifyScreenShareStarted(meetingId: string, participantName: string)
-NotifyScreenShareEnded(meetingId: string, participantName: string)
-NotifyMeetingStarted(meetingId: string, meetingTitle: string)
-NotifyMeetingEnded(meetingId: string)
-BroadcastMeetingInvite(userId: string, meetingId: string, title: string, organizerName: string)
-
-// Server Events (received by frontend)
-ReceiveNotification(message: string)
-ParticipantJoined(data: { ParticipantName, Timestamp })
-ParticipantLeft(data: { ParticipantName, Timestamp })
-ScreenShareStarted(data: { ParticipantName, Timestamp })
-ScreenShareEnded(data: { ParticipantName, Timestamp })
-MeetingStarted(data: { MeetingTitle, Timestamp })
-MeetingEnded(data: { Timestamp })
-MeetingInvite(data: { MeetingId, MeetingTitle, OrganizerName, Timestamp })
-```
-
-### 4. API Gateway (Port 5000)
-**Technology:** YARP (Yet Another Reverse Proxy)
-
-**Responsibilities:**
-- Route aggregation
-- Request forwarding
-- Load balancing
-- Health checking
-
-**Route Configuration:**
-```json
-/api/users/* → http://localhost:5001
-/api/auth/* → http://localhost:5001
-/api/meetings/* → http://localhost:5002
-/hubs/* → http://localhost:5003
-```
-
-## Data Flow Diagrams
-
-### Meeting Creation Flow
-```
-1. User (Frontend)
-   └─→ POST /api/meetings
-       └─→ API Gateway
-           └─→ Meeting Service
-               ├─→ Create Meeting (DB)
-               ├─→ Generate Meeting Link
-               └─→ Return Meeting DTO
-                   └─→ Frontend updates state
-```
-
-### Real-time Participant Join Flow
-```
-1. Participant opens Meeting Page
-   └─→ Connect to SignalR Hub
-       └─→ Notification Service
-           └─→ JoinMeetingGroup(meetingId)
-
-2. Participant clicks "Join"
-   └─→ POST /api/meetings/{id}/participants/join
-       └─→ Meeting Service
-           ├─→ Add Participant (DB)
-           └─→ Return Participant DTO
-
-3. Meeting Service invokes SignalR
-   └─→ Broadcast to Meeting Group
-       └─→ "ParticipantJoined" event
-           └─→ All connected clients receive update
-               └─→ UI updates participant list
-```
-
-### Authentication Flow
-```
-1. User submits login form
-   └─→ POST /api/auth/login
-       └─→ User Service
-           ├─→ Find user by email
-           ├─→ Verify password (BCrypt)
-           ├─→ Generate JWT token
-           └─→ Return { userId, token, expiresAt }
-
-2. Frontend stores token
-   └─→ localStorage.setItem('authToken', token)
-
-3. Subsequent requests
-   └─→ Authorization: Bearer <token>
-       └─→ API Gateway validates JWT
-           └─→ Forwards to service
-               └─→ Service extracts user ID from claims
-```
-
-## Database Schema
-
-### PostgreSQL Databases
-
-**Database 1: meeting_users**
-```sql
--- Users table
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    is_email_verified BOOLEAN DEFAULT FALSE,
-    profile_picture_url VARCHAR(500),
-    phone_number VARCHAR(20),
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP
-);
-```
-
-**Database 2: meeting_meetings**
-```sql
--- Meetings table
-CREATE TABLE meetings (
-    id UUID PRIMARY KEY,
-    organizer_id UUID NOT NULL,
-    title VARCHAR(255) NOT NULL,
-    description TEXT,
-    start_time TIMESTAMP NOT NULL,
-    end_time TIMESTAMP,
-    duration_minutes INT,
-    status VARCHAR(20) DEFAULT 'Scheduled',
-    meeting_link VARCHAR(500),
-    is_recorded BOOLEAN DEFAULT FALSE,
-    recording_url VARCHAR(500),
-    max_participants INT DEFAULT 100,
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP
-);
-
--- Participants table
-CREATE TABLE participants (
-    id UUID PRIMARY KEY,
-    meeting_id UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL,
-    user_email VARCHAR(255) NOT NULL,
-    user_name VARCHAR(255) NOT NULL,
-    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    left_at TIMESTAMP,
-    is_audio_enabled BOOLEAN DEFAULT TRUE,
-    is_video_enabled BOOLEAN DEFAULT TRUE,
-    is_screen_sharing BOOLEAN DEFAULT FALSE
-);
-```
-
-## Redis Usage
-
-**Cache Keys Pattern:**
-```
-user:{userId} → User data cache
-meeting:{meetingId} → Meeting data cache
-session:{sessionId} → User session data
-participants:{meetingId} → Active participants in meeting
-```
-
-## Security Considerations
-
-### Authentication
-- JWT tokens with 24-hour expiration
-- Token refresh mechanism (can be implemented)
-- BCrypt password hashing (11 rounds)
-
-### Authorization
-- JWT claims-based authorization
-- Per-endpoint authorization attributes
-- Role-based access control (future)
-
-### Data Protection
-- HTTPS/TLS in production
-- SQL injection prevention via EF Core parameterization
-- CORS policy enforcement
-- Input validation on all endpoints
-
-### API Security
-- Rate limiting (to be implemented)
-- Request validation
-- Error handling without exposing internals
-- Logging of security events
-
-## Deployment Architecture (Production)
-
-```
-┌──────────────────────────────────────────────────────┐
-│              Azure Container Registry                │
-│  (Docker images for all services)                   │
-└──────────────────────┬───────────────────────────────┘
-                       │
-┌──────────────────────▼───────────────────────────────┐
-│         Azure Kubernetes Service (AKS)              │
-├──────────────────────────────────────────────────────┤
-│ ┌──────────┐  ┌──────────┐  ┌──────────┐           │
-│ │User Pods │  │Meeting   │  │Notif.    │           │
-│ │(Replicas)│  │Pods      │  │Pods      │           │
-│ └──────────┘  └──────────┘  └──────────┘           │
-│                                                      │
-│ ┌────────────────────────────────────────────┐      │
-│ │  Ingress / Load Balancer                  │      │
-│ └────────────────────────────────────────────┘      │
-└──────────────────────────────────────────────────────┘
-         │
-         ├─────────────────┬──────────────┐
-         │                 │              │
-         ▼                 ▼              ▼
-    ┌─────────────┐  ┌──────────┐  ┌─────────┐
-    │ Azure SQL   │  │ Azure    │  │ Azure   │
-    │ Database    │  │ Cache    │  │ Storage │
-    │ (Postgres)  │  │(Redis)   │  │(Blobs)  │
-    └─────────────┘  └──────────┘  └─────────┘
-```
-
-## Scaling Strategy
-
-### Horizontal Scaling
-- Each microservice can run multiple replicas
-- Load balancer distributes traffic
-- Stateless services for easy scaling
-
-### Vertical Scaling
-- Increase pod resource limits
-- Database optimization
-- Connection pooling
-
-### Caching Strategy
-- Redis for session storage
-- In-memory caching for frequently accessed data
-- Cache invalidation on updates
-
-## Monitoring & Logging
-
-**Tools:**
-- Serilog for structured logging
-- Application Insights for APM
-- Docker logs for containerized services
-- Database query logging
-
-**Metrics to Monitor:**
-- API response times
-- Error rates
-- Database connection pool
-- Cache hit rates
-- SignalR connections
-
-## Future Enhancements
-
-1. **WebRTC Integration**
-   - Peer-to-peer video/audio
-   - Screen sharing
-   - TURN/STUN servers
-
-2. **Message Queue**
-   - RabbitMQ or Azure Service Bus
-   - Async event processing
-   - Meeting started/ended events
-
-3. **Advanced Features**
-   - Meeting recordings to Azure Blob Storage
-   - Email notifications
-   - Chat history
-   - Meeting transcriptions
-
-4. **Mobile App**
-   - React Native
-   - Native mobile experience
-   - Push notifications
-
-5. **Analytics**
-   - Meeting analytics
-   - User engagement metrics
-   - Performance dashboards
+| Architecture component | Azure target |
+| --- | --- |
+| Samvaad user app | Azure Static Web Apps or static App Service hosting |
+| Samvaad Admin | Azure Static Web Apps or static App Service hosting |
+| API Gateway | Azure Container Apps or Azure App Service |
+| User Service | Azure Container Apps or Azure App Service |
+| Meeting Service | Azure Container Apps or Azure App Service |
+| Notification Service | Azure Container Apps or Azure App Service |
+| Organization Service | Azure Container Apps or Azure App Service |
+| PostgreSQL databases | Azure Database for PostgreSQL Flexible Server |
+| File/recording storage | Azure Blob Storage |
+| Secrets | Azure Key Vault |
+| Logs and metrics | Azure Monitor and Application Insights |
+| Email | Azure Communication Services Email or SMTP provider |
+| Edge/TLS/WAF | Azure Front Door or Application Gateway |

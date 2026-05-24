@@ -12,6 +12,24 @@ namespace MeetingService.Controllers;
 public class ConversationsController : ControllerBase
 {
     private const long MaxAttachmentRequestBytes = 512 * 1024 * 1024;
+    private static readonly HashSet<string> BlockedAttachmentExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".bat",
+        ".cmd",
+        ".com",
+        ".dll",
+        ".exe",
+        ".hta",
+        ".js",
+        ".jse",
+        ".msi",
+        ".ps1",
+        ".scr",
+        ".sh",
+        ".vbs",
+        ".wsf"
+    };
+
     private readonly IMeetingService _meetingService;
     private readonly IOrganizationStorageService _storageService;
     private readonly ILogger<ConversationsController> _logger;
@@ -471,11 +489,23 @@ public class ConversationsController : ControllerBase
             }
 
             var extension = Path.GetExtension(originalFileName);
-            var storedFileName = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}{extension}";
-            var storedFile = await _storageService.SaveAsync(OrganizationFileKind.ChatAttachment, conversationId, request.File, storedFileName);
+            if (BlockedAttachmentExtensions.Contains(extension))
+            {
+                return BadRequest("This attachment type is not allowed");
+            }
+
             var contentType = string.IsNullOrWhiteSpace(request.File.ContentType)
                 ? "application/octet-stream"
                 : request.File.ContentType;
+
+            if (contentType.Equals("text/html", StringComparison.OrdinalIgnoreCase)
+                || contentType.Equals("application/x-msdownload", StringComparison.OrdinalIgnoreCase))
+            {
+                return BadRequest("This attachment content type is not allowed");
+            }
+
+            var storedFileName = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}{extension}";
+            var storedFile = await _storageService.SaveAsync(OrganizationFileKind.ChatAttachment, conversationId, request.File, storedFileName);
 
             var message = await _meetingService.AddConversationMessageAsync(conversationId, new SendConversationMessageRequest
             {

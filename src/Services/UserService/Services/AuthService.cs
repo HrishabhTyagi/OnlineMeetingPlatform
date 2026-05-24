@@ -25,7 +25,16 @@ public class AuthService : IAuthService
     public string GenerateJwtToken(User user)
     {
         var jwtSettings = _configuration.GetSection("JwtSettings");
-        var secretKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["SecretKey"] ?? "your-super-secret-key-change-in-production"));
+        var secret = jwtSettings["SecretKey"];
+        if (string.IsNullOrWhiteSpace(secret) || Encoding.UTF8.GetByteCount(secret) < 32)
+        {
+            throw new InvalidOperationException("JwtSettings:SecretKey must be configured with at least 32 bytes.");
+        }
+
+        var secretKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret))
+        {
+            KeyId = "samvaad-shared-jwt-key"
+        };
         var credentials = new SigningCredentials(secretKey, SecurityAlgorithms.HmacSha256);
 
         var claims = new List<Claim>

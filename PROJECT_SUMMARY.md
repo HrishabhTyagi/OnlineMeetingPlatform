@@ -1,393 +1,175 @@
-# Project Summary - Online Meeting Platform
+# Samvaad Project Summary
 
-## 📋 Overview
+## Overview
 
-This is a **production-ready microservices-based online meeting platform** built with:
-- **ASP.NET Core 8.0** (Backend)
-- **React 18 + TypeScript** (Frontend)
-- **SignalR** (Real-time communication)
-- **PostgreSQL** (Database)
-- **Redis** (Caching)
-- **Docker** (Containerization)
-- **YARP** (API Gateway)
+Samvaad is a collaboration platform for individuals and organizations. It combines chat, meetings, calendar, tasks, recordings, file sharing, calls, whiteboard data, organization workspaces, and a separate SaaS admin console.
 
-## 🏗️ Project Structure
+The product started as `OnlineMeetingPlatform`; the current product name in the user-facing UI is Samvaad.
 
-```
-D:\Projects\OnlineMeetingPlatform/
-├── src/
-│   ├── Services/
-│   │   ├── UserService/          (Port 5001) - Auth & User Management
-│   │   ├── MeetingService/        (Port 5002) - Meeting Management
-│   │   └── NotificationService/   (Port 5003) - Real-time Notifications
-│   ├── Gateway/
-│   │   └── ApiGateway/            (Port 5000) - YARP Reverse Proxy
-│   └── Frontend/
-│       └── meeting-app/           (Port 5173) - React App
-├── docker-compose.yml             - Local development environment
-├── Dockerfile.multi               - Multi-stage Docker builds
-├── README.md                      - Project overview
-├── QUICKSTART.md                  - Getting started guide
-├── ARCHITECTURE.md                - System design documentation
-└── DEPLOYMENT.md                  - Production deployment guide
+## Current Status
+
+- Local full-stack application is implemented.
+- API Gateway and four backend services are available.
+- Main Samvaad app and Samvaad Admin app are available.
+- Azure is the selected production deployment target.
+- Local Docker infrastructure includes PostgreSQL, Redis, RabbitMQ, and Mailpit.
+- Meeting Service uses a transactional integration outbox before RabbitMQ publishing, so saved chat/meeting/call/task changes are not lost when RabbitMQ is temporarily unavailable.
+- Meeting and Notification consumers persist processed-event checkpoints so RabbitMQ redelivery does not duplicate completed email or realtime notification work.
+- Automated server, client, functional, and infrastructure tests pass.
+- Live two-user smoke flow passed on 2026-05-21 after fixing JWT validation and the meeting call-log migration.
+
+Latest full test report:
+
+```text
+artifacts/test-reports/20260521-011036/summary.md
 ```
 
-## ✨ Key Features
+Result: 8 suites passed, 0 failed.
 
-### Authentication & Authorization
-- ✅ User registration with email/password
-- ✅ JWT-based authentication
-- ✅ BCrypt password hashing
-- ✅ Token expiration & refresh
-- ✅ Secure claim-based authorization
+## Product Areas
 
-### Meeting Management
-- ✅ Create, read, update, delete meetings
-- ✅ Schedule meetings with start time
-- ✅ Track meeting duration
-- ✅ Set participant limits
-- ✅ Recording metadata
-- ✅ Meeting status tracking
+### Identity And Profile
 
-### Real-time Features
-- ✅ SignalR hub for live notifications
-- ✅ Participant join/leave events
-- ✅ Screen share notifications
-- ✅ Meeting invite broadcasting
-- ✅ Live participant count
-- ✅ Audio/Video status updates
+- Register and sign in.
+- JWT authentication.
+- Multiple saved accounts in one browser session.
+- Profile and avatar management.
+- Presence/status selection and display.
+- Presence changes reflected across chat and meetings.
 
-### User Experience
-- ✅ Responsive React dashboard
-- ✅ Real-time meeting updates
-- ✅ User profile management
-- ✅ Meeting history
-- ✅ Participant management
-- ✅ Tailwind CSS styling
+### Personal And Organization Workspaces
 
-## 🚀 Quick Start
+- Personal workspace under `/personal`.
+- Organization workspace under `/org/{organizationSlug}`.
+- Tenant-aware API headers for organization data.
+- Organization data separation for meetings, chats, files, teams, calls, and storage.
+- Product-owner admin app for organization configuration.
 
-### Prerequisites
-- .NET 8.0 SDK
-- Node.js 18+
-- Docker Desktop
-- Git
+### Chat
 
-### 60-Second Setup
+- Direct and group chat.
+- Chat request/invite flow.
+- Unread counts.
+- Pinned messages.
+- Important messages.
+- Reactions.
+- Message editing and deletion.
+- Message formatting with preserved line breaks and code blocks.
+- Scheduled messages.
+- Attachments, pasted screenshots, drag/drop upload, document preview, and email sharing.
+- Tabs for chat, files, photos, tasks, and calls.
 
-```bash
-# 1. Start infrastructure
-cd D:\Projects\OnlineMeetingPlatform
-docker-compose up -d
+### Tasks
 
-# 2. In Terminal 1: User Service
-cd src/Services/UserService
-dotnet run
+- Create tasks from comments/messages.
+- Link task back to original message.
+- Edit title, description, priority, due date, status, and assignee.
+- Assign to self, participants, or external email.
+- Notes and activity history.
+- Filters by status, priority, assignee, due date, and query.
+- Reopen completed tasks.
 
-# 3. In Terminal 2: Meeting Service
-cd src/Services/MeetingService
-dotnet run
+### Calendar And Meetings
 
-# 4. In Terminal 3: Notification Service
-cd src/Services/NotificationService
-dotnet run
+- Work-week, full-week, and month calendar views.
+- Meeting cards show time, duration, and status.
+- Visual differences for ongoing, upcoming, completed, and cancelled meetings.
+- Past time slots blocked for scheduling.
+- Drag/drop reschedule with confirmation.
+- Duplicate/overlapping meeting prevention.
+- Invite responses with reason visible to organizer.
+- Join links open in a new tab.
+- Past meetings cannot be joined, but chats and recordings remain viewable.
 
-# 5. In Terminal 4: API Gateway
-cd src/Gateway/ApiGateway
-dotnet run
+### Meeting Room
 
-# 6. In Terminal 5: Frontend
-cd src/Frontend/meeting-app
-npm install
-npm run dev
+- Join lobby/pre-join UI.
+- Camera, microphone, and screen sharing controls.
+- WebRTC signaling through SignalR.
+- Recording upload and persistent recording link.
+- Participants panel with raised hands sorted to top.
+- Organizer and role labels.
+- Presenter status shown across app.
+- Raise hand and quick reactions.
+- Meeting chat.
+- Whiteboard data save/export.
+- Export chat and whiteboard data.
+- Organizer end/leave flow.
+- Direct call available users during a meeting.
+- Cancel accidental outgoing call and send apology message.
+
+### Admin And SaaS
+
+- Separate Samvaad Admin app.
+- Admin sign-in/register flow.
+- Organization list and configuration.
+- Storage provider, retention, upload limits, guest access, and meeting defaults.
+- Usage metrics and audit logs.
+- Local tenant hosting action for an organization.
+- License purchase/request page in the user app with simulated payment and email notification.
+
+## Services
+
+| Service | Port | Summary |
+| --- | ---: | --- |
+| API Gateway | 5000 | YARP routing and Swagger aggregation |
+| User Service | 5001 | Auth, users, avatars, presence |
+| Meeting Service | 5002 | Meetings, chat, calls, tasks, files, calendar, license requests, transactional event outbox |
+| Notification Service | 5003 | RabbitMQ event consumers, SignalR realtime events, idempotency checkpoints, and WebRTC signaling |
+| Organization Service | 5004 | Organizations, tenant config, usage, audit |
+
+## Frontends
+
+| App | Port | Summary |
+| --- | ---: | --- |
+| Samvaad app | 5173 | Main collaboration app |
+| Samvaad Admin | 5174 | Product-owner admin console |
+
+## Local Infrastructure
+
+| Component | Port |
+| --- | ---: |
+| PostgreSQL | 5432 |
+| Redis | 6379 |
+| RabbitMQ AMQP | 5672 |
+| RabbitMQ UI | 15672 |
+| Mailpit SMTP | 1025 |
+| Mailpit UI | 8025 |
+
+## Testing
+
+Run all tests:
+
+```powershell
+.\run-all-tests.ps1
 ```
 
-**Open browser**: http://localhost:5173
+The runner covers:
 
-## 📊 Architecture
+- `MeetingService.Tests`
+- `UserService.Tests`
+- `OrganizationService.Tests`
+- `NotificationService.Tests`
+- `Infrastructure.Tests`
+- Meeting app unit tests
+- Organization admin unit tests
+- Meeting app Playwright functional tests
 
-### Microservices Pattern
-```
-Frontend (React)
-    ↓
-API Gateway (YARP) [Port 5000]
-    ├─→ User Service [Port 5001]
-    ├─→ Meeting Service [Port 5002]
-    └─→ Notification Service [Port 5003]
-    ↓
-Database & Cache
-    ├─→ PostgreSQL [Port 5432]
-    └─→ Redis [Port 6379]
-```
+## Recently Fixed During Full Smoke Testing
 
-### Communication Patterns
-1. **Synchronous**: REST APIs over HTTP
-2. **Asynchronous**: SignalR for real-time updates
-3. **Data Storage**: Entity Framework Core with PostgreSQL
+- JWT tokens now include a shared key id and all services resolve the same signing key.
+- Development JWT secrets are aligned across User, Meeting, Organization, and Notification services.
+- The `MeetingCallLogs` migration now has EF metadata and is applied to the local database.
+- The direct-call API path was verified after migration.
+- RabbitMQ publishing now uses strict routing, publisher confirms, and an EF Core outbox dispatcher with retries/backoff.
+- Added outbox status/retry API and persistent consumer idempotency for Meeting and Notification services.
+- Dashboard, chat, meet, and meeting/autojoin pages render without console errors in the in-app browser.
 
-## 🔐 Security Features
+## Recommended Next Steps
 
-- ✅ JWT Authentication
-- ✅ Password hashing with BCrypt
-- ✅ CORS policy enforcement
-- ✅ SQL injection prevention (EF Core)
-- ✅ Input validation
-- ✅ Secure token storage
-- ✅ Claim-based authorization
-
-## 📈 Scalability
-
-- **Horizontal**: Each service can run multiple replicas
-- **Vertical**: Database and cache can be upgraded
-- **Load Balancing**: YARP distributes requests
-- **Caching**: Redis reduces database load
-- **Stateless**: Services are easily replaceable
-
-## 🧪 Testing
-
-### Manual Testing
-
-**Register & Login:**
-```bash
-POST http://localhost:5000/api/auth/register
-{
-  "email": "test@example.com",
-  "firstName": "John",
-  "lastName": "Doe",
-  "password": "Test@123"
-}
-```
-
-**Create Meeting:**
-```bash
-POST http://localhost:5000/api/meetings
-Authorization: Bearer <token>
-{
-  "title": "Team Standup",
-  "description": "Daily standup",
-  "startTime": "2024-05-01T10:00:00Z",
-  "durationMinutes": 30,
-  "maxParticipants": 50,
-  "isRecorded": true
-}
-```
-
-**Join Meeting (WebSocket):**
-```javascript
-const connection = new HubConnectionBuilder()
-  .withUrl('http://localhost:5000/hubs/notifications')
-  .withAutomaticReconnect()
-  .build();
-
-connection.start();
-connection.invoke('JoinMeetingGroup', 'meeting-id-123');
-connection.on('ParticipantJoined', (data) => console.log(data));
-```
-
-## 📚 API Documentation
-
-### User Service (5001)
-- `POST /api/auth/register` - Register user
-- `POST /api/auth/login` - Login user
-- `GET /api/users/profile` - Get profile
-- `PUT /api/users/profile` - Update profile
-- `GET /api/users/{id}` - Get user by ID
-
-### Meeting Service (5002)
-- `POST /api/meetings` - Create meeting
-- `GET /api/meetings/{id}` - Get meeting
-- `GET /api/meetings/organizer/list` - List user's meetings
-- `PUT /api/meetings/{id}` - Update meeting
-- `DELETE /api/meetings/{id}` - Delete meeting
-- `POST /api/meetings/{id}/participants/join` - Join meeting
-- `GET /api/meetings/{id}/participants` - Get participants
-
-### Notification Service (5003)
-- WebSocket: `ws://localhost:5000/hubs/notifications`
-- Events: ParticipantJoined, ParticipantLeft, MeetingInvite, etc.
-
-## 🛠️ Technology Stack
-
-### Backend
-| Technology | Version | Purpose |
-|-----------|---------|---------|
-| ASP.NET Core | 8.0 | Web framework |
-| SignalR | 1.1.0 | Real-time communication |
-| Entity Framework Core | 8.0 | ORM |
-| PostgreSQL | 15 | Database |
-| Redis | 7 | Cache & Sessions |
-| YARP | 2.0.0 | API Gateway |
-| JWT | 7.0.0 | Authentication |
-| BCrypt.Net | 4.0.3 | Password hashing |
-| Serilog | 3.0.1 | Logging |
-
-### Frontend
-| Technology | Version | Purpose |
-|-----------|---------|---------|
-| React | 18.2.0 | UI Framework |
-| TypeScript | 5.2.2 | Type Safety |
-| Vite | 5.0.8 | Build Tool |
-| React Router | 6.20.0 | Routing |
-| React Query | 5.25.0 | Server State |
-| Zustand | 4.4.1 | Client State |
-| SignalR Client | 8.0.0 | Real-time |
-| Tailwind CSS | 3.3.6 | Styling |
-| Axios | 1.6.2 | HTTP Client |
-
-### Infrastructure
-| Technology | Purpose |
-|-----------|---------|
-| Docker | Containerization |
-| Docker Compose | Local orchestration |
-| PostgreSQL | Primary database |
-| Redis | Caching layer |
-
-## 📋 Checklist for Production
-
-- [ ] Update JWT secret key
-- [ ] Configure database credentials
-- [ ] Enable HTTPS/TLS
-- [ ] Set up monitoring (Application Insights)
-- [ ] Configure backup strategy
-- [ ] Set up alerting
-- [ ] Review security settings
-- [ ] Load testing
-- [ ] Performance tuning
-- [ ] Documentation review
-- [ ] Incident response plan
-- [ ] Disaster recovery plan
-
-## 🚀 Deployment Options
-
-1. **Local Development** - Docker Compose (see QUICKSTART.md)
-2. **Docker on Server** - Linux VPS with Docker
-3. **Azure Container Instances** - Managed containers
-4. **Azure Kubernetes Service** - Production-grade orchestration
-
-See **DEPLOYMENT.md** for detailed instructions.
-
-## 📖 Documentation
-
-| Document | Purpose |
-|----------|---------|
-| README.md | Project overview |
-| QUICKSTART.md | Local setup guide |
-| ARCHITECTURE.md | System design |
-| DEPLOYMENT.md | Production deployment |
-
-## 🐛 Common Issues & Solutions
-
-| Issue | Solution |
-|-------|----------|
-| Port already in use | Change port in appsettings.json or docker-compose.yml |
-| Database connection error | Verify PostgreSQL is running, check connection string |
-| SignalR won't connect | Ensure token is valid, check CORS settings |
-| npm packages not found | Run `npm install` in frontend directory |
-| .NET SDK not found | Download from dotnet.microsoft.com |
-
-## 🔄 Development Workflow
-
-1. **Feature Branch**: `git checkout -b feature/new-feature`
-2. **Make Changes**: Edit code in your service
-3. **Test**: Run locally with docker-compose
-4. **Commit**: `git commit -am "Add new feature"`
-5. **Push**: `git push origin feature/new-feature`
-6. **Pull Request**: Create PR for code review
-7. **Merge**: After approval, merge to main
-
-## 📞 Support & Contributing
-
-### Getting Help
-- Check documentation files (README, QUICKSTART, ARCHITECTURE)
-- Review API docs in appsettings.json
-- Check Docker logs: `docker logs container_name`
-- Test endpoints with Postman/Insomnia
-
-### Contributing
-1. Fork the repository
-2. Create feature branch
-3. Make improvements
-4. Add tests
-5. Submit pull request
-
-## 📝 License
-
-This project is provided as-is for educational and commercial use.
-
-## 🎯 Next Steps
-
-### Immediate (Week 1)
-- [ ] Complete local setup
-- [ ] Register test account
-- [ ] Create test meeting
-- [ ] Test joining meeting
-- [ ] Review API endpoints
-
-### Short-term (Week 2-4)
-- [ ] Add email notifications
-- [ ] Implement meeting waiting room
-- [ ] Add chat functionality
-- [ ] Create user invite system
-- [ ] Add meeting recordings integration
-
-### Medium-term (Month 2-3)
-- [ ] WebRTC video/audio integration
-- [ ] Mobile app (React Native)
-- [ ] Analytics dashboard
-- [ ] Admin panel
-- [ ] User roles (admin, moderator, participant)
-
-### Long-term (Month 4+)
-- [ ] Kubernetes deployment
-- [ ] Multi-region support
-- [ ] Advanced analytics
-- [ ] Video transcription
-- [ ] AI-powered features
-
-## 📊 Performance Metrics
-
-### Expected Performance
-- API Response Time: < 200ms (p95)
-- Database Query Time: < 100ms
-- SignalR Message Delivery: < 50ms
-- Frontend Load Time: < 2s
-
-### Capacity
-- Concurrent Users: 10,000+
-- Meetings per Day: Unlimited
-- Participants per Meeting: 1,000+
-
-## 🔮 Future Enhancements
-
-- [ ] WebRTC for peer-to-peer video
-- [ ] End-to-end encryption
-- [ ] Integration with calendar apps
-- [ ] AI-powered meeting summaries
-- [ ] Advanced scheduling
-- [ ] Meeting templates
-- [ ] Custom branding
-- [ ] SSO integration (OAuth2, SAML)
-
-## 🏆 Success Criteria
-
-✅ **Achieved:**
-- Microservices architecture implemented
-- User authentication working
-- Meeting management functional
-- Real-time notifications via SignalR
-- Docker containerization
-- Production-ready code structure
-
-✅ **Ready for:**
-- Local development
-- Testing and QA
-- Production deployment
-- Team collaboration
-- Scaling and optimization
-
----
-
-**Created**: April 30, 2026
-**Technology Stack**: ASP.NET Core 8 + React 18 + SignalR + PostgreSQL
-**Architecture**: Microservices with API Gateway
-**Status**: ✅ Ready for Development & Deployment
+- Configure production secrets and storage providers.
+- Add Azure-specific frontend API base URL configuration if not already handled by hosting.
+- Provision Azure Container Registry, Container Apps/App Service, PostgreSQL Flexible Server, Blob Storage, Key Vault, and Application Insights.
+- Add TURN/STUN infrastructure for reliable WebRTC outside local networks.
+- Run load/security testing before onboarding real organizations.
+- Decide per-customer hosting model on Azure: shared tenant URL, dedicated app host, or hybrid.

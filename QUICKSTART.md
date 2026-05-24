@@ -1,353 +1,220 @@
-# Quick Start Guide - Online Meeting Platform
+# Samvaad Quickstart
+
+This guide starts the full local Samvaad system: infrastructure, backend services, the main user app, and the admin app.
 
 ## Prerequisites
 
-Before you start, make sure you have installed:
-- **.NET 8.0 SDK** - https://dotnet.microsoft.com/download
-- **Node.js 18+** - https://nodejs.org/
-- **Docker & Docker Desktop** - https://www.docker.com/products/docker-desktop
-- **PostgreSQL 15** (Optional - use Docker instead)
-- **Redis 7** (Optional - use Docker instead)
+- .NET 8 SDK
+- Node.js and npm
+- Docker Desktop
+- PowerShell
 
-## Step 1: Start Infrastructure with Docker Compose
+The current local setup has been verified with:
 
-Open PowerShell/Command Prompt and run:
+- .NET SDK 10.0.203 running .NET 8 projects
+- Node.js v24.15.0
+- npm 11.12.1
+- PowerShell 5.1
 
-```bash
+## 1. Start Local Infrastructure
+
+From the repository root:
+
+```powershell
 cd D:\Projects\OnlineMeetingPlatform
 docker-compose up -d
-```
-
-This will start:
-- **PostgreSQL** (Database) - Port 5432
-- **Redis** (Cache) - Port 6379
-
-Verify services are running:
-```bash
 docker-compose ps
 ```
 
-## Step 2: Start Backend Services
+Docker Compose starts:
 
-Open 4 separate PowerShell terminals and run each service:
+| Container | Port | Purpose |
+| --- | ---: | --- |
+| `meeting_postgres` | 5432 | PostgreSQL databases |
+| `meeting_redis` | 6379 | Redis |
+| `meeting_rabbitmq` | 5672, 15672 | RabbitMQ event bus and management UI |
+| `meeting_mailpit` | 1025, 8025 | SMTP test inbox |
 
-### Terminal 1 - User Service (Port 5001)
-```bash
+Open Mailpit at http://localhost:8025 to inspect local emails.
+Open RabbitMQ Management at http://localhost:15672 with `samvaad` / `samvaad123` to inspect exchanges, quorum queues, and dead-letter queues.
+Meeting Service stores outgoing integration events in `IntegrationEventOutboxMessages`; if RabbitMQ or a consumer queue is unavailable, the dispatcher retries instead of losing the event.
+Meeting and Notification services also store processed-event checkpoints to avoid duplicate work after RabbitMQ redelivery.
+
+## 2. Start All Local Apps
+
+The recommended path is the service launcher:
+
+```powershell
+.\run-all-services.ps1
+```
+
+The launcher closes existing local app processes on the expected ports, checks Docker Compose containers, then starts:
+
+- User Service on http://localhost:5001
+- Meeting Service on http://localhost:5002
+- Notification Service on http://localhost:5003
+- Organization Service on http://localhost:5004
+- API Gateway on http://localhost:5000
+- Samvaad app on http://localhost:5173
+- Samvaad Admin on http://localhost:5174
+
+## 3. Manual Startup Alternative
+
+Use this only when you want to debug a single service directly.
+
+```powershell
 cd D:\Projects\OnlineMeetingPlatform\src\Services\UserService
 dotnet run
 ```
 
-### Terminal 2 - Meeting Service (Port 5002)
-```bash
+```powershell
 cd D:\Projects\OnlineMeetingPlatform\src\Services\MeetingService
 dotnet run
 ```
 
-### Terminal 3 - Notification Service (Port 5003)
-```bash
+```powershell
 cd D:\Projects\OnlineMeetingPlatform\src\Services\NotificationService
 dotnet run
 ```
 
-### Terminal 4 - API Gateway (Port 5000)
-```bash
+```powershell
+cd D:\Projects\OnlineMeetingPlatform\src\Services\OrganizationService
+dotnet run
+```
+
+```powershell
 cd D:\Projects\OnlineMeetingPlatform\src\Gateway\ApiGateway
 dotnet run
 ```
 
-**Wait for all services to start** - You should see messages like "Now listening on: http://localhost:5001"
-
-## Step 3: Start Frontend
-
-Open a new PowerShell terminal:
-
-```bash
+```powershell
 cd D:\Projects\OnlineMeetingPlatform\src\Frontend\meeting-app
 npm install
 npm run dev
 ```
 
-The frontend will start at **http://localhost:5173**
-
-## Step 4: Access the Application
-
-1. Open your browser and navigate to: **http://localhost:5173**
-2. Click on **"Create one"** to register a new account
-3. Fill in your details and click **Register**
-4. You'll be redirected to the **Dashboard**
-
-## Testing the Application
-
-### Register a User
-- Email: test@example.com
-- First Name: John
-- Last Name: Doe
-- Password: Test@123
-
-### Create a Meeting
-- Click **"Create Meeting"** button
-- Fill in meeting details:
-  - Title: "Team Standup"
-  - Description: "Daily standup meeting"
-  - Start Time: Tomorrow at 10:00 AM
-  - Duration: 30 minutes
-  - Max Participants: 50
-  - Check "Record this meeting" if you want
-- Click **"Create Meeting"**
-
-### API Endpoints
-
-You can test APIs using Postman or cURL:
-
-#### Authentication
-```bash
-# Register
-POST http://localhost:5000/api/auth/register
-Content-Type: application/json
-
-{
-  "email": "user@example.com",
-  "firstName": "John",
-  "lastName": "Doe",
-  "password": "Password@123"
-}
-
-# Login
-POST http://localhost:5000/api/auth/login
-Content-Type: application/json
-
-{
-  "email": "user@example.com",
-  "password": "Password@123"
-}
+```powershell
+cd D:\Projects\OnlineMeetingPlatform\src\Frontend\organization-admin
+npm install
+npm run dev
 ```
 
-#### User Profile
-```bash
-# Get Profile (requires token)
-GET http://localhost:5000/api/users/profile
-Authorization: Bearer <YOUR_TOKEN>
+## 4. Open The Apps
 
-# Update Profile
-PUT http://localhost:5000/api/users/profile
-Authorization: Bearer <YOUR_TOKEN>
-Content-Type: application/json
+- Samvaad user app: http://localhost:5173
+- Personal dashboard: http://localhost:5173/personal/dashboard
+- Personal chat: http://localhost:5173/personal/chat
+- Personal meet page: http://localhost:5173/personal/meet
+- Organization workspace: `http://localhost:5173/org/{organizationSlug}/dashboard`
+- Samvaad Admin: http://localhost:5174
+- Gateway Swagger: http://localhost:5000/swagger
+- Mailpit: http://localhost:8025
+- RabbitMQ Management: http://localhost:15672
 
-{
-  "firstName": "Jane",
-  "lastName": "Smith",
-  "phoneNumber": "+1234567890"
-}
+## 5. Create Or Use Test Accounts
+
+Register from the UI or call the API:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:5000/api/auth/register `
+  -ContentType application/json `
+  -Body '{
+    "email": "owner@samvaad.test",
+    "firstName": "Asha",
+    "lastName": "Mehta",
+    "password": "Password123!"
+  }'
 ```
 
-#### Meetings
-```bash
-# Create Meeting (requires token)
-POST http://localhost:5000/api/meetings
-Authorization: Bearer <YOUR_TOKEN>
-Content-Type: application/json
+Recent local smoke users:
 
-{
-  "title": "Planning Session",
-  "description": "Q1 planning",
-  "startTime": "2024-05-01T14:00:00Z",
-  "durationMinutes": 60,
-  "maxParticipants": 100,
-  "isRecorded": true
-}
+- `smoke.owner.20260521010138@samvaad.test`
+- `smoke.alex.20260521010138@samvaad.test`
+- `smoke.casey.20260521010138@samvaad.test`
+- Password: `Password123!`
 
-# Get My Meetings
-GET http://localhost:5000/api/meetings/organizer/list
-Authorization: Bearer <YOUR_TOKEN>
+## 6. Common Local Flows To Verify
 
-# Get Meeting Details
-GET http://localhost:5000/api/meetings/{meetingId}
+1. Register two users.
+2. Start a direct chat.
+3. Send a multi-line/code message.
+4. Upload or paste an image/file into chat.
+5. Create a task from a message.
+6. Schedule a meeting from the calendar.
+7. Accept or decline the invite from another account.
+8. Join the meeting in two browser tabs.
+9. Start video, mute/unmute, share screen, raise hand, send reaction.
+10. Call an available user directly from the ongoing meeting.
+11. Cancel an accidental call and confirm the apology message.
+12. Start and stop recording, then confirm the recording link persists.
+13. Check email output in Mailpit.
 
-# Join Meeting
-POST http://localhost:5000/api/meetings/{meetingId}/participants/join
-Content-Type: application/json
+## 7. Run Tests
 
-{
-  "userEmail": "participant@example.com",
-  "userName": "John Doe"
-}
+Run all server, client, functional, and infrastructure tests:
 
-# Get Participants
-GET http://localhost:5000/api/meetings/{meetingId}/participants
+```powershell
+.\run-all-tests.ps1
 ```
 
-## SignalR Real-time Connections
+Useful options:
 
-SignalR hub is available at: **ws://localhost:5000/hubs/notifications**
-
-### JavaScript Client Example:
-```javascript
-import * as signalR from '@microsoft/signalr';
-
-const connection = new signalR.HubConnectionBuilder()
-  .withUrl('http://localhost:5000/hubs/notifications', {
-    accessTokenFactory: () => authToken
-  })
-  .withAutomaticReconnect()
-  .build();
-
-connection.on('ParticipantJoined', (data) => {
-  console.log('Participant joined:', data);
-});
-
-connection.on('MeetingInvite', (data) => {
-  console.log('Meeting invite:', data);
-});
-
-await connection.start();
+```powershell
+.\run-all-tests.ps1 -SkipFunctional
+.\run-all-tests.ps1 -InstallClientDependencies
+.\run-all-tests.ps1 -InstallPlaywrightBrowsers
 ```
 
-## Environment Variables
+## 8. Troubleshooting
 
-Create `.env.local` files if needed:
+### API returns 401 for valid login token
 
-### Frontend (D:\Projects\OnlineMeetingPlatform\src\Frontend\meeting-app\.env.local)
-```
-VITE_API_URL=http://localhost:5000
-```
+Make sure all services use the same development JWT secret and have been restarted. The local development secret is shared across services in `appsettings.Development.json`.
 
-### Backend Services
-Update `appsettings.json` files as needed for your environment.
+### API returns 500 for meeting calls
 
-## Common Issues & Solutions
+Make sure the latest Meeting Service migrations, including `20260520103000_MeetingCallLogs`, `20260524010000_IntegrationEventOutbox`, and `20260524013000_IntegrationEventConsumerCheckpoints`, have been applied to `meeting_meetings`.
 
-### Issue: Connection refused to PostgreSQL
-**Solution:**
-```bash
-docker-compose ps
-docker logs meeting_postgres
+```powershell
+dotnet ef database update `
+  --project .\src\Services\MeetingService\MeetingService.csproj `
+  --startup-project .\src\Services\MeetingService\MeetingService.csproj
 ```
 
-### Issue: "Port 5432 already in use"
-**Solution:**
-```bash
-docker-compose down
-# Or specify different port in docker-compose.yml
-```
+### Frontend cannot find `react-refresh`
 
-### Issue: npm dependencies not found
-**Solution:**
-```bash
-cd src/Frontend/meeting-app
-rm -r node_modules package-lock.json
+Install client dependencies in both frontend apps:
+
+```powershell
+cd src\Frontend\meeting-app
+npm install
+
+cd ..\organization-admin
 npm install
 ```
 
-### Issue: .NET 8.0 SDK not found
-**Solution:** Download from https://dotnet.microsoft.com/download
+### Email is not received
 
-### Issue: Cannot connect to notification hub
-**Solution:**
-1. Verify the token is valid
-2. Check SignalR service is running on port 5003
-3. Check browser console for connection errors
+Local email is sent to Mailpit, not a real inbox. Open http://localhost:8025.
 
-## Stopping Services
+If an email-producing event is stuck, open RabbitMQ Management and also check the `IntegrationEventOutboxMessages` table for rows with `FailedAtUtc`, `LastError`, or a future `AvailableAtUtc`.
 
-### Stop Everything
-```bash
-# Stop Docker containers
+You can also call `GET http://localhost:5000/api/messaging/outbox/summary` with a signed-in user's bearer token to see outbox health, and `POST /api/messaging/outbox/{id}/retry` to requeue a failed event.
+
+### Ports are already in use
+
+Use the launcher, which closes known app processes first:
+
+```powershell
+.\run-all-services.ps1
+```
+
+### Stop everything
+
+Stop app processes with Ctrl+C if you started them manually, then:
+
+```powershell
 docker-compose down
-
-# Stop backend services - Press Ctrl+C in each terminal
-# Stop frontend - Press Ctrl+C in the npm dev terminal
 ```
-
-### Stop Individual Docker Service
-```bash
-docker-compose stop postgres
-docker-compose stop redis
-```
-
-## Useful Commands
-
-```bash
-# View logs
-docker-compose logs postgres
-docker-compose logs redis
-
-# View running containers
-docker ps
-
-# Stop all containers
-docker stop $(docker ps -aq)
-
-# Remove all containers
-docker rm $(docker ps -aq)
-
-# View database contents (with psql installed)
-psql -h localhost -U postgres -d meeting_users
-```
-
-## Architecture Overview
-
-```
-┌────────────────────┐
-│   React Frontend   │
-│  (localhost:5173)  │
-└─────────┬──────────┘
-          │ HTTP/WebSocket
-          ▼
-┌─────────────────────────────────┐
-│   YARP API Gateway              │
-│   (localhost:5000)              │
-└────┬────────────┬────────────┬──┘
-     │            │            │
-     ▼            ▼            ▼
-┌─────────┐  ┌────────┐  ┌───────────┐
-│ User    │  │Meeting │  │Notification
-│Service  │  │Service │  │Service
-│ :5001   │  │ :5002  │  │ :5003
-└────┬────┘  └───┬────┘  └──────┬────┘
-     │           │              │
-     └───────────┼──────────────┘
-                 │
-         ┌───────┴──────────┐
-         │                  │
-    ┌────▼───┐       ┌──────▼──┐
-    │PostgreSQL       │  Redis  │
-    │:5432           │  :6379  │
-    └─────────┘       └─────────┘
-```
-
-## Next Steps
-
-1. **Database Setup**: Migrations will run automatically on first start
-2. **Features to Implement**:
-   - WebRTC for peer-to-peer video/audio
-   - Meeting recordings upload
-   - Email notifications
-   - User roles (admin, moderator, participant)
-   - Meeting waiting rooms
-   - Chat functionality
-
-3. **Production Deployment**:
-   - Deploy using Docker to Azure Container Instances or AKS
-   - Configure Azure SQL Database instead of PostgreSQL
-   - Use Azure Redis for caching
-   - Implement Azure Application Insights for monitoring
-
-## Support & Documentation
-
-- **Swagger UI** (When running locally):
-  - User Service: http://localhost:5001/swagger
-  - Meeting Service: http://localhost:5002/swagger
-  - Notification Service: http://localhost:5003/swagger
-
-- **Architecture Diagram**: See README.md
-
-## Security Notes
-
-⚠️ **Important**: The current setup uses default/example credentials. For production:
-- Change JWT secret key
-- Use environment variables for sensitive data
-- Enable HTTPS/TLS
-- Implement rate limiting
-- Add input validation
-- Use secure password hashing (already using BCrypt)
-- Implement CORS properly for your domain

@@ -21,6 +21,7 @@ import {
   onLobbyRequestReceived,
   onMeetingEnded,
   onMeetingChatMessage,
+  onIncomingCallResponse,
   onParticipantEngagementChanged,
   onParticipantJoined,
   onParticipantLeft,
@@ -30,10 +31,7 @@ import {
   onWebRtcAnswer,
   onWebRtcIceCandidate,
   onWebRtcOffer,
-  sendConversationMessage,
   sendDirectChatMessage,
-  sendIncomingCall,
-  sendIncomingCallCancelled,
   sendMeetingChatMessage,
   sendWebRtcAnswer,
   sendWebRtcIceCandidate,
@@ -79,6 +77,11 @@ interface ChatMessage {
 }
 
 function getRequestErrorMessage(err: any, fallback: string) {
+  const messageText = `${err?.message || ''} ${err?.response?.data || ''}`;
+  if (messageText.includes('HubException') && messageText.includes('SendIncomingCallCancelled')) {
+    return 'Call stop is not active on the running notification service yet. Restart the NotificationService, then this button will stop the ring immediately.';
+  }
+
   const data = err?.response?.data;
   if (!data) {
     return err?.message || fallback;
@@ -145,10 +148,11 @@ interface PendingMeetingImage {
 }
 
 interface OutgoingMeetingCall {
+  callLogId?: string;
   userId: string;
   email: string;
   displayName: string;
-  status: 'Ringing' | 'Joined' | 'No response' | 'Cancelled' | 'Failed';
+  status: 'Ringing' | 'Accepted' | 'Joined' | 'Declined' | 'No response' | 'Cancelled' | 'Failed';
   sentAt: string;
 }
 
@@ -717,6 +721,7 @@ export default function MeetingRoom() {
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const participantsRef = useRef<Participant[]>([]);
   const currentParticipantRef = useRef<Participant | null>(null);
+  const inviteCallStatusesRef = useRef<Record<string, OutgoingMeetingCall>>({});
   const resizeCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -898,6 +903,10 @@ export default function MeetingRoom() {
   }, [currentParticipant]);
 
   useEffect(() => {
+    inviteCallStatusesRef.current = inviteCallStatuses;
+  }, [inviteCallStatuses]);
+
+  useEffect(() => {
     videoEnabledRef.current = videoEnabled;
   }, [videoEnabled]);
 
@@ -966,7 +975,7 @@ export default function MeetingRoom() {
       let changed = false;
       const next = { ...items };
       participants.forEach((participant) => {
-        if (participant.userId && next[participant.userId]?.status === 'Ringing') {
+        if (participant.userId && (next[participant.userId]?.status === 'Ringing' || next[participant.userId]?.status === 'Accepted')) {
           next[participant.userId] = {
             ...next[participant.userId],
             displayName: participant.userName || next[participant.userId].displayName,
@@ -1000,11 +1009,12 @@ export default function MeetingRoom() {
 
     const loadMeeting = async () => {
       try {
-        const [meetingResponse, participantsResponse, chatResponse, invitesResponse, usersResponse, profileResponse] = await Promise.all([
+        const [meetingResponse, participantsResponse, chatResponse, invitesResponse, callLogsResponse, usersResponse, profileResponse] = await Promise.all([
           meetingAPI.getMeeting(id),
           meetingAPI.getParticipants(id),
           meetingAPI.getChatMessages(id).catch(() => ({ data: [] })),
           meetingAPI.getInvites(id).catch(() => ({ data: [] })),
+          meetingAPI.getCallLogs(id).catch(() => ({ data: [] })),
           userAPI.searchUsers().catch(() => ({ data: [] })),
           userAPI.getProfile().catch(() => ({ data: user })),
         ]);
@@ -1018,6 +1028,40 @@ export default function MeetingRoom() {
           setUser(profileResponse.data);
         }
         setChatMessages(chatResponse.data.map(mapChatMessage));
+        const currentUserId = profileResponse.data?.id || user?.id;
+        if (currentUserId) {
+          const outgoingCalls = (callLogsResponse.data || [])
+            .filter((call: any) => call.callerUserId === currentUserId)
+            .slice(0, 8)
+            .reduce((items: Record<string, OutgoingMeetingCall>, call: any) => {
+              if (items[call.recipientUserId]) {
+                return items;
+              }
+
+              const status: OutgoingMeetingCall['status'] = call.status === 'Accepted'
+                ? 'Accepted'
+                : call.status === 'Declined'
+                  ? 'Declined'
+                  : call.status === 'Cancelled'
+                    ? 'Cancelled'
+                    : call.status === 'NoResponse'
+                      ? 'No response'
+                      : call.status === 'Failed'
+                        ? 'Failed'
+                        : 'Ringing';
+
+              items[call.recipientUserId] = {
+                callLogId: call.id,
+                userId: call.recipientUserId,
+                email: call.recipientEmail,
+                displayName: call.recipientName || call.recipientEmail,
+                status,
+                sentAt: call.createdAt,
+              };
+              return items;
+            }, {});
+          setInviteCallStatuses(outgoingCalls);
+        }
       } catch (err: any) {
         setError(getRequestErrorMessage(err, 'Unable to load meeting'));
       } finally {
@@ -1614,6 +1658,42 @@ export default function MeetingRoom() {
               timestamp: data.timestamp,
             },
           ]);
+        });
+        onIncomingCallResponse((data) => {
+          const callLogId = data.callLogId || data.CallLogId || '';
+          const recipientUserId = data.recipientUserId || data.RecipientUserId || '';
+          const recipientName = data.recipientName || data.RecipientName || 'User';
+          const status = data.status || data.Status || '';
+          const nextStatus: OutgoingMeetingCall['status'] = status === 'Accepted'
+            ? 'Accepted'
+            : status === 'Declined'
+              ? 'Declined'
+              : 'No response';
+
+          setInviteCallStatuses((items) => {
+            const matchingEntry = Object.entries(items).find(([, call]) => (
+              (callLogId && call.callLogId === callLogId)
+              || (recipientUserId && call.userId === recipientUserId)
+            ));
+            if (!matchingEntry) {
+              return items;
+            }
+
+            const [key, call] = matchingEntry;
+            if (call.status !== 'Ringing' && call.status !== 'Accepted') {
+              return items;
+            }
+
+            return {
+              ...items,
+              [key]: {
+                ...call,
+                status: nextStatus,
+              },
+            };
+          });
+
+          setInviteStatus(`${recipientName}: ${nextStatus}`);
         });
         onParticipantMediaStatusChanged((data) => {
           const isCurrentUserEvent = data.userId === currentUserId;
@@ -2654,32 +2734,40 @@ export default function MeetingRoom() {
       return;
     }
 
-    const joinUrl = getMeetingJoinUrl(id, meeting.meetingLink, 'call=video&autojoin=1');
-    setInviteCallStatuses((items) => ({
-      ...items,
-      [candidate.id]: {
+    setInviteStatus(`Calling ${candidateName}...`);
+    let outgoingCall: OutgoingMeetingCall | null = null;
+
+    try {
+      const joinUrl = getMeetingJoinUrl(id, meeting.meetingLink, 'call=video&autojoin=1');
+      const callLogResponse = await meetingAPI.createCallLog(id, {
+        conversationId: `meeting-${id}`,
+        recipientUserId: candidate.id,
+        recipientEmail: candidate.email,
+        recipientName: candidateName,
+        callType: 'video',
+        joinUrl,
+      });
+      const callLogId = callLogResponse.data.id as string;
+      outgoingCall = {
+        callLogId,
         userId: candidate.id,
         email: candidate.email,
         displayName: candidateName,
         status: 'Ringing',
         sentAt: new Date().toISOString(),
-      },
-    }));
-    setInviteStatus(`Calling ${candidateName}...`);
-
-    try {
-      await sendIncomingCall(
-        `meeting-${id}`,
-        id,
-        user.id,
-        displayName,
-        'video',
-        joinUrl,
-        [candidate.id],
-      );
+      };
+      setInviteCallStatuses((items) => ({
+        ...items,
+        [candidate.id]: outgoingCall as OutgoingMeetingCall,
+      }));
       setInviteSearch('');
       setInviteStatus(`${candidateName} is ringing. Waiting for response...`);
       window.setTimeout(() => {
+        const latestCall = inviteCallStatusesRef.current[candidate.id];
+        if (!latestCall || latestCall.status !== 'Ringing') {
+          return;
+        }
+
         setInviteCallStatuses((items) => {
           const current = items[candidate.id];
           if (!current || current.status !== 'Ringing') {
@@ -2694,11 +2782,24 @@ export default function MeetingRoom() {
             },
           };
         });
+        if (latestCall.callLogId) {
+          meetingAPI.updateCallLog(id, latestCall.callLogId, {
+            status: 'NoResponse',
+            reason: 'No response',
+          }).catch(() => undefined);
+        }
       }, 45_000);
     } catch (err: any) {
+      if (outgoingCall?.callLogId) {
+        meetingAPI.updateCallLog(id, outgoingCall.callLogId, {
+          status: 'Failed',
+          reason: getRequestErrorMessage(err, 'Unable to call user into meeting'),
+        }).catch(() => undefined);
+      }
       setInviteCallStatuses((items) => ({
         ...items,
         [candidate.id]: {
+          callLogId: outgoingCall?.callLogId,
           userId: candidate.id,
           email: candidate.email,
           displayName: candidateName,
@@ -2712,7 +2813,7 @@ export default function MeetingRoom() {
 
   const sendCallCancellationChatMessage = async (call: OutgoingMeetingCall) => {
     if (!user) {
-      return false;
+      return null;
     }
 
     try {
@@ -2740,19 +2841,10 @@ export default function MeetingRoom() {
         message: CALL_CANCEL_MESSAGE,
       });
 
-      await sendConversationMessage(
-        conversationId,
-        messageResponse.data.id,
-        user.id,
-        displayName,
-        CALL_CANCEL_MESSAGE,
-        [call.userId],
-      ).catch(() => undefined);
-
-      return true;
+      return messageResponse.data.id as string;
     } catch (err) {
       console.warn('Unable to save call cancellation message', err);
-      return false;
+      return null;
     }
   };
 
@@ -2764,19 +2856,6 @@ export default function MeetingRoom() {
     setInviteStatus(`Stopping call to ${call.displayName}...`);
 
     try {
-      const notified = await sendIncomingCallCancelled(
-        `meeting-${id}`,
-        id,
-        user.id,
-        displayName,
-        call.userId,
-        CALL_CANCEL_MESSAGE,
-      );
-
-      if (!notified) {
-        throw new Error('Call service is reconnecting. Try again in a moment.');
-      }
-
       setInviteCallStatuses((items) => ({
         ...items,
         [call.userId]: {
@@ -2785,14 +2864,42 @@ export default function MeetingRoom() {
         },
       }));
 
-      const messageSaved = await sendCallCancellationChatMessage(call);
+      const cancellationMessageId = await sendCallCancellationChatMessage(call);
+      if (call.callLogId) {
+        await meetingAPI.updateCallLog(id, call.callLogId, {
+          status: 'Cancelled',
+          reason: 'Cancelled by caller',
+          cancellationMessage: CALL_CANCEL_MESSAGE,
+          cancellationMessageId,
+        }).catch(() => undefined);
+      }
       setInviteStatus(
-        messageSaved
+        cancellationMessageId
           ? `Call stopped. ${call.displayName} received the mistake message.`
           : `Call stopped. ${call.displayName} was notified, but the chat message could not be saved.`,
       );
     } catch (err: any) {
-      setInviteStatus(getRequestErrorMessage(err, 'Unable to stop call right now'));
+      const cancellationMessageId = await sendCallCancellationChatMessage(call);
+      if (call.callLogId) {
+        await meetingAPI.updateCallLog(id, call.callLogId, {
+          status: 'Cancelled',
+          reason: 'Cancelled by caller',
+          cancellationMessage: CALL_CANCEL_MESSAGE,
+          cancellationMessageId,
+        }).catch(() => undefined);
+      }
+      setInviteCallStatuses((items) => ({
+        ...items,
+        [call.userId]: {
+          ...call,
+          status: 'Cancelled',
+        },
+      }));
+      setInviteStatus(
+        cancellationMessageId
+          ? `${getRequestErrorMessage(err, 'Unable to stop call right now')} Mistake message was sent in chat.`
+          : getRequestErrorMessage(err, 'Unable to stop call right now'),
+      );
     }
   };
 
@@ -2972,22 +3079,24 @@ export default function MeetingRoom() {
             <IconButton title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen} active={isFullscreen}>
               <FullscreenIcon exit={isFullscreen} />
             </IconButton>
-            <ProfileStatusMenu
-              displayName={displayName}
-              currentUserId={user?.id}
-              email={user?.email}
-              profilePictureUrl={user?.profilePictureUrl}
-              status={user?.status}
-              accounts={accounts.map((account) => account.user)}
-              avatarUploading={avatarUploading}
-              onChange={updatePresenceStatus}
-              onSwitchAccount={handleSwitchAccount}
-              onAddAccount={() => navigate('/login?addAccount=1')}
-              onAvatarChange={handleAvatarChange}
-              onAvatarRemove={handleAvatarRemove}
-              onSignOut={handleSignOut}
-              dark
-            />
+            {!hasJoined && (
+              <ProfileStatusMenu
+                displayName={displayName}
+                currentUserId={user?.id}
+                email={user?.email}
+                profilePictureUrl={user?.profilePictureUrl}
+                status={user?.status}
+                accounts={accounts.map((account) => account.user)}
+                avatarUploading={avatarUploading}
+                onChange={updatePresenceStatus}
+                onSwitchAccount={handleSwitchAccount}
+                onAddAccount={() => navigate('/login?addAccount=1')}
+                onAvatarChange={handleAvatarChange}
+                onAvatarRemove={handleAvatarRemove}
+                onSignOut={handleSignOut}
+                dark
+              />
+            )}
             <div className="relative">
               <IconButton
                 title={hasJoined && isOrganizer ? 'Meeting actions' : hasJoined ? 'Leave' : 'Close'}
@@ -3507,9 +3616,9 @@ export default function MeetingRoom() {
                         </span>
                         <span className="flex shrink-0 items-center gap-1">
                           <span className={`rounded-full px-2 py-1 font-semibold ${
-                            call.status === 'Joined'
+                            call.status === 'Joined' || call.status === 'Accepted'
                               ? 'bg-emerald-500/15 text-emerald-200'
-                              : call.status === 'No response' || call.status === 'Failed'
+                              : call.status === 'No response' || call.status === 'Failed' || call.status === 'Declined'
                                 ? 'bg-red-500/15 text-red-200'
                                 : call.status === 'Cancelled'
                                   ? 'bg-slate-700 text-slate-200'

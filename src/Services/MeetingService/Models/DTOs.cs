@@ -321,6 +321,48 @@ public class ChatMessageDto
     public DateTime SentAt { get; set; }
 }
 
+public class MeetingCallLogDto
+{
+    public Guid Id { get; set; }
+    public Guid MeetingId { get; set; }
+    public string MeetingTitle { get; set; } = string.Empty;
+    public DateTime? MeetingStartTime { get; set; }
+    public DateTime? MeetingEndTime { get; set; }
+    public string? ConversationId { get; set; }
+    public Guid CallerUserId { get; set; }
+    public string CallerName { get; set; } = string.Empty;
+    public Guid RecipientUserId { get; set; }
+    public string RecipientEmail { get; set; } = string.Empty;
+    public string RecipientName { get; set; } = string.Empty;
+    public string CallType { get; set; } = "video";
+    public string? JoinUrl { get; set; }
+    public string Status { get; set; } = "Ringing";
+    public string? StatusReason { get; set; }
+    public string? CancellationMessage { get; set; }
+    public Guid? CancellationMessageId { get; set; }
+    public bool IsSeen { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? StatusChangedAt { get; set; }
+}
+
+public class CreateMeetingCallLogRequest
+{
+    public string? ConversationId { get; set; }
+    public Guid RecipientUserId { get; set; }
+    public string RecipientEmail { get; set; } = string.Empty;
+    public string RecipientName { get; set; } = string.Empty;
+    public string CallType { get; set; } = "video";
+    public string? JoinUrl { get; set; }
+}
+
+public class UpdateMeetingCallLogRequest
+{
+    public string Status { get; set; } = "Ringing";
+    public string? Reason { get; set; }
+    public string? CancellationMessage { get; set; }
+    public Guid? CancellationMessageId { get; set; }
+}
+
 public class LobbyRequestDto
 {
     public Guid Id { get; set; }

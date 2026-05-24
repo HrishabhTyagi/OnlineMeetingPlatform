@@ -109,7 +109,7 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('authToken');
+  const token = sessionStorage.getItem('authToken') || localStorage.getItem('authToken');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -117,7 +117,7 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-const providerOptions: Array<{ value: StorageProvider; title: string; description: string }> = [
+export const providerOptions: Array<{ value: StorageProvider; title: string; description: string }> = [
   {
     value: 'ApplicationLocal',
     title: 'Application local',
@@ -135,9 +135,9 @@ const providerOptions: Array<{ value: StorageProvider; title: string; descriptio
   },
 ];
 
-const memberRoleOptions: OrganizationMemberRole[] = ['Owner', 'Admin', 'Member', 'Guest'];
+export const memberRoleOptions: OrganizationMemberRole[] = ['Owner', 'Admin', 'Member', 'Guest'];
 
-const defaultForm: OrganizationSettingsForm = {
+export const defaultForm: OrganizationSettingsForm = {
   name: 'Samvaad Organization',
   slug: '',
   primaryDomain: '',
@@ -153,7 +153,7 @@ const defaultForm: OrganizationSettingsForm = {
   allowExternalGuests: true,
 };
 
-function normalizeSettings(data: Partial<OrganizationSettingsForm> | null | undefined): OrganizationSettingsForm {
+export function normalizeSettings(data: Partial<OrganizationSettingsForm> | null | undefined): OrganizationSettingsForm {
   return {
     name: data?.name || defaultForm.name,
     slug: (data as any)?.slug || '',
@@ -171,7 +171,7 @@ function normalizeSettings(data: Partial<OrganizationSettingsForm> | null | unde
   };
 }
 
-function normalizeOrganization(data: any): OrganizationRecord {
+export function normalizeOrganization(data: any): OrganizationRecord {
   return {
     id: data.id,
     localAppUrl: data.localAppUrl || buildLocalAppUrl(data.slug, data.name),
@@ -181,7 +181,7 @@ function normalizeOrganization(data: any): OrganizationRecord {
   };
 }
 
-function normalizeMember(data: any): OrganizationMember {
+export function normalizeMember(data: any): OrganizationMember {
   return {
     id: data.id,
     organizationId: data.organizationId,
@@ -194,7 +194,7 @@ function normalizeMember(data: any): OrganizationMember {
   };
 }
 
-function normalizeUsage(data: any): OrganizationUsage {
+export function normalizeUsage(data: any): OrganizationUsage {
   return {
     organizationId: data.organizationId,
     organizationName: data.organizationName,
@@ -211,7 +211,7 @@ function normalizeUsage(data: any): OrganizationUsage {
   };
 }
 
-function normalizeMeetingUsage(data: any): OrganizationMeetingUsage {
+export function normalizeMeetingUsage(data: any): OrganizationMeetingUsage {
   return {
     organizationId: data.organizationId,
     totalMeetings: data.totalMeetings || 0,
@@ -229,7 +229,7 @@ function normalizeMeetingUsage(data: any): OrganizationMeetingUsage {
   };
 }
 
-function normalizeAuditEvent(data: any): OrganizationAuditEvent {
+export function normalizeAuditEvent(data: any): OrganizationAuditEvent {
   return {
     id: data.id,
     organizationId: data.organizationId,
@@ -244,7 +244,7 @@ function normalizeAuditEvent(data: any): OrganizationAuditEvent {
   };
 }
 
-function estimateMonthlyStorage(form: OrganizationSettingsForm) {
+export function estimateMonthlyStorage(form: OrganizationSettingsForm) {
   const recordingBudgetGb = Math.max(1, Math.round((form.maxRecordingMegabytes * 20) / 1024));
   const attachmentBudgetGb = Math.max(1, Math.round((form.maxAttachmentMegabytes * 500) / 1024));
   const retentionMultiplier = Math.max(form.recordingRetentionDays, form.attachmentRetentionDays) / 30;
@@ -330,13 +330,13 @@ function getApiErrorMessage(err: any, fallback: string) {
   return fallback;
 }
 
-function slugifyUrlName(value?: string) {
+export function slugifyUrlName(value?: string) {
   const raw = (value || '').trim().toLowerCase();
   const safe = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   return safe || '';
 }
 
-function buildLocalAppUrl(slug?: string, organizationName?: string) {
+export function buildLocalAppUrl(slug?: string, organizationName?: string) {
   const urlName = slugifyUrlName(slug || organizationName);
   return urlName ? `http://localhost:5173/org/${encodeURIComponent(urlName)}` : '';
 }
@@ -354,10 +354,10 @@ function HandshakeMark() {
 }
 
 function App() {
-  const [token, setToken] = useState(() => localStorage.getItem('authToken') || '');
+  const [token, setToken] = useState(() => sessionStorage.getItem('authToken') || localStorage.getItem('authToken') || '');
   const [activeUser, setActiveUser] = useState<AdminUser | null>(() => {
     try {
-      return JSON.parse(localStorage.getItem('authUser') || 'null') as AdminUser | null;
+      return JSON.parse(sessionStorage.getItem('authUser') || localStorage.getItem('authUser') || 'null') as AdminUser | null;
     } catch {
       return null;
     }
@@ -426,8 +426,12 @@ function App() {
       lastName: data.lastName,
     };
 
-    localStorage.setItem('authToken', data.token);
-    localStorage.setItem('authUser', JSON.stringify(user));
+    sessionStorage.setItem('authToken', data.token);
+    sessionStorage.setItem('authUser', JSON.stringify(user));
+    sessionStorage.removeItem('authToken');
+    sessionStorage.removeItem('authUser');
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('authUser');
     setToken(data.token);
     setActiveUser(user);
   };
@@ -1512,8 +1516,10 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+if (import.meta.env.MODE !== 'test') {
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+}

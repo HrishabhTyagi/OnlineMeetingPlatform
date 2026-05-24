@@ -38,6 +38,27 @@ services:
       timeout: 5s
       retries: 5
 
+  # RabbitMQ event bus
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: meeting_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: samvaad
+      RABBITMQ_DEFAULT_PASS: samvaad123
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - meeting_network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Test SMTP inbox for local email invites
   mailpit:
     image: axllent/mailpit:latest
@@ -52,6 +73,8 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
+    driver: local
+  rabbitmq_data:
     driver: local
 
 networks:

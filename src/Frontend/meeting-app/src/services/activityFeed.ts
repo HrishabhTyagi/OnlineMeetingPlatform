@@ -1,4 +1,5 @@
 export interface StoredMissedCall {
+  callLogId?: string;
   conversationId: string;
   meetingId: string;
   callerUserId: string;

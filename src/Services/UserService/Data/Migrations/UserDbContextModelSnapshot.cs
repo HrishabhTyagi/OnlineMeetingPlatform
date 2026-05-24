@@ -54,6 +54,32 @@ namespace UserService.Data.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<bool>("MfaEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime?>("MfaEnabledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("MfaLastVerifiedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("MfaRecoveryCodeHashes")
+                        .HasMaxLength(4096)
+                        .HasColumnType("character varying(4096)");
+
+                    b.Property<DateTime?>("MfaRememberDeviceExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("MfaRememberDeviceTokenHash")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("MfaSecretProtected")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasColumnType("text");

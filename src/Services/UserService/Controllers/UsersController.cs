@@ -21,12 +21,21 @@ public class UsersController : ControllerBase
     };
 
     private readonly IUserService _userService;
+    private readonly IAuthService _authService;
+    private readonly IMfaService _mfaService;
     private readonly ILogger<UsersController> _logger;
     private readonly IWebHostEnvironment _environment;
 
-    public UsersController(IUserService userService, ILogger<UsersController> logger, IWebHostEnvironment environment)
+    public UsersController(
+        IUserService userService,
+        IAuthService authService,
+        IMfaService mfaService,
+        ILogger<UsersController> logger,
+        IWebHostEnvironment environment)
     {
         _userService = userService;
+        _authService = authService;
+        _mfaService = mfaService;
         _logger = logger;
         _environment = environment;
     }
@@ -211,6 +220,173 @@ public class UsersController : ControllerBase
         }
     }
 
+    [HttpGet("mfa/status")]
+    public async Task<ActionResult<MfaStatusResponse>> GetMfaStatus()
+    {
+        try
+        {
+            var user = await GetCurrentSecurityUserAsync();
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            return Ok(BuildMfaStatusResponse(user));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching MFA status");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPost("mfa/setup")]
+    public async Task<ActionResult<MfaSetupResponse>> SetupMfa()
+    {
+        try
+        {
+            var user = await GetCurrentSecurityUserAsync();
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            if (user.MfaEnabled)
+            {
+                return BadRequest("MFA is already enabled");
+            }
+
+            var secret = _mfaService.GenerateSecret();
+            user.MfaSecretProtected = _mfaService.ProtectSecret(secret);
+            user.MfaRecoveryCodeHashes = null;
+            user.MfaRememberDeviceTokenHash = null;
+            user.MfaRememberDeviceExpiresAt = null;
+            await _userService.SaveUserSecurityAsync(user);
+
+            return Ok(new MfaSetupResponse
+            {
+                Secret = secret,
+                OtpAuthUri = _mfaService.BuildOtpAuthUri(user, secret)
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error starting MFA setup");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPost("mfa/enable")]
+    public async Task<ActionResult<MfaRecoveryCodesResponse>> EnableMfa([FromBody] MfaEnableRequest request)
+    {
+        try
+        {
+            var user = await GetCurrentSecurityUserAsync();
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            if (string.IsNullOrWhiteSpace(user.MfaSecretProtected))
+            {
+                return BadRequest("Start MFA setup first");
+            }
+
+            if (!_mfaService.VerifyUserCode(user, request.Code))
+            {
+                return Unauthorized("Invalid MFA code");
+            }
+
+            var recoveryCodes = _mfaService.GenerateRecoveryCodes();
+            user.MfaRecoveryCodeHashes = string.Join(';', recoveryCodes.Select(code => _mfaService.HashRecoveryCode(user.Id, code)));
+            user.MfaEnabled = true;
+            user.MfaEnabledAt = DateTime.UtcNow;
+            user.MfaLastVerifiedAt = DateTime.UtcNow;
+            await _userService.SaveUserSecurityAsync(user);
+
+            return Ok(new MfaRecoveryCodesResponse { RecoveryCodes = recoveryCodes });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error enabling MFA");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPost("mfa/disable")]
+    public async Task<ActionResult<MfaStatusResponse>> DisableMfa([FromBody] MfaDisableRequest request)
+    {
+        try
+        {
+            var user = await GetCurrentSecurityUserAsync();
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            if (!_authService.VerifyPassword(request.Password, user.PasswordHash))
+            {
+                return Unauthorized("Invalid password");
+            }
+
+            if (user.MfaEnabled && !_mfaService.VerifyUserCode(user, request.Code ?? string.Empty))
+            {
+                return Unauthorized("Invalid MFA code");
+            }
+
+            user.MfaEnabled = false;
+            user.MfaSecretProtected = null;
+            user.MfaRecoveryCodeHashes = null;
+            user.MfaEnabledAt = null;
+            user.MfaLastVerifiedAt = null;
+            user.MfaRememberDeviceTokenHash = null;
+            user.MfaRememberDeviceExpiresAt = null;
+            await _userService.SaveUserSecurityAsync(user);
+
+            return Ok(BuildMfaStatusResponse(user));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error disabling MFA");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPost("mfa/recovery-codes/regenerate")]
+    public async Task<ActionResult<MfaRecoveryCodesResponse>> RegenerateRecoveryCodes([FromBody] MfaRegenerateRecoveryCodesRequest request)
+    {
+        try
+        {
+            var user = await GetCurrentSecurityUserAsync();
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+
+            if (!user.MfaEnabled)
+            {
+                return BadRequest("MFA is not enabled");
+            }
+
+            if (!_mfaService.VerifyUserCode(user, request.Code))
+            {
+                return Unauthorized("Invalid MFA code");
+            }
+
+            var recoveryCodes = _mfaService.GenerateRecoveryCodes();
+            user.MfaRecoveryCodeHashes = string.Join(';', recoveryCodes.Select(code => _mfaService.HashRecoveryCode(user.Id, code)));
+            user.MfaLastVerifiedAt = DateTime.UtcNow;
+            await _userService.SaveUserSecurityAsync(user);
+
+            return Ok(new MfaRecoveryCodesResponse { RecoveryCodes = recoveryCodes });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error regenerating MFA recovery codes");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
     private static UserProfileDto MapToDto(User user)
     {
         return new UserProfileDto
@@ -223,7 +399,30 @@ public class UsersController : ControllerBase
             PhoneNumber = user.PhoneNumber,
             Status = user.Status,
             IsEmailVerified = user.IsEmailVerified,
+            MfaEnabled = user.MfaEnabled,
             CreatedAt = user.CreatedAt
+        };
+    }
+
+    private async Task<User?> GetCurrentSecurityUserAsync()
+    {
+        var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return Guid.TryParse(userId, out var id)
+            ? await _userService.GetUserWithSecurityByIdAsync(id)
+            : null;
+    }
+
+    private static MfaStatusResponse BuildMfaStatusResponse(User user)
+    {
+        return new MfaStatusResponse
+        {
+            Enabled = user.MfaEnabled,
+            EnabledAt = user.MfaEnabledAt,
+            LastVerifiedAt = user.MfaLastVerifiedAt,
+            RememberDeviceActive = !string.IsNullOrWhiteSpace(user.MfaRememberDeviceTokenHash)
+                && user.MfaRememberDeviceExpiresAt != null
+                && user.MfaRememberDeviceExpiresAt > DateTime.UtcNow,
+            RememberDeviceExpiresAt = user.MfaRememberDeviceExpiresAt
         };
     }
 

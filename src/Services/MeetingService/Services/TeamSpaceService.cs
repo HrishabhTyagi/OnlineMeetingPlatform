@@ -219,7 +219,7 @@ public class TeamSpaceService : ITeamSpaceService
         foreach (var member in incomingMembers)
         {
             var userName = string.IsNullOrWhiteSpace(member.UserName) ? member.UserEmail : member.UserName.Trim();
-            team.Members.Add(new TeamSpaceMember
+            _context.TeamSpaceMembers.Add(new TeamSpaceMember
             {
                 Id = Guid.NewGuid(),
                 TeamSpaceId = team.Id,
@@ -373,10 +373,11 @@ public class TeamSpaceService : ITeamSpaceService
 
     private IQueryable<TeamSpace> TeamSpacesForTenant()
     {
+        var organizationId = _tenantContext.OrganizationId;
         var query = _context.TeamSpaces.AsQueryable();
-        return _tenantContext.OrganizationId.HasValue
-            ? query.Where(team => team.OrganizationId == _tenantContext.OrganizationId.Value)
-            : query;
+        return organizationId.HasValue
+            ? query.Where(team => team.OrganizationId == organizationId.Value)
+            : query.Where(team => team.OrganizationId == null);
     }
 
     private async Task<TeamChannel?> LoadChannelAsync(Guid channelId)
@@ -404,7 +405,9 @@ public class TeamSpaceService : ITeamSpaceService
 
     private bool MatchesTenant(Guid? organizationId)
     {
-        return !_tenantContext.OrganizationId.HasValue || organizationId == _tenantContext.OrganizationId.Value;
+        return _tenantContext.OrganizationId.HasValue
+            ? organizationId == _tenantContext.OrganizationId.Value
+            : organizationId == null;
     }
 
     private static bool CanAccessTeam(TeamSpace team, Guid userId)

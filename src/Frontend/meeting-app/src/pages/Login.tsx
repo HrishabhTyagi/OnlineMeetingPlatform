@@ -4,6 +4,31 @@ import BrandMark from '../components/BrandMark';
 import { authAPI, getOrganizationScopedPath } from '../services/api';
 import { useAuthStore } from '../store/authStore';
 
+const MFA_REMEMBER_DEVICES_KEY = 'samvaadMfaRememberedDevices';
+
+function getRememberedMfaToken(email: string) {
+  try {
+    const devices = JSON.parse(localStorage.getItem(MFA_REMEMBER_DEVICES_KEY) || '{}');
+    return devices[email.trim().toLowerCase()] || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveRememberedMfaToken(email: string, token?: string | null) {
+  if (!token) {
+    return;
+  }
+
+  try {
+    const devices = JSON.parse(localStorage.getItem(MFA_REMEMBER_DEVICES_KEY) || '{}');
+    devices[email.trim().toLowerCase()] = token;
+    localStorage.setItem(MFA_REMEMBER_DEVICES_KEY, JSON.stringify(devices));
+  } catch {
+    // Remembering a trusted device is optional; login still succeeds without local storage.
+  }
+}
+
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -17,6 +42,9 @@ export default function Login() {
     email: '',
     password: '',
   });
+  const [mfaChallenge, setMfaChallenge] = useState<{ token: string; email: string } | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [rememberDevice, setRememberDevice] = useState(true);
   const isAddingAccount = new URLSearchParams(location.search).get('addAccount') === '1';
   const currentName = currentUser ? `${currentUser.firstName} ${currentUser.lastName}`.trim() || currentUser.email : '';
 
@@ -27,32 +55,78 @@ export default function Login() {
     });
   };
 
+  const completeLogin = (data: any) => {
+    login(
+      {
+        id: data.userId,
+        email: data.email,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        profilePictureUrl: data.profilePictureUrl,
+        status: data.status || 'Available',
+        mfaEnabled: data.mfaEnabled,
+        isEmailVerified: true,
+        createdAt: new Date().toISOString(),
+      },
+      data.token
+    );
+
+    navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
+  };
+
+  const getErrorMessage = (err: any, fallback: string) => {
+    if (typeof err.response?.data === 'string') {
+      return err.response.data;
+    }
+
+    return err.response?.data?.message || fallback;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
     try {
-      const response = await authAPI.login(formData.email, formData.password);
+      const response = await authAPI.login(
+        formData.email,
+        formData.password,
+        getRememberedMfaToken(formData.email)
+      );
       const data = response.data;
 
-      login(
-        {
-          id: data.userId,
-          email: data.email,
-          firstName: data.firstName,
-          lastName: data.lastName,
-          profilePictureUrl: data.profilePictureUrl,
-          status: data.status || 'Available',
-          isEmailVerified: true,
-          createdAt: new Date().toISOString(),
-        },
-        data.token
-      );
+      if (data.requiresMfa && data.mfaToken) {
+        setMfaChallenge({ token: data.mfaToken, email: data.email || formData.email });
+        setMfaCode('');
+        return;
+      }
 
-      navigate(getOrganizationScopedPath('/dashboard'), { replace: true });
+      completeLogin(data);
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Login failed');
+      setError(getErrorMessage(err, 'Login failed'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyMfa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaChallenge) {
+      return;
+    }
+
+    setError('');
+    setLoading(true);
+
+    try {
+      const response = await authAPI.verifyMfa(mfaChallenge.token, mfaCode, rememberDevice);
+      if (rememberDevice) {
+        saveRememberedMfaToken(mfaChallenge.email, response.data.rememberDeviceToken);
+      }
+
+      completeLogin(response.data);
+    } catch (err: any) {
+      setError(getErrorMessage(err, 'Unable to verify MFA code'));
     } finally {
       setLoading(false);
     }
@@ -100,35 +174,83 @@ export default function Login() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <input
-            type="email"
-            name="email"
-            placeholder="Email"
-            value={formData.email}
-            onChange={handleChange}
-            required
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-          />
+        {!mfaChallenge ? (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <input
+              type="email"
+              name="email"
+              placeholder="Email"
+              value={formData.email}
+              onChange={handleChange}
+              required
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+            />
 
-          <input
-            type="password"
-            name="password"
-            placeholder="Password"
-            value={formData.password}
-            onChange={handleChange}
-            required
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-          />
+            <input
+              type="password"
+              name="password"
+              placeholder="Password"
+              value={formData.password}
+              onChange={handleChange}
+              required
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+            />
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
-          >
-            {loading ? 'Signing In...' : 'Sign In'}
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
+            >
+              {loading ? 'Signing In...' : 'Sign In'}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleVerifyMfa} className="space-y-4">
+            <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+              Enter the 6-digit authenticator code, or one of your recovery codes.
+            </div>
+
+            <input
+              type="text"
+              inputMode="text"
+              autoFocus
+              placeholder="Authenticator or recovery code"
+              value={mfaCode}
+              onChange={(event) => setMfaCode(event.target.value)}
+              required
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={rememberDevice}
+                onChange={(event) => setRememberDevice(event.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600"
+              />
+              Remember this device for 30 days
+            </label>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
+            >
+              {loading ? 'Verifying...' : 'Verify and sign in'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setMfaChallenge(null);
+                setMfaCode('');
+              }}
+              className="w-full rounded-lg border border-gray-300 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+            >
+              Use a different password
+            </button>
+          </form>
+        )}
 
         <p className="mt-4 text-center text-gray-600">
           Don't have an account?{' '}

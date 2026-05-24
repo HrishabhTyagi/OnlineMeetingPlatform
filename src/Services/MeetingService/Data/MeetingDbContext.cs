@@ -15,6 +15,7 @@ public class MeetingDbContext : DbContext
     public DbSet<MeetingInvite> MeetingInvites { get; set; } = null!;
     public DbSet<LobbyRequest> LobbyRequests { get; set; } = null!;
     public DbSet<MeetingReminder> MeetingReminders { get; set; } = null!;
+    public DbSet<MeetingCallLog> MeetingCallLogs { get; set; } = null!;
     public DbSet<Conversation> Conversations { get; set; } = null!;
     public DbSet<ConversationMember> ConversationMembers { get; set; } = null!;
     public DbSet<ConversationMessage> ConversationMessages { get; set; } = null!;
@@ -24,6 +25,8 @@ public class MeetingDbContext : DbContext
     public DbSet<ConversationTaskActivity> ConversationTaskActivities { get; set; } = null!;
     public DbSet<ConversationDocumentShare> ConversationDocumentShares { get; set; } = null!;
     public DbSet<PlatformAuditLog> PlatformAuditLogs { get; set; } = null!;
+    public DbSet<IntegrationEventOutboxMessage> IntegrationEventOutboxMessages { get; set; } = null!;
+    public DbSet<IntegrationEventConsumerCheckpoint> IntegrationEventConsumerCheckpoints { get; set; } = null!;
     public DbSet<ConversationInvite> ConversationInvites { get; set; } = null!;
     public DbSet<ScheduledConversationMessage> ScheduledConversationMessages { get; set; } = null!;
     public DbSet<TeamSpace> TeamSpaces { get; set; } = null!;
@@ -60,6 +63,7 @@ public class MeetingDbContext : DbContext
             entity.HasMany(e => e.Invites).WithOne(i => i.Meeting).HasForeignKey(i => i.MeetingId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.LobbyRequests).WithOne(l => l.Meeting).HasForeignKey(l => l.MeetingId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.Reminders).WithOne(r => r.Meeting).HasForeignKey(r => r.MeetingId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.CallLogs).WithOne(call => call.Meeting).HasForeignKey(call => call.MeetingId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(e => e.TeamChannel).WithMany(channel => channel.Meetings).HasForeignKey(e => e.TeamChannelId).OnDelete(DeleteBehavior.SetNull);
         });
 
@@ -101,6 +105,25 @@ public class MeetingDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.RecipientEmail).IsRequired().HasMaxLength(255);
+        });
+
+        modelBuilder.Entity<MeetingCallLog>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.OrganizationId);
+            entity.HasIndex(e => e.MeetingId);
+            entity.HasIndex(e => new { e.MeetingId, e.CallerUserId });
+            entity.HasIndex(e => new { e.MeetingId, e.RecipientUserId });
+            entity.Property(e => e.ConversationId).HasMaxLength(120);
+            entity.Property(e => e.CallerName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.RecipientEmail).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.RecipientName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.CallType).IsRequired().HasMaxLength(20);
+            entity.Property(e => e.JoinUrl).HasColumnType("text");
+            entity.Property(e => e.Status).HasConversion<string>().HasMaxLength(32);
+            entity.Property(e => e.StatusReason).HasMaxLength(500);
+            entity.Property(e => e.CancellationMessage).HasColumnType("text");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
 
         modelBuilder.Entity<Conversation>(entity =>
@@ -220,6 +243,35 @@ public class MeetingDbContext : DbContext
             entity.HasIndex(e => e.ConversationId);
             entity.HasOne(e => e.Meeting).WithMany().HasForeignKey(e => e.MeetingId).OnDelete(DeleteBehavior.SetNull);
             entity.HasOne(e => e.Conversation).WithMany().HasForeignKey(e => e.ConversationId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<IntegrationEventOutboxMessage>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.EventName).IsRequired().HasMaxLength(160);
+            entity.Property(e => e.EventType).IsRequired().HasMaxLength(600);
+            entity.Property(e => e.ExchangeName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.RoutingKey).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.Payload).IsRequired().HasColumnType("text");
+            entity.Property(e => e.LockId).HasMaxLength(64);
+            entity.Property(e => e.LastError).HasColumnType("text");
+            entity.Property(e => e.CreatedAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.AvailableAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => e.EventId).IsUnique();
+            entity.HasIndex(e => new { e.ProcessedAtUtc, e.FailedAtUtc, e.AvailableAtUtc });
+            entity.HasIndex(e => e.LockedUntilUtc);
+        });
+
+        modelBuilder.Entity<IntegrationEventConsumerCheckpoint>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.EventName).IsRequired().HasMaxLength(160);
+            entity.Property(e => e.HandlerName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.LastError).HasColumnType("text");
+            entity.Property(e => e.FirstSeenAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.LastAttemptAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.EventId, e.HandlerName }).IsUnique();
+            entity.HasIndex(e => e.ProcessedAtUtc);
         });
 
         modelBuilder.Entity<ScheduledConversationMessage>(entity =>

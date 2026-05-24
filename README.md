@@ -1,283 +1,203 @@
-# Online Meeting Platform - Microservices Architecture
+# Samvaad
 
-A modern, scalable online meeting platform built with **ASP.NET Core** microservices, **React** frontend, **SignalR** for real-time communication, and containerized with **Docker**.
+Samvaad is a Microsoft Teams-style collaboration and meeting platform for both individual users and organizations. It includes chat, meetings, calls, calendar scheduling, file sharing, recordings, tasks, organization workspaces, and a separate owner/admin console for SaaS configuration.
+
+The project is built as ASP.NET Core microservices behind a YARP API Gateway, with React/Vite frontends and local Docker infrastructure for PostgreSQL, Redis, RabbitMQ, and Mailpit. Azure is the selected production deployment target.
+
+## Current Capabilities
+
+- Personal and organization-scoped workspaces.
+- Organization URLs such as `/org/{organizationSlug}/dashboard`.
+- Separate Samvaad Admin app for product-owner organization configuration.
+- User registration, login, profile updates, avatar upload, multiple signed-in accounts, and presence status.
+- Presence states: Available, Busy, Do not disturb, Be right back, Away, Offline, In meeting, In call, and Presenting.
+- Dashboard calendar with work-week, full-week, and month views.
+- Calendar event cards for upcoming, ongoing, completed, and cancelled meetings.
+- Meeting scheduling from the calendar grid with overlap prevention and past-slot blocking.
+- Meeting invite responses: Accepted, Declined, Tentative, plus participant reason visible to organizer.
+- Google and Outlook calendar connection endpoints and sync adapters.
+- Direct and group chats.
+- Message formatting with preserved line breaks and code blocks.
+- Message edit, delete, pin, important marker, reactions, scheduled messages, unread counts, and filters.
+- Chat attachments with drag/drop, pasted screenshot preview, document sharing, document preview, and share-via-email history.
+- Chat tasks created from comments, with status, priority, assignee, notes, history, filters, and source-message link.
+- Meeting room with audio/video controls, WebRTC signaling, screen sharing, recording upload, chat, participants panel, raised hands, reactions, presenter status, whiteboard data, and exports.
+- Direct in-meeting calls to available users, incoming call ringer, accept/decline/no-response/cancel states, missed-call history, and accidental-call cancellation message.
+- License purchase/request page with simulated payment and email notification.
+- Configurable organization storage, retention, guest access, meeting defaults, usage metrics, audit logs, and local tenant hosting actions.
+- API Gateway Swagger aggregation for service APIs.
+- Full local test runner for server, client, functional, and infrastructure checks.
 
 ## Technology Stack
 
 ### Backend
-- **ASP.NET Core 8.0** - Microservices framework
-- **SignalR** - Real-time communication (WebSocket)
-- **Entity Framework Core** - ORM
-- **PostgreSQL** - Primary database
-- **Redis** - Caching & session management
-- **JWT** - Authentication
-- **YARP** - API Gateway (Reverse Proxy)
-- **MediatR** - CQRS pattern
-- **FluentValidation** - Input validation
-- **Serilog** - Structured logging
-- **AutoMapper** - Object mapping
+
+- ASP.NET Core 8
+- Entity Framework Core
+- PostgreSQL
+- RabbitMQ event bus with transactional outbox publishing
+- SignalR
+- YARP API Gateway
+- JWT bearer authentication
+- BCrypt password hashing
+- Serilog logging
 
 ### Frontend
-- **React 18** - UI framework
-- **TypeScript** - Type safety
-- **Vite** - Build tool (fast development)
-- **Tailwind CSS** - Styling
-- **React Query** - Server state management
-- **SignalR Client** - Real-time updates
-- **Zustand** - Client state management
 
-### Infrastructure
-- **Docker** - Containerization
-- **Docker Compose** - Local orchestration
-- **PostgreSQL** - Database
-- **Redis** - Cache & sessions
+- React 18
+- TypeScript
+- Vite
+- Tailwind CSS
+- React Router
+- TanStack Query
+- Zustand
+- Axios
+- SignalR client
+- Vitest and Playwright
 
-## Architecture
+### Local Infrastructure
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     React Frontend                           │
-│                   (Vite + TypeScript)                        │
-└─────────────────────┬───────────────────────────────────────┘
-                      │ HTTP/WebSocket
-┌─────────────────────▼───────────────────────────────────────┐
-│              YARP API Gateway                                │
-│         (Route aggregation & load balancing)                 │
-└──────┬──────────────────┬──────────────┬────────────────────┘
-       │                  │              │
-       ▼                  ▼              ▼
-┌─────────────────┐ ┌─────────────┐ ┌──────────────────┐
-│  User Service   │ │ Meeting     │ │ Notification     │
-│  - Auth         │ │ Service     │ │ Service          │
-│  - Profile      │ │ - Meetings  │ │ - Email          │
-│  - JWT Tokens   │ │ - Recording │ │ - WebSocket Push │
-└────────┬────────┘ └──────┬──────┘ └────────┬─────────┘
-         │                 │                  │
-         └─────────────────┼──────────────────┘
-                           │
-         ┌─────────────────┼─────────────────┐
-         ▼                 ▼                 ▼
-    ┌──────────┐   ┌──────────────┐  ┌─────────┐
-    │PostgreSQL│   │    Redis     │  │ Message │
-    │ Database │   │    Cache     │  │  Queue  │
-    └──────────┘   └──────────────┘  └─────────┘
-```
+- Docker Compose
+- PostgreSQL 15
+- Redis 7
+- RabbitMQ 3.13 with management UI
+- Mailpit SMTP/web inbox
 
-## Microservices
+RabbitMQ publishing from Meeting Service is backed by the `IntegrationEventOutboxMessages` table. Business changes and integration events are saved together, then a dispatcher publishes with publisher confirms, strict routable-message checks, retries, locks, and dead-letter handling. Meeting and Notification consumers also persist processed-event checkpoints to avoid duplicate email or realtime notification side effects after RabbitMQ redelivery.
 
-### 1. **User Service** (Port 5001)
-- User registration & authentication
-- Profile management
-- JWT token generation
-- Integrates with Auth0/OIDC (optional)
+### Selected Production Platform
 
-### 2. **Meeting Service** (Port 5002)
-- Create & manage meetings
-- Meeting lifecycle management
-- Recording management
-- Participant tracking
+- Azure Container Apps or Azure App Service for the API Gateway and backend services
+- Azure Static Web Apps or static App Service hosting for the frontends
+- Azure Database for PostgreSQL Flexible Server
+- Azure Blob Storage
+- Azure Key Vault
+- Azure Monitor and Application Insights
+- Azure Communication Services Email or SMTP provider
 
-### 3. **Notification Service** (Port 5003)
-- Real-time notifications via SignalR
-- Email notifications
-- Event-driven architecture
+## Services And Ports
 
-### 4. **API Gateway** (Port 5000)
-- YARP-based reverse proxy
-- Request routing
-- Rate limiting
-- Authentication middleware
+| Component | Port | Purpose |
+| --- | ---: | --- |
+| API Gateway | 5000 | YARP routing, Swagger aggregation, security headers |
+| User Service | 5001 | Auth, profile, avatars, presence |
+| Meeting Service | 5002 | Meetings, calendar, chats, calls, tasks, files, recordings |
+| Notification Service | 5003 | RabbitMQ consumers, SignalR notifications, idempotency checkpoints, and WebRTC signaling |
+| Organization Service | 5004 | Organizations, tenants, storage config, audit, usage |
+| Samvaad app | 5173 | Main user application |
+| Samvaad Admin | 5174 | Product-owner organization/admin console |
+| PostgreSQL | 5432 | Local databases |
+| Redis | 6379 | Cache/session infrastructure |
+| RabbitMQ AMQP | 5672 | Durable async event bus |
+| RabbitMQ UI | 15672 | Local event bus management |
+| Mailpit SMTP | 1025 | Local SMTP testing |
+| Mailpit UI | 8025 | Local email inbox |
 
-## Getting Started
+## Project Layout
 
-### Prerequisites
-- .NET 8.0 SDK
-- Node.js 18+
-- Docker & Docker Compose
-- PostgreSQL (or use Docker)
-
-### Quick Start (Local Development)
-
-#### 1. Clone & Navigate
-```bash
-cd D:\Projects\OnlineMeetingPlatform
-```
-
-#### 2. Start Infrastructure (Docker Compose)
-```bash
-docker-compose up -d
-```
-
-This starts:
-- PostgreSQL (port 5432)
-- Redis (port 6379)
-
-#### 3. Start Backend Services
-
-**Terminal 1 - User Service:**
-```bash
-cd src/Services/UserService
-dotnet run --configuration Debug
-```
-
-**Terminal 2 - Meeting Service:**
-```bash
-cd src/Services/MeetingService
-dotnet run --configuration Debug
-```
-
-**Terminal 3 - Notification Service:**
-```bash
-cd src/Services/NotificationService
-dotnet run --configuration Debug
-```
-
-**Terminal 4 - API Gateway:**
-```bash
-cd src/Gateway/ApiGateway
-dotnet run --configuration Debug
-```
-
-#### 4. Start Frontend
-
-**Terminal 5 - React Frontend:**
-```bash
-cd src/Frontend/meeting-app
-npm install
-npm run dev
-```
-
-### Default URLs
-- **Frontend**: http://localhost:5173
-- **API Gateway**: http://localhost:5000
-- **User Service**: http://localhost:5001
-- **Meeting Service**: http://localhost:5002
-- **Notification Service**: http://localhost:5003
-- **PostgreSQL**: localhost:5432
-- **Redis**: localhost:6379
-
-## Project Structure
-
-```
+```text
 OnlineMeetingPlatform/
-├── src/
-│   ├── Services/
-│   │   ├── UserService/
-│   │   │   ├── Controllers/
-│   │   │   ├── Services/
-│   │   │   ├── Models/
-│   │   │   ├── Data/
-│   │   │   └── Program.cs
-│   │   ├── MeetingService/
-│   │   │   ├── Controllers/
-│   │   │   ├── Services/
-│   │   │   ├── Models/
-│   │   │   ├── Data/
-│   │   │   └── Program.cs
-│   │   └── NotificationService/
-│   │       ├── Hubs/
-│   │       ├── Services/
-│   │       ├── Models/
-│   │       └── Program.cs
-│   ├── Gateway/
-│   │   ├── ApiGateway/
-│   │   │   ├── Program.cs
-│   │   │   └── yarp-routes.json
-│   │   └── Shared/
-│   │       ├── Constants/
-│   │       ├── Models/
-│   │       └── Extensions/
-│   └── Frontend/
-│       └── meeting-app/
-│           ├── src/
-│           │   ├── components/
-│           │   ├── pages/
-│           │   ├── services/
-│           │   ├── store/
-│           │   └── App.tsx
-│           ├── package.json
-│           └── vite.config.ts
-├── docker-compose.yml
-├── Dockerfile
-└── README.md
+  src/
+    Gateway/
+      ApiGateway/
+    Services/
+      UserService/
+      MeetingService/
+      NotificationService/
+      OrganizationService/
+    Shared/
+      Samvaad.Common/
+    Frontend/
+      meeting-app/
+      organization-admin/
+  tests/
+    Server/
+      Infrastructure.Tests/
+      MeetingService.Tests/
+      NotificationService.Tests/
+      OrganizationService.Tests/
+      UserService.Tests/
+    TEST_CASES.md
+  docker-compose.yml
+  init-db.sql
+  run-all-services.ps1
+  run-all-tests.ps1
 ```
 
-## API Documentation
+## Quick Start
 
-### User Service (`/api/users`)
-- `POST /register` - Register new user
-- `POST /login` - User login
-- `GET /profile` - Get user profile
-- `PUT /profile` - Update profile
-- `GET /verify-token` - Verify JWT token
+From the repository root:
 
-### Meeting Service (`/api/meetings`)
-- `POST /` - Create meeting
-- `GET /{id}` - Get meeting details
-- `GET /` - List meetings
-- `PUT /{id}` - Update meeting
-- `DELETE /{id}` - Delete meeting
-- `POST /{id}/join` - Join meeting
-- `POST /{id}/leave` - Leave meeting
-- `GET /{id}/participants` - List participants
-
-### Notification Service (SignalR Hub)
-- `SendNotification` - Send real-time notification
-- `SendMeetingInvite` - Notify users about meeting invite
-- `ParticipantJoined` - Notify meeting participants
-- `ParticipantLeft` - Notify participant leave
-
-## Development Guidelines
-
-### Adding New Microservice
-1. Create service folder in `src/Services/{ServiceName}`
-2. Add `Program.cs` with dependency injection
-3. Implement controllers & services
-4. Add database migrations
-5. Register routes in YARP Gateway
-6. Update `docker-compose.yml`
-
-### Database Migrations
-```bash
-cd src/Services/{ServiceName}
-dotnet ef migrations add MigrationName
-dotnet ef database update
+```powershell
+docker-compose up -d
+.\run-all-services.ps1
 ```
 
-### Deployment
+Then open:
 
-#### Docker Build
-```bash
-docker build -t meeting-platform:latest .
+- Main app: http://localhost:5173
+- Admin app: http://localhost:5174
+- API Gateway Swagger: http://localhost:5000/swagger
+- Mailpit: http://localhost:8025
+
+If you prefer manual startup, see [QUICKSTART.md](QUICKSTART.md).
+
+## Testing
+
+Run everything with:
+
+```powershell
+.\run-all-tests.ps1
 ```
 
-#### Docker Compose Production
-```bash
-docker-compose -f docker-compose.prod.yml up -d
+The runner covers:
+
+- Server unit and integration tests.
+- Infrastructure and assembly checks.
+- Meeting app unit tests.
+- Organization admin unit tests.
+- Meeting app Playwright functional tests.
+
+Latest verified run:
+
+- Date: 2026-05-21
+- Suites: 8 passed, 0 failed
+- Report: `artifacts/test-reports/20260521-011036/summary.md`
+
+## Local Smoke Users
+
+Recent smoke users created during verification:
+
+- `smoke.owner.20260521010138@samvaad.test`
+- `smoke.alex.20260521010138@samvaad.test`
+- `smoke.casey.20260521010138@samvaad.test`
+- Password: `Password123!`
+
+These are local development records only.
+
+## Documentation
+
+- [QUICKSTART.md](QUICKSTART.md): local setup and daily commands.
+- [ARCHITECTURE.md](ARCHITECTURE.md): services, data ownership, and flows.
+- [DEPLOYMENT.md](DEPLOYMENT.md): Azure deployment plan and production checklist.
+- [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md): current product status.
+- [COMPLETION_REPORT.md](COMPLETION_REPORT.md): implemented feature report.
+- [FILE_INVENTORY.md](FILE_INVENTORY.md): file and folder reference.
+- [tests/TEST_CASES.md](tests/TEST_CASES.md): test coverage matrix.
+
+## Security Notes
+
+- Development uses shared local JWT and internal API keys in appsettings files. Replace every secret for production.
+- Production should set explicit CORS origins, HTTPS, secure database credentials, storage credentials, SMTP credentials, and monitoring.
+- The application now rejects placeholder production secrets and adds baseline security headers.
+- Do not expose Mailpit, local database ports, or development Swagger in public environments.
+
+## GitHub Remote
+
+The project has been pushed before to:
+
+```text
+https://github.com/HrishabhTyagi/OnlineMeetingPlatform.git
 ```
 
-## Security Considerations
-- ✅ JWT authentication on all endpoints
-- ✅ HTTPS/TLS enforcement in production
-- ✅ CORS properly configured
-- ✅ SQL injection protection via EF Core
-- ✅ Rate limiting on API Gateway
-- ✅ Input validation on all endpoints
-- ✅ Secrets management via environment variables
-
-## Monitoring & Logging
-- **Serilog** for structured logging
-- **Application Insights** integration (optional)
-- **Docker logs** for container monitoring
-
-## Contributing
-1. Create feature branch
-2. Commit with meaningful messages
-3. Push to branch
-4. Create Pull Request
-
-## License
-MIT
-
-## Support
-For issues and questions, please open an issue on GitHub.
+Only push when the owner explicitly asks.

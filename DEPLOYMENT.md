@@ -1,398 +1,358 @@
-# Deployment Guide - Online Meeting Platform
+# Samvaad Deployment Guide
+
+This guide covers local deployment and the selected Azure production path for Samvaad.
+
+## Selected Cloud Target
+
+Azure is the chosen deployment platform for Samvaad.
+
+Recommended Azure baseline:
+
+| Layer | Azure service | Notes |
+| --- | --- | --- |
+| User frontend | Azure Static Web Apps or static App Service hosting | Hosts `meeting-app` |
+| Admin frontend | Azure Static Web Apps or a separate static App Service site | Hosts `organization-admin` |
+| API Gateway | Azure Container Apps or Azure App Service | Public backend entrypoint |
+| Backend services | Azure Container Apps or Azure App Service | User, Meeting, Notification, Organization |
+| Database | Azure Database for PostgreSQL Flexible Server | Service databases on managed PostgreSQL |
+| Cache | Azure Cache for Redis | Optional at small scale, useful as usage grows |
+| Event bus | RabbitMQ container first; Azure Service Bus optional later | RabbitMQ keeps early Azure cost lower |
+| Files/recordings | Azure Blob Storage | Organization-aware containers or prefixes |
+| Secrets | Azure Key Vault | JWT, database, SMTP, storage, OAuth secrets |
+| Email | Azure Communication Services Email or SMTP provider | Invites, license requests, document sharing |
+| Realtime | SignalR in app containers; optionally Azure SignalR Service later | Start simple, externalize when scale requires it |
+| Monitoring | Azure Monitor and Application Insights | Logs, traces, alerts |
+| Edge/security | Azure Front Door or Application Gateway | TLS, custom domains, WAF when needed |
 
 ## Local Development Deployment
 
-### Quick Setup Checklist
-- [ ] Install .NET 8.0 SDK
-- [ ] Install Node.js 18+
-- [ ] Install Docker Desktop
-- [ ] Clone/navigate to repository
-- [ ] Run `docker-compose up -d` for infrastructure
-- [ ] Start all 4 backend services in separate terminals
-- [ ] Run `npm install && npm run dev` for frontend
-- [ ] Access at http://localhost:5173
+Use this for development and QA on a single machine.
 
-See **QUICKSTART.md** for detailed steps.
-
-## Production Deployment Options
-
-### Option 1: Docker Compose on Server
-
-**Requirements:**
-- Ubuntu/Linux server
-- Docker & Docker Compose installed
-- 4GB+ RAM
-- 20GB+ storage
-
-**Steps:**
-
-1. Upload project to server:
-```bash
-git clone https://github.com/yourusername/OnlineMeetingPlatform.git
-cd OnlineMeetingPlatform
+```powershell
+cd D:\Projects\OnlineMeetingPlatform
+docker-compose up -d
+.\run-all-services.ps1
 ```
 
-2. Update configuration for production:
-```bash
-# Update environment variables
-nano .env.production
+Open:
+
+- Main app: http://localhost:5173
+- Admin app: http://localhost:5174
+- API Gateway: http://localhost:5000
+- Gateway Swagger: http://localhost:5000/swagger
+- Mailpit: http://localhost:8025
+- RabbitMQ Management: http://localhost:15672
+
+## Local Infrastructure
+
+| Service | Container | Port |
+| --- | --- | ---: |
+| PostgreSQL | `meeting_postgres` | 5432 |
+| Redis | `meeting_redis` | 6379 |
+| RabbitMQ AMQP | `meeting_rabbitmq` | 5672 |
+| RabbitMQ UI | `meeting_rabbitmq` | 15672 |
+| Mailpit SMTP | `meeting_mailpit` | 1025 |
+| Mailpit UI | `meeting_mailpit` | 8025 |
+
+Databases:
+
+- `meeting_users`
+- `meeting_meetings`
+- `meeting_notifications`
+- `meeting_organizations`
+
+## Environment Configuration
+
+Production must override development values.
+
+### Required Backend Settings
+
+- `ConnectionStrings:DefaultConnection`
+- `JwtSettings:SecretKey`
+- `JwtSettings:Issuer`
+- `JwtSettings:Audience`
+- `Security:AllowedOrigins`
+- `Security:MaxRequestBodyBytes`
+- `InternalService:ApiKey`
+- Notification Service `ConnectionStrings:DefaultConnection` when RabbitMQ is enabled, so notification event de-duplication is persistent
+- SMTP or Azure Communication Services Email settings
+- `RabbitMq` settings for durable event publishing and consumers
+- `IntegrationOutbox` settings for event batch size, retry count, polling, and lock duration
+- Azure Blob Storage or organization storage settings
+- Calendar sync credentials for Google and/or Outlook if enabled
+
+Use Azure Key Vault for production secrets wherever possible.
+
+### Required Frontend Settings
+
+The current frontend defaults to `http://localhost:5000/api`. For Azure, configure the API base URL through build-time environment settings or hosting configuration before publishing.
+
+## Azure Production Shape
+
+Minimum Azure production components:
+
+- Static hosting for `meeting-app`.
+- Static hosting for `organization-admin`.
+- API Gateway deployed to Azure Container Apps or App Service.
+- User Service deployed to Azure Container Apps or App Service.
+- Meeting Service deployed to Azure Container Apps or App Service.
+- Notification Service deployed to Azure Container Apps or App Service.
+- Organization Service deployed to Azure Container Apps or App Service.
+- Azure Database for PostgreSQL Flexible Server.
+- Azure Blob Storage for attachments and recordings.
+- Azure Key Vault for secrets.
+- Azure Monitor/Application Insights.
+- Email provider.
+- RabbitMQ event bus container or managed RabbitMQ-compatible broker.
+- Optional Azure Cache for Redis.
+- Optional Azure Front Door/Application Gateway.
+
+Recommended network shape:
+
+```text
+Internet
+  |
+  v
+Azure Front Door / HTTPS ingress
+  |
+  +--> meeting-app static frontend
+  +--> organization-admin static frontend
+  +--> API Gateway
+          |
+          +--> User Service
+          +--> Meeting Service
+          +--> Notification Service
+          +--> Organization Service
 ```
 
-3. Build Docker images:
-```bash
-docker-compose -f docker-compose.prod.yml build
+Only the edge, frontend apps, and API Gateway should be public. PostgreSQL, Redis, SMTP credentials, storage credentials, and Key Vault should remain private or access-restricted.
+
+RabbitMQ should also stay private. Expose only AMQP traffic to Samvaad backend services and keep the management UI behind local access, a VPN, or a private admin network. Keep `RequireRoutableMessages` enabled so the Meeting Service outbox retries events when no matching durable queue exists yet.
+
+Use `/api/messaging/outbox/summary` from an authenticated admin/operator account to monitor pending, locked, failed, and recently processed outbox events.
+
+## Azure Cost-Conscious Path
+
+For an early SaaS pilot on Azure, keep the architecture simple:
+
+- Use Azure Static Web Apps for the user/admin frontends if it fits the routing and build needs.
+- Use Azure Container Apps for the API Gateway and four services so they can scale down when idle.
+- Start with one small Azure Database for PostgreSQL Flexible Server.
+- Use Azure Blob Storage for attachments and recordings from day one.
+- Use Key Vault for secrets.
+- Delay Azure SignalR Service until realtime traffic requires it.
+- Run RabbitMQ as a low-cost container first; move to Azure Service Bus only if a customer requires a managed Azure queue.
+- Keep Redis optional until caching/session pressure justifies it.
+- Keep retention limits strict for recordings and attachments to control storage growth.
+
+Tradeoffs:
+
+- Container Apps can be simpler and cheaper for an early SaaS workload than AKS.
+- AKS gives maximum control, but it is usually overkill until customer count and operations needs justify it.
+- Managed PostgreSQL costs more than a self-hosted database, but backups, patching, and reliability are worth it for customer data.
+- Recording storage can grow quickly; use Samvaad Admin retention and size limits per organization.
+
+## Organization Storage Options
+
+Samvaad is designed so a customer organization can use different storage policies:
+
+- Azure Blob Storage for production scale.
+- Customer-owned Azure Storage for organizations that require their own storage account.
+- On-prem/local network paths for customers that require their own premises storage.
+- Application local storage only for demos and small non-production setups.
+
+For production, configure:
+
+- Provider name.
+- Recording and attachment limits.
+- Retention days.
+- Public base URL or signed URL strategy.
+- Access permissions and audit policy.
+
+## Azure Container Deployment Notes
+
+The included `docker-compose.yml` is for local infrastructure only. For Azure, publish built images to Azure Container Registry, then deploy the gateway and services to Azure Container Apps or App Service for Containers.
+
+Recommended flow:
+
+1. Build service images.
+2. Push them to Azure Container Registry.
+3. Create an Azure Container Apps environment or App Service plans.
+4. Configure environment variables from Key Vault.
+5. Configure managed identity where possible.
+6. Restrict service ingress so only the API Gateway is public.
+7. Configure Gateway destination addresses for the deployed service URLs.
+
+Example image build commands:
+
+```powershell
+az acr build --registry <acr-name> --image samvaad/userservice:latest src/Services/UserService
+az acr build --registry <acr-name> --image samvaad/meetingservice:latest src/Services/MeetingService
+az acr build --registry <acr-name> --image samvaad/notificationservice:latest src/Services/NotificationService
+az acr build --registry <acr-name> --image samvaad/organizationservice:latest src/Services/OrganizationService
+az acr build --registry <acr-name> --image samvaad/apigateway:latest src/Gateway/ApiGateway
 ```
 
-4. Start services:
-```bash
-docker-compose -f docker-compose.prod.yml up -d
+## Database Migration
+
+Services run EF Core migrations on startup. For controlled production releases, prefer an explicit migration step from the same image/version being deployed:
+
+```powershell
+dotnet ef database update --project src\Services\UserService\UserService.csproj
+dotnet ef database update --project src\Services\MeetingService\MeetingService.csproj
+dotnet ef database update --project src\Services\OrganizationService\OrganizationService.csproj
 ```
 
-5. Verify:
-```bash
-docker-compose logs
-curl http://localhost:5000/api/auth/login
+Important migration currently required for calls:
+
+- `20260520103000_MeetingCallLogs`
+- `20260524010000_IntegrationEventOutbox`
+- `20260524013000_IntegrationEventConsumerCheckpoints`
+- Notification Service: `20260524014500_ProcessedNotificationEvents`
+
+## Email
+
+Local:
+
+- SMTP host: `localhost`
+- SMTP port: `1025`
+- UI: http://localhost:8025
+
+Azure production:
+
+- Use Azure Communication Services Email or a real SMTP/transactional email provider.
+- Configure SPF, DKIM, and DMARC for the sending domain.
+- Do not expose Mailpit publicly.
+
+## Calendar Sync
+
+Google and Outlook adapters require provider application configuration:
+
+- Client id.
+- Client secret.
+- Redirect URL.
+- Scopes.
+- Tenant setting for Outlook.
+
+If these values are empty, the app displays providers as not configured and disables connect actions.
+
+## Security Checklist
+
+- Replace all development secrets.
+- Store secrets in Azure Key Vault.
+- Use HTTPS everywhere.
+- Restrict `Security:AllowedOrigins`.
+- Keep PostgreSQL and Redis private.
+- Use managed identity where possible.
+- Disable public Swagger or protect it.
+- Configure auth rate limits.
+- Configure upload size limits.
+- Configure attachment type restrictions.
+- Enable audit log review.
+- Back up databases and file storage.
+- Use least-privilege storage permissions.
+- Monitor failed login attempts and API errors.
+- Review organization tenant isolation before onboarding customers.
+
+## Backup And Recovery
+
+PostgreSQL backup:
+
+```powershell
+docker exec meeting_postgres pg_dump -U postgres meeting_users > backup_users.sql
+docker exec meeting_postgres pg_dump -U postgres meeting_meetings > backup_meetings.sql
+docker exec meeting_postgres pg_dump -U postgres meeting_organizations > backup_organizations.sql
 ```
 
-### Option 2: Azure Container Instances (ACI)
+Azure backup targets:
 
-**Requirements:**
-- Azure subscription
-- Azure CLI installed
-- Container Registry
+- Azure Database for PostgreSQL automated backups.
+- Blob Storage soft delete/versioning or backup policy.
+- Key Vault soft delete and purge protection.
+- Exported app/container configuration.
+- Application logs retained in Log Analytics.
 
-**Steps:**
+Suggested targets:
 
-1. Create Azure Container Registry:
-```bash
-az acr create --resource-group myResourceGroup --name myregistry --sku Basic
+- RPO: 15 minutes for production.
+- RTO: 1 hour for small deployments.
+
+## Monitoring
+
+At minimum, monitor:
+
+- API Gateway 4xx/5xx rates.
+- Service process health.
+- PostgreSQL CPU, memory, disk, connections.
+- Redis memory if enabled.
+- SignalR connection counts.
+- SMTP/email delivery failures.
+- Integration outbox pending/failed message counts.
+- Meeting and Notification consumer checkpoint errors.
+- Storage consumption per organization.
+- Recording upload failures.
+- Background worker errors.
+
+Azure-native monitoring:
+
+- Application Insights for API traces and exceptions.
+- Azure Monitor alerts for service health.
+- Log Analytics workspace for centralized logs.
+- Storage metrics for per-organization growth.
+- PostgreSQL metrics and slow query logs.
+
+## Test Before Release
+
+Run:
+
+```powershell
+.\run-all-tests.ps1
 ```
 
-2. Build and push images:
-```bash
-az acr build --registry myregistry --image userservice:latest ./src/Services/UserService
-az acr build --registry myregistry --image meetingservice:latest ./src/Services/MeetingService
-az acr build --registry myregistry --image notificationservice:latest ./src/Services/NotificationService
-az acr build --registry myregistry --image apigateway:latest ./src/Gateway/ApiGateway
-az acr build --registry myregistry --image frontend:latest ./src/Frontend/meeting-app
-```
+Then manually smoke:
 
-3. Deploy to ACI:
-```bash
-# Deploy database
-az container create \
-  --resource-group myResourceGroup \
-  --name postgres \
-  --image postgres:15-alpine \
-  --environment-variables POSTGRES_PASSWORD=password123 \
-  --ports 5432 \
-  --memory 2
+1. Register/login.
+2. Create a personal meeting.
+3. Create an organization workspace and open `/org/{slug}`.
+4. Send direct and group chat messages.
+5. Upload/paste/share a document.
+6. Create and update a task.
+7. Schedule a meeting and accept as another user.
+8. Join from two accounts.
+9. Direct-call an available user.
+10. Cancel a mistaken call.
+11. Record and verify the recording link.
+12. Confirm emails in SMTP logs/provider.
 
-# Deploy services
-az container create \
-  --resource-group myResourceGroup \
-  --name userservice \
-  --image myregistry.azurecr.io/userservice:latest \
-  --ports 5001 \
-  --memory 1 \
-  --environment-variables DATABASE_URL="Host=postgres" \
-  --registry-login-server myregistry.azurecr.io \
-  --registry-username <username> \
-  --registry-password <password>
-```
+Latest known passing automated run:
 
-### Option 3: Azure Kubernetes Service (AKS)
+- Report: `artifacts/test-reports/20260521-011036/summary.md`
+- Suites: 8 passed, 0 failed
 
-**Requirements:**
-- Azure subscription
-- kubectl installed
-- Azure CLI installed
+## Azure Services To Provision First
 
-**Steps:**
+Start with this resource list:
 
-1. Create AKS cluster:
-```bash
-az aks create \
-  --resource-group myResourceGroup \
-  --name myAKSCluster \
-  --node-count 3 \
-  --vm-set-type VirtualMachineScaleSets \
-  --load-balancer-sku standard \
-  --enable-managed-identity \
-  --network-plugin azure \
-  --network-policy azure
-```
+1. Resource group for Samvaad.
+2. Azure Container Registry.
+3. Azure Database for PostgreSQL Flexible Server.
+4. Azure Storage Account for attachments and recordings.
+5. Azure Key Vault.
+6. Azure Container Apps environment.
+7. Container apps for API Gateway, User, Meeting, Notification, and Organization services.
+8. Static hosting for `meeting-app`.
+9. Static hosting for `organization-admin`.
+10. Application Insights and Log Analytics.
+11. Email provider setup.
+12. Custom domains and TLS certificates.
 
-2. Get credentials:
-```bash
-az aks get-credentials --resource-group myResourceGroup --name myAKSCluster
-```
+## Production Readiness Notes
 
-3. Create Kubernetes manifests (see kubernetes/ folder)
+Samvaad has a broad local feature set, but deployment readiness depends on environment hardening:
 
-4. Deploy:
-```bash
-kubectl apply -f kubernetes/namespaces.yaml
-kubectl apply -f kubernetes/postgres.yaml
-kubectl apply -f kubernetes/redis.yaml
-kubectl apply -f kubernetes/services/
-kubectl apply -f kubernetes/deployments/
-```
-
-5. Verify:
-```bash
-kubectl get pods --all-namespaces
-kubectl get svc --all-namespaces
-```
-
-## Database Backup & Recovery
-
-### PostgreSQL Backup
-
-**Backup:**
-```bash
-docker-compose exec postgres pg_dump -U postgres meeting_users > backup_users.sql
-docker-compose exec postgres pg_dump -U postgres meeting_meetings > backup_meetings.sql
-```
-
-**Restore:**
-```bash
-docker-compose exec -T postgres psql -U postgres < backup_users.sql
-docker-compose exec -T postgres psql -U postgres < backup_meetings.sql
-```
-
-### Automated Backups
-
-Add to crontab (daily at 2 AM):
-```bash
-0 2 * * * docker-compose -f /path/to/docker-compose.yml exec -T postgres pg_dump -U postgres all_databases > /backups/backup_$(date +\%Y\%m\%d).sql
-```
-
-## Monitoring & Alerting
-
-### Azure Monitor
-
-1. Configure Application Insights:
-```bash
-az resource create \
-  --resource-group myResourceGroup \
-  --resource-type "Microsoft.Insights/components" \
-  --name myAppInsights \
-  --properties '{"Application_Type":"web"}'
-```
-
-2. Add to appsettings.json:
-```json
-{
-  "ApplicationInsights": {
-    "InstrumentationKey": "your-key-here"
-  }
-}
-```
-
-3. Install NuGet package:
-```bash
-dotnet add package Microsoft.ApplicationInsights.AspNetCore
-```
-
-### Logging Configuration
-
-Update Serilog in Program.cs:
-```csharp
-Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .WriteTo.Console()
-    .WriteTo.ApplicationInsights(telemetryClient, TelemetryConverter.Traces)
-    .WriteTo.File("logs/app-.txt", rollingInterval: RollingInterval.Day)
-    .CreateLogger();
-```
-
-## SSL/TLS Certificate Management
-
-### Self-Signed Certificate (Development)
-```bash
-# Generate private key
-openssl genrsa -out private.key 2048
-
-# Generate certificate
-openssl req -new -x509 -key private.key -out certificate.crt -days 365
-```
-
-### Let's Encrypt (Production)
-
-Using Certbot:
-```bash
-sudo certbot certonly --standalone -d yourdomain.com
-```
-
-Update nginx.conf:
-```nginx
-server {
-    listen 443 ssl;
-    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
-    ...
-}
-```
-
-## Performance Optimization
-
-### Database
-```sql
--- Create indexes
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_meetings_organizer ON meetings(organizer_id);
-CREATE INDEX idx_meetings_start_time ON meetings(start_time);
-CREATE INDEX idx_participants_meeting ON participants(meeting_id);
-```
-
-### Caching Strategy
-```csharp
-// Cache user data for 1 hour
-services.AddStackExchangeRedisCache(options =>
-{
-    options.Configuration = "localhost:6379";
-    options.InstanceName = "meetingapp:";
-});
-```
-
-### Connection Pooling
-```csharp
-// PostgreSQL connection pooling
-services.AddDbContext<UserDbContext>(options =>
-    options.UseNpgsql(connectionString, npgOptions =>
-    {
-        npgOptions.MaxPoolSize(20);
-    })
-);
-```
-
-## Scaling Strategies
-
-### Horizontal Scaling (Multiple Instances)
-
-**Docker Swarm:**
-```bash
-docker swarm init
-docker stack deploy -c docker-compose.prod.yml meeting-platform
-docker service scale meeting-platform_userservice=3
-docker service scale meeting-platform_meetingservice=3
-docker service scale meeting-platform_notificationservice=2
-```
-
-**Kubernetes:**
-```bash
-kubectl scale deployment userservice --replicas=3 -n production
-kubectl scale deployment meetingservice --replicas=3 -n production
-kubectl autoscale deployment userservice --min=2 --max=10 -n production
-```
-
-### Load Balancing
-
-**NGINX:**
-```nginx
-upstream backend {
-    server userservice:5001;
-    server userservice:5001;
-    server userservice:5001;
-}
-
-server {
-    listen 5001;
-    location / {
-        proxy_pass http://backend;
-    }
-}
-```
-
-## Disaster Recovery Plan
-
-### RTO & RPO Targets
-- **RTO (Recovery Time Objective)**: < 1 hour
-- **RPO (Recovery Point Objective)**: < 15 minutes
-
-### Backup Strategy
-1. Daily full database backups
-2. Hourly incremental backups
-3. Offsite backup storage (Azure Blob Storage)
-4. Regular restore tests
-
-### Failover Plan
-1. Automated health checks
-2. Service restart on failure
-3. Database replication to standby
-4. DNS failover to backup location
-
-## Security Checklist for Production
-
-- [ ] Change all default credentials
-- [ ] Enable HTTPS/TLS
-- [ ] Configure CORS for allowed origins only
-- [ ] Enable database encryption at rest
-- [ ] Implement rate limiting
-- [ ] Set up Web Application Firewall (WAF)
-- [ ] Enable audit logging
-- [ ] Regular security patches
-- [ ] Penetration testing
-- [ ] DDoS protection (Azure DDoS Standard)
-- [ ] Enable VPN/Private endpoints
-- [ ] Configure network security groups
-- [ ] Regular security audits
-- [ ] Incident response plan
-
-## Cost Optimization (Azure)
-
-### Recommendations
-- Use Reserved Instances for predictable workloads
-- Implement auto-scaling policies
-- Use Azure Spot VMs for non-critical services
-- Optimize database SKU based on actual usage
-- Delete unused resources
-- Use Azure Cost Management for monitoring
-
-### Cost Estimation (Monthly)
-- App Service (Premium): ~$100-200
-- PostgreSQL (Single Server): ~$50-100
-- Redis Cache (Basic): ~$15
-- Storage (100GB): ~$2-5
-- Data Transfer: ~$5-10
-**Total Estimated**: $170-325/month
-
-## Troubleshooting Production Issues
-
-### Service Won't Start
-```bash
-# Check logs
-docker logs container_name
-kubectl logs pod_name
-
-# Verify config
-cat config.json
-env | grep DATABASE
-```
-
-### High Latency
-```bash
-# Check database performance
-EXPLAIN ANALYZE SELECT * FROM users;
-
-# Monitor connections
-SELECT datname, count(*) FROM pg_stat_activity GROUP BY datname;
-```
-
-### Memory Leaks
-```bash
-# Monitor memory usage
-docker stats
-kubectl top pods
-
-# Check logs for errors
-tail -f logs/error.log
-```
-
-## Support Contacts
-
-- **Emergency Support**: +1-XXX-XXX-XXXX
-- **Email**: support@example.com
-- **Documentation**: https://docs.example.com
-- **Status Page**: https://status.example.com
+- Decide where each organization's recordings and files live in Azure Blob Storage or customer-owned storage.
+- Decide whether organizations get shared Azure tenant URLs, dedicated Azure app hosts, or both.
+- Configure backup/restore and retention before storing real customer data.
+- Configure TURN/STUN infrastructure for reliable WebRTC across networks.
+- Validate email deliverability with the production domain.
+- Run load and security testing before selling to larger organizations.

@@ -10,6 +10,7 @@ import CalendarCallback from './pages/CalendarCallback';
 import Meet from './pages/Meet';
 import MeetingRoom from './pages/MeetingRoom';
 import Chat from './pages/Chat';
+import Calls from './pages/Calls';
 import Teams from './pages/Teams';
 import License from './pages/License';
 import { useAuthStore } from './store/authStore';
@@ -17,6 +18,7 @@ import IncomingCallRinger from './components/IncomingCallRinger';
 import ConversationMessageNotifier from './components/ConversationMessageNotifier';
 import { ThemeProvider } from './components/ThemeProvider';
 import OrganizationScope from './components/OrganizationScope';
+import PersonalScope from './components/PersonalScope';
 import './index.css';
 
 const queryClient = new QueryClient();
@@ -60,6 +62,7 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/org/:organizationSlug" element={<OrganizationScope redirectTo="/dashboard" />} />
+            <Route path="/personal" element={<PersonalScope redirectTo="/dashboard" />} />
             <Route
               path="/org/:organizationSlug/activity"
               element={
@@ -86,6 +89,16 @@ function App() {
                 <OrganizationScope>
                   <ProtectedRoute>
                     <Meet />
+                  </ProtectedRoute>
+                </OrganizationScope>
+              }
+            />
+            <Route
+              path="/org/:organizationSlug/calls"
+              element={
+                <OrganizationScope>
+                  <ProtectedRoute>
+                    <Calls />
                   </ProtectedRoute>
                 </OrganizationScope>
               }
@@ -131,51 +144,153 @@ function App() {
               }
             />
             <Route
+              path="/personal/activity"
+              element={
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Activity />
+                  </ProtectedRoute>
+                </PersonalScope>
+              }
+            />
+            <Route
+              path="/personal/dashboard"
+              element={
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Dashboard />
+                  </ProtectedRoute>
+                </PersonalScope>
+              }
+            />
+            <Route
+              path="/personal/meet"
+              element={
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Meet />
+                  </ProtectedRoute>
+                </PersonalScope>
+              }
+            />
+            <Route
+              path="/personal/calls"
+              element={
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Calls />
+                  </ProtectedRoute>
+                </PersonalScope>
+              }
+            />
+            <Route
+              path="/personal/create-meeting"
+              element={
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <CreateMeeting />
+                  </ProtectedRoute>
+                </PersonalScope>
+              }
+            />
+            <Route
+              path="/personal/chat"
+              element={
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Chat />
+                  </ProtectedRoute>
+                </PersonalScope>
+              }
+            />
+            <Route
+              path="/personal/teams"
+              element={
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Teams />
+                  </ProtectedRoute>
+                </PersonalScope>
+              }
+            />
+            <Route
+              path="/personal/meeting/:id"
+              element={
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <MeetingRoom />
+                  </ProtectedRoute>
+                </PersonalScope>
+              }
+            />
+            <Route
               path="/activity"
               element={
-                <ProtectedRoute>
-                  <Activity />
-                </ProtectedRoute>
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Activity />
+                  </ProtectedRoute>
+                </PersonalScope>
               }
             />
             <Route
               path="/dashboard"
               element={
-                <ProtectedRoute>
-                  <Dashboard />
-                </ProtectedRoute>
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Dashboard />
+                  </ProtectedRoute>
+                </PersonalScope>
               }
             />
             <Route
               path="/meet"
               element={
-                <ProtectedRoute>
-                  <Meet />
-                </ProtectedRoute>
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Meet />
+                  </ProtectedRoute>
+                </PersonalScope>
+              }
+            />
+            <Route
+              path="/calls"
+              element={
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Calls />
+                  </ProtectedRoute>
+                </PersonalScope>
               }
             />
             <Route
               path="/create-meeting"
               element={
-                <ProtectedRoute>
-                  <CreateMeeting />
-                </ProtectedRoute>
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <CreateMeeting />
+                  </ProtectedRoute>
+                </PersonalScope>
               }
             />
             <Route
               path="/chat"
               element={
-                <ProtectedRoute>
-                  <Chat />
-                </ProtectedRoute>
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Chat />
+                  </ProtectedRoute>
+                </PersonalScope>
               }
             />
             <Route
               path="/teams"
               element={
-                <ProtectedRoute>
-                  <Teams />
-                </ProtectedRoute>
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <Teams />
+                  </ProtectedRoute>
+                </PersonalScope>
               }
             />
             <Route
@@ -189,9 +304,11 @@ function App() {
             <Route
               path="/meeting/:id"
               element={
-                <ProtectedRoute>
-                  <MeetingRoom />
-                </ProtectedRoute>
+                <PersonalScope>
+                  <ProtectedRoute>
+                    <MeetingRoom />
+                  </ProtectedRoute>
+                </PersonalScope>
               }
             />
             <Route
@@ -202,7 +319,7 @@ function App() {
                 </ProtectedRoute>
               }
             />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/" element={<Navigate to="/personal/dashboard" replace />} />
           </Routes>
         </BrowserRouter>
       </ThemeProvider>

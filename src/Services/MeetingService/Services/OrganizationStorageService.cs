@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using Samvaad.Common.Caching;
 
 namespace MeetingService.Services;
 
@@ -42,49 +43,63 @@ public interface IOrganizationStorageService
 
 public class OrganizationStorageService : IOrganizationStorageService
 {
+    private static readonly TimeSpan SettingsTtl = TimeSpan.FromSeconds(60);
+
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IWebHostEnvironment _environment;
     private readonly IOrganizationTenantContext _tenantContext;
+    private readonly IAppCache _cache;
     private readonly ILogger<OrganizationStorageService> _logger;
 
     public OrganizationStorageService(
         IHttpClientFactory httpClientFactory,
         IWebHostEnvironment environment,
         IOrganizationTenantContext tenantContext,
+        IAppCache cache,
         ILogger<OrganizationStorageService> logger)
     {
         _httpClientFactory = httpClientFactory;
         _environment = environment;
         _tenantContext = tenantContext;
+        _cache = cache;
         _logger = logger;
     }
 
     public async Task<OrganizationStorageSettings> GetSettingsAsync()
     {
-        try
+        if (!_tenantContext.OrganizationId.HasValue)
         {
-            var client = _httpClientFactory.CreateClient("OrganizationService");
-            using var request = new HttpRequestMessage(HttpMethod.Get, "/api/organizations/current/internal");
-            if (_tenantContext.OrganizationId.HasValue)
-            {
-                request.Headers.TryAddWithoutValidation("X-Organization-Id", _tenantContext.OrganizationId.Value.ToString());
-            }
-
-            if (!string.IsNullOrWhiteSpace(_tenantContext.OrganizationSlug))
-            {
-                request.Headers.TryAddWithoutValidation("X-Organization-Slug", _tenantContext.OrganizationSlug);
-            }
-
-            using var response = await client.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-            var settings = await response.Content.ReadFromJsonAsync<OrganizationStorageSettings>();
-            return settings ?? new OrganizationStorageSettings();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "OrganizationService settings unavailable. Falling back to application-local storage.");
             return new OrganizationStorageSettings();
         }
+
+        var cacheKey = $"organization-storage:{CacheKey.Tenant(_tenantContext.OrganizationId, _tenantContext.OrganizationSlug)}";
+        return await _cache.GetOrCreateAsync(cacheKey, async _ =>
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("OrganizationService");
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/organizations/current/internal");
+                if (_tenantContext.OrganizationId.HasValue)
+                {
+                    request.Headers.TryAddWithoutValidation("X-Organization-Id", _tenantContext.OrganizationId.Value.ToString());
+                }
+
+                if (!string.IsNullOrWhiteSpace(_tenantContext.OrganizationSlug))
+                {
+                    request.Headers.TryAddWithoutValidation("X-Organization-Slug", _tenantContext.OrganizationSlug);
+                }
+
+                using var response = await client.SendAsync(request);
+                response.EnsureSuccessStatusCode();
+                var settings = await response.Content.ReadFromJsonAsync<OrganizationStorageSettings>();
+                return settings ?? new OrganizationStorageSettings();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "OrganizationService settings unavailable. Falling back to application-local storage.");
+                return new OrganizationStorageSettings();
+            }
+        }, SettingsTtl);
     }
 
     public async Task<StoredOrganizationFile> SaveAsync(OrganizationFileKind kind, Guid ownerId, IFormFile file, string storedFileName, CancellationToken cancellationToken = default)

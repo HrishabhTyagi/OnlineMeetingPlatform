@@ -172,7 +172,8 @@ export default function Activity() {
   const refresh = useCallback(async () => {
     setLoading(true);
     setError('');
-    setActiveOrganization(getActiveOrganization());
+    const currentOrganization = getActiveOrganization();
+    setActiveOrganization(currentOrganization);
     setMissedCalls(readStoredMissedCalls(user?.id));
 
     try {
@@ -180,7 +181,7 @@ export default function Activity() {
         conversationAPI.getConversations(),
         meetingAPI.getUpcomingMeetings(),
         meetingAPI.getMyMeetings(),
-        organizationAPI.getCurrent(),
+        currentOrganization ? organizationAPI.getCurrent() : Promise.resolve({ data: null }),
       ]);
 
       if (conversationResponse.status === 'fulfilled') {
@@ -335,13 +336,13 @@ export default function Activity() {
       });
     } else {
       items.push({
-        id: 'organization-missing',
-        type: 'Organization workspace',
-        tone: 'amber',
-        title: 'No hosted organization selected',
-        detail: 'Open Samvaad from an organization URL to scope meetings, chats, files, and recordings.',
+        id: 'personal-workspace',
+        type: 'Personal workspace',
+        tone: 'emerald',
+        title: 'Personal Samvaad',
+        detail: 'Your meetings, chats, files, and recordings stay separate from company workspaces.',
         actionLabel: 'Go to calendar',
-        action: () => navigate('/dashboard'),
+        action: () => navigate(scopedPath('/dashboard')),
       });
     }
 
@@ -459,7 +460,7 @@ export default function Activity() {
               <div className="mt-4 space-y-3 text-sm">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Organization</p>
-                  <p className="mt-1 font-semibold text-slate-950">{activeOrganization?.name || organizationSettings?.name || 'Default Samvaad'}</p>
+                  <p className="mt-1 font-semibold text-slate-950">{activeOrganization?.name || organizationSettings?.name || 'Personal workspace'}</p>
                 </div>
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Storage</p>

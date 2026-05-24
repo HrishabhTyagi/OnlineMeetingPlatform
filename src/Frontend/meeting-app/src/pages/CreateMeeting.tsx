@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import BrandMark from '../components/BrandMark';
 import { UserAvatar, UserStatusBadge } from '../components/UserStatus';
-import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openUrlInNewTab, organizationAPI, userAPI } from '../services/api';
+import { getActiveOrganization, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openUrlInNewTab, organizationAPI, userAPI } from '../services/api';
 import { useMeetingStore } from '../store/meetingStore';
 
 const durationOptions = [15, 30, 45, 60, 90, 120, 180];
@@ -121,15 +121,17 @@ export default function CreateMeeting() {
       .then((response) => setKnownUsers(response.data))
       .catch(() => setKnownUsers([]));
 
-    organizationAPI.getCurrent()
-      .then((response) => {
-        setFormData((current) => ({
-          ...current,
-          lobbyEnabled: response.data.requireLobbyByDefault ?? current.lobbyEnabled,
-          allowRecording: response.data.enableRecordingByDefault ?? current.allowRecording,
-        }));
-      })
-      .catch(() => undefined);
+    if (getActiveOrganization()) {
+      organizationAPI.getCurrent()
+        .then((response) => {
+          setFormData((current) => ({
+            ...current,
+            lobbyEnabled: response.data.requireLobbyByDefault ?? current.lobbyEnabled,
+            allowRecording: response.data.enableRecordingByDefault ?? current.allowRecording,
+          }));
+        })
+        .catch(() => undefined);
+    }
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {

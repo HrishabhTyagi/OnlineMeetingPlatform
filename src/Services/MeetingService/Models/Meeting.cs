@@ -30,6 +30,16 @@ public enum MeetingInviteResponseStatus
     Tentative
 }
 
+public enum MeetingCallStatus
+{
+    Ringing,
+    Accepted,
+    Declined,
+    Cancelled,
+    NoResponse,
+    Failed
+}
+
 public enum ChatScope
 {
     Everyone,
@@ -116,6 +126,7 @@ public class Meeting
     public ICollection<MeetingInvite> Invites { get; set; } = new List<MeetingInvite>();
     public ICollection<LobbyRequest> LobbyRequests { get; set; } = new List<LobbyRequest>();
     public ICollection<MeetingReminder> Reminders { get; set; } = new List<MeetingReminder>();
+    public ICollection<MeetingCallLog> CallLogs { get; set; } = new List<MeetingCallLog>();
     public TeamChannel? TeamChannel { get; set; }
 }
 
@@ -194,6 +205,33 @@ public class MeetingReminder
     public DateTime RemindAt { get; set; }
     public bool IsSent { get; set; } = false;
     public DateTime? SentAt { get; set; }
+
+    public Meeting Meeting { get; set; } = null!;
+}
+
+public class MeetingCallLog
+{
+    public Guid Id { get; set; }
+    public Guid? OrganizationId { get; set; }
+    public Guid MeetingId { get; set; }
+    public string? ConversationId { get; set; }
+    public Guid CallerUserId { get; set; }
+    public string CallerName { get; set; } = string.Empty;
+    public Guid RecipientUserId { get; set; }
+    public string RecipientEmail { get; set; } = string.Empty;
+    public string RecipientName { get; set; } = string.Empty;
+    public string CallType { get; set; } = "video";
+    public string? JoinUrl { get; set; }
+    public MeetingCallStatus Status { get; set; } = MeetingCallStatus.Ringing;
+    public string? StatusReason { get; set; }
+    public string? CancellationMessage { get; set; }
+    public Guid? CancellationMessageId { get; set; }
+    public DateTime? CallerSeenAt { get; set; }
+    public DateTime? RecipientSeenAt { get; set; }
+    public DateTime? CallerHiddenAt { get; set; }
+    public DateTime? RecipientHiddenAt { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? StatusChangedAt { get; set; }
 
     public Meeting Meeting { get; set; } = null!;
 }
@@ -346,6 +384,39 @@ public class PlatformAuditLog
 
     public Meeting? Meeting { get; set; }
     public Conversation? Conversation { get; set; }
+}
+
+public class IntegrationEventOutboxMessage
+{
+    public Guid Id { get; set; }
+    public Guid EventId { get; set; }
+    public string EventName { get; set; } = string.Empty;
+    public string EventType { get; set; } = string.Empty;
+    public string ExchangeName { get; set; } = string.Empty;
+    public string RoutingKey { get; set; } = string.Empty;
+    public string Payload { get; set; } = string.Empty;
+    public DateTime OccurredAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime AvailableAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? LockedUntilUtc { get; set; }
+    public string? LockId { get; set; }
+    public int RetryCount { get; set; }
+    public DateTime? ProcessedAtUtc { get; set; }
+    public DateTime? FailedAtUtc { get; set; }
+    public string? LastError { get; set; }
+}
+
+public class IntegrationEventConsumerCheckpoint
+{
+    public Guid Id { get; set; }
+    public Guid EventId { get; set; }
+    public string EventName { get; set; } = string.Empty;
+    public string HandlerName { get; set; } = string.Empty;
+    public DateTime FirstSeenAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime LastAttemptAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? ProcessedAtUtc { get; set; }
+    public int AttemptCount { get; set; }
+    public string? LastError { get; set; }
 }
 
 public class ScheduledConversationMessage

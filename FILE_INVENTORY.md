@@ -1,334 +1,282 @@
-# Project File Inventory
+# Samvaad File Inventory
 
-## Location
-`D:\Projects\OnlineMeetingPlatform`
+Root: `D:\Projects\OnlineMeetingPlatform`
 
-## Complete Directory Structure
+## Root Files
 
-```
-OnlineMeetingPlatform/
-│
-├── 📄 README.md                          (Main project documentation)
-├── 📄 QUICKSTART.md                      (Getting started guide)
-├── 📄 ARCHITECTURE.md                    (System architecture documentation)
-├── 📄 DEPLOYMENT.md                      (Production deployment guide)
-├── 📄 PROJECT_SUMMARY.md                 (This summary)
-├── 📄 .gitignore                         (Git ignore file)
-├── 📄 docker-compose.yml                 (Local environment setup)
-├── 📄 Dockerfile.multi                   (Multi-stage Docker builds)
-├── 📄 nginx.conf                         (Nginx configuration)
-├── 📄 init-db.sql                        (Database initialization)
-│
-├── 📁 src/
-│   ├── 📁 Services/
-│   │   ├── 📁 UserService/
-│   │   │   ├── UserService.csproj
-│   │   │   ├── Program.cs
-│   │   │   ├── appsettings.json
-│   │   │   ├── 📁 Controllers/
-│   │   │   │   ├── AuthController.cs
-│   │   │   │   └── UsersController.cs
-│   │   │   ├── 📁 Services/
-│   │   │   │   ├── AuthService.cs
-│   │   │   │   └── UserService.cs
-│   │   │   ├── 📁 Models/
-│   │   │   │   ├── User.cs
-│   │   │   │   └── DTOs.cs
-│   │   │   └── 📁 Data/
-│   │   │       └── UserDbContext.cs
-│   │   │
-│   │   ├── 📁 MeetingService/
-│   │   │   ├── MeetingService.csproj
-│   │   │   ├── Program.cs
-│   │   │   ├── appsettings.json
-│   │   │   ├── 📁 Controllers/
-│   │   │   │   ├── MeetingsController.cs
-│   │   │   │   └── ParticipantsController.cs
-│   │   │   ├── 📁 Services/
-│   │   │   │   └── MeetingService.cs
-│   │   │   ├── 📁 Models/
-│   │   │   │   ├── Meeting.cs
-│   │   │   │   └── DTOs.cs
-│   │   │   └── 📁 Data/
-│   │   │       └── MeetingDbContext.cs
-│   │   │
-│   │   └── 📁 NotificationService/
-│   │       ├── NotificationService.csproj
-│   │       ├── Program.cs
-│   │       ├── appsettings.json
-│   │       ├── 📁 Hubs/
-│   │       │   └── NotificationHub.cs
-│   │       └── 📁 Models/
-│   │           └── Notification.cs
-│   │
-│   ├── 📁 Gateway/
-│   │   └── 📁 ApiGateway/
-│   │       ├── ApiGateway.csproj
-│   │       ├── Program.cs
-│   │       └── appsettings.json
-│   │
-│   └── 📁 Frontend/
-│       └── 📁 meeting-app/
-│           ├── package.json
-│           ├── tsconfig.json
-│           ├── tsconfig.node.json
-│           ├── vite.config.ts
-│           ├── tailwind.config.js
-│           ├── postcss.config.js
-│           ├── index.html
-│           ├── .gitignore
-│           ├── 📁 src/
-│           │   ├── main.tsx
-│           │   ├── App.tsx
-│           │   ├── index.css
-│           │   ├── 📁 services/
-│           │   │   ├── api.ts
-│           │   │   └── signalR.ts
-│           │   ├── 📁 store/
-│           │   │   ├── authStore.ts
-│           │   │   └── meetingStore.ts
-│           │   └── 📁 pages/
-│           │       ├── Login.tsx
-│           │       ├── Register.tsx
-│           │       ├── Dashboard.tsx
-│           │       └── CreateMeeting.tsx
+| Path | Purpose |
+| --- | --- |
+| `README.md` | Main product and developer overview |
+| `QUICKSTART.md` | Local setup and troubleshooting |
+| `ARCHITECTURE.md` | Service and data architecture |
+| `DEPLOYMENT.md` | Deployment and production guidance |
+| `PROJECT_SUMMARY.md` | Current feature/status summary |
+| `COMPLETION_REPORT.md` | Implemented feature report |
+| `FILE_INVENTORY.md` | This file inventory |
+| `docker-compose.yml` | Local PostgreSQL, Redis, RabbitMQ, and Mailpit |
+| `init-db.sql` | Local database creation script |
+| `Dockerfile.multi` | Multi-stage build reference |
+| `nginx.conf` | Nginx reference config |
+| `run-all-services.ps1` | Local service launcher |
+| `run-all-tests.ps1` | Complete test runner |
+
+## Source Layout
+
+```text
+src/
+  Gateway/
+    ApiGateway/
+  Services/
+    UserService/
+    MeetingService/
+    NotificationService/
+    OrganizationService/
+  Shared/
+    Samvaad.Common/
+  Frontend/
+    meeting-app/
+    organization-admin/
 ```
 
-## File Summary by Service
+## Gateway
 
-### 📦 User Service (Port 5001)
-- **Purpose**: User authentication and profile management
-- **Language**: C# / ASP.NET Core
-- **Files**: 6
-  - UserService.csproj (project file)
-  - Program.cs (startup configuration)
-  - appsettings.json (configuration)
-  - AuthController.cs (registration/login endpoints)
-  - UsersController.cs (profile management endpoints)
-  - AuthService.cs (JWT & password hashing)
-  - UserService.cs (database operations)
-  - User.cs (entity model)
-  - DTOs.cs (data transfer objects)
-  - UserDbContext.cs (database context)
+### `src/Gateway/ApiGateway`
 
-### 📦 Meeting Service (Port 5002)
-- **Purpose**: Meeting lifecycle and participant management
-- **Language**: C# / ASP.NET Core
-- **Files**: 7
-  - MeetingService.csproj (project file)
-  - Program.cs (startup configuration)
-  - appsettings.json (configuration)
-  - MeetingsController.cs (meeting CRUD endpoints)
-  - ParticipantsController.cs (participant management)
-  - MeetingService.cs (business logic)
-  - Meeting.cs (entity models)
-  - DTOs.cs (data transfer objects)
-  - MeetingDbContext.cs (database context)
+| File | Purpose |
+| --- | --- |
+| `ApiGateway.csproj` | Gateway project |
+| `Program.cs` | YARP, Swagger, CORS, security setup |
+| `appsettings.json` | Routes and clusters |
 
-### 📦 Notification Service (Port 5003)
-- **Purpose**: Real-time notifications via SignalR
-- **Language**: C# / ASP.NET Core
-- **Files**: 4
-  - NotificationService.csproj (project file)
-  - Program.cs (startup configuration)
-  - appsettings.json (configuration)
-  - NotificationHub.cs (SignalR hub with all methods)
-  - Notification.cs (entity and DTO models)
+Gateway routes include:
 
-### 🚪 API Gateway (Port 5000)
-- **Purpose**: Request routing and load balancing
-- **Language**: C# / ASP.NET Core with YARP
-- **Files**: 3
-  - ApiGateway.csproj (project file)
-  - Program.cs (startup configuration)
-  - appsettings.json (route configuration)
+- User and auth APIs.
+- Meeting APIs.
+- Conversation APIs.
+- Calendar connection APIs.
+- Team space APIs.
+- License request APIs.
+- Organization APIs.
+- User avatar files.
+- SignalR hubs.
+- Service Swagger JSON routes.
 
-### 🎨 Frontend (Port 5173)
-- **Purpose**: User interface and client-side logic
-- **Language**: TypeScript / React
-- **Files**: 13
-  - package.json (dependencies)
-  - tsconfig.json (TypeScript configuration)
-  - vite.config.ts (Vite build configuration)
-  - tailwind.config.js (Tailwind CSS configuration)
-  - postcss.config.js (PostCSS configuration)
-  - index.html (HTML entry point)
-  - main.tsx (React entry point)
-  - App.tsx (root component with routing)
-  - index.css (global styles)
-  - api.ts (API client with Axios)
-  - signalR.ts (SignalR client configuration)
-  - authStore.ts (Zustand auth state store)
-  - meetingStore.ts (Zustand meeting state store)
-  - Login.tsx (login page)
-  - Register.tsx (registration page)
-  - Dashboard.tsx (main dashboard)
-  - CreateMeeting.tsx (meeting creation form)
+## Backend Services
 
-### 🐳 Docker & Infrastructure
-- **Files**: 4
-  - docker-compose.yml (local development environment)
-  - Dockerfile.multi (multi-stage builds for all services)
-  - nginx.conf (web server configuration)
-  - init-db.sql (database initialization script)
+### `src/Services/UserService`
 
-### 📚 Documentation
-- **Files**: 5
-  - README.md (main overview)
-  - QUICKSTART.md (getting started guide)
-  - ARCHITECTURE.md (system design)
-  - DEPLOYMENT.md (production deployment)
-  - PROJECT_SUMMARY.md (project summary)
+Purpose: identity, users, profile, avatar, and presence.
 
-## Total Statistics
+Important files/folders:
 
-| Metric | Count |
-|--------|-------|
-| Total Files | 42+ |
-| Backend Services | 3 |
-| Database Contexts | 2 |
-| API Controllers | 4 |
-| React Components | 5 |
-| Configuration Files | 8 |
-| Documentation Files | 5 |
-| Lines of Code (Backend) | 1,500+ |
-| Lines of Code (Frontend) | 800+ |
-| Total Lines of Code | 2,300+ |
+| Path | Purpose |
+| --- | --- |
+| `Program.cs` | Startup, JWT validation, CORS, rate limiting, static avatar files |
+| `Controllers/AuthController.cs` | Register and login |
+| `Controllers/UsersController.cs` | Search, profile, avatar, status |
+| `Services/AuthService.cs` | JWT and password hashing |
+| `Services/UserService.cs` | User persistence logic |
+| `Models/User.cs` | User entity and presence constants |
+| `Models/DTOs.cs` | Request/response models |
+| `Data/UserDbContext.cs` | EF Core context |
+| `Data/Migrations/` | User database migrations |
+| `appsettings.json` | Production/default config |
+| `appsettings.Development.json` | Local development config |
 
-## File Types Distribution
+### `src/Services/MeetingService`
 
-| Type | Count |
-|------|-------|
-| C# Files (.cs) | 14 |
-| TypeScript/React Files (.ts, .tsx) | 13 |
-| JSON Configuration (.json) | 8 |
-| Markdown Documentation (.md) | 5 |
-| Project Files (.csproj) | 4 |
-| YAML (.yml) | 1 |
-| SQL (.sql) | 1 |
-| Nginx Config (.conf) | 1 |
-| Dockerfile | 1 |
-| Node Package (package.json) | 1 |
+Purpose: meetings, chat, calls, tasks, files, recordings, calendar, teams, license requests, and storage.
 
-## Key Features Implemented
+Important files/folders:
 
-### Backend Services
-✅ User authentication (JWT)
-✅ Password hashing (BCrypt)
-✅ Entity Framework Core ORM
-✅ PostgreSQL database
-✅ Redis caching capability
-✅ SignalR real-time communication
-✅ RESTful API design
-✅ CORS configuration
-✅ Structured logging (Serilog)
-✅ Error handling
+| Path | Purpose |
+| --- | --- |
+| `Program.cs` | Startup, JWT validation, EF migrations, CORS, hosted workers |
+| `Controllers/MeetingsController.cs` | Meetings, invites, calls, recordings, exports |
+| `Controllers/ParticipantsController.cs` | Join/leave, roles, hand, reaction, media state |
+| `Controllers/ChatController.cs` | Meeting chat |
+| `Controllers/ConversationsController.cs` | Direct/group chat, messages, attachments, tasks |
+| `Controllers/CalendarConnectionsController.cs` | Google/Outlook calendar connection endpoints |
+| `Controllers/TeamSpacesController.cs` | Team spaces, channels, tabs |
+| `Controllers/LicenseRequestsController.cs` | License purchase/request flow |
+| `Controllers/LobbyController.cs` | Lobby requests |
+| `Controllers/MessagingController.cs` | Outbox health, failed event listing, and retry API |
+| `Services/MeetingService.cs` | Main business logic |
+| `Services/TeamSpaceService.cs` | Team/channel logic |
+| `Services/OrganizationStorageService.cs` | Organization-aware file storage |
+| `Services/ExternalCalendarSyncService.cs` | Calendar sync adapters |
+| `Services/EfIntegrationEventOutbox.cs` | Writes RabbitMQ integration events into the Meeting database transaction |
+| `Services/EfIntegrationEventConsumerCheckpointStore.cs` | Prevents duplicate email side effects after RabbitMQ redelivery |
+| `Services/IntegrationEventOutboxDispatcher.cs` | Publishes pending outbox events to RabbitMQ with retry/backoff |
+| `Services/IntegrationEventOutboxOptions.cs` | Outbox batching, locking, and retry settings |
+| `Services/ScheduledConversationMessageDispatcher.cs` | Scheduled message worker |
+| `Services/OrganizationStorageRetentionWorker.cs` | Retention worker |
+| `Models/Meeting.cs` | Core entity model |
+| `Models/DTOs.cs` | Request/response DTOs |
+| `Data/MeetingDbContext.cs` | EF Core context |
+| `Data/Migrations/20260520103000_MeetingCallLogs.cs` | Call log migration |
+| `Data/Migrations/20260524010000_IntegrationEventOutbox.cs` | Transactional integration event outbox migration |
+| `Data/Migrations/20260524013000_IntegrationEventConsumerCheckpoints.cs` | Consumer idempotency checkpoint migration |
+| `appsettings.json` | Production/default config |
+| `appsettings.Development.json` | Local development config |
 
-### Frontend Application
-✅ React with TypeScript
-✅ Vite build tool
-✅ React Router for navigation
-✅ Zustand for state management
-✅ React Query for server state
-✅ SignalR client integration
-✅ Axios for API calls
-✅ Tailwind CSS styling
-✅ Responsive design
-✅ Form validation
+### `src/Services/NotificationService`
 
-### Infrastructure
-✅ Docker containerization
-✅ Docker Compose orchestration
-✅ PostgreSQL database
-✅ Redis cache
-✅ YARP API Gateway
-✅ Multi-stage Docker builds
-✅ Nginx reverse proxy
-✅ Environment configuration
-✅ Database initialization script
+Purpose: realtime notifications and WebRTC signaling.
 
-## Getting Started
+Important files/folders:
 
-1. **Start Infrastructure**
-   ```bash
-   cd D:\Projects\OnlineMeetingPlatform
-   docker-compose up -d
-   ```
+| Path | Purpose |
+| --- | --- |
+| `Program.cs` | Startup, JWT validation, CORS, SignalR |
+| `Data/NotificationDbContext.cs` | EF Core context for notification consumer checkpoints |
+| `Data/Migrations/20260524014500_ProcessedNotificationEvents.cs` | Notification consumer idempotency migration |
+| `Consumers/RabbitNotificationConsumers.cs` | RabbitMQ event consumers for realtime notifications |
+| `Hubs/NotificationHub.cs` | Notification and signaling hub |
+| `Models/Notification.cs` | Notification models |
+| `Models/ProcessedNotificationEvent.cs` | Processed event checkpoint entity |
+| `Services/EfNotificationEventCheckpointStore.cs` | Persistent event de-duplication |
+| `Services/InMemoryNotificationEventCheckpointStore.cs` | Development fallback when no DB connection is configured |
+| `NotificationService.csproj` | Service project |
+| `appsettings.json` | Service configuration |
 
-2. **Start Services** (in separate terminals)
-   ```bash
-   dotnet run  # in each service directory
-   ```
+### `src/Services/OrganizationService`
 
-3. **Start Frontend**
-   ```bash
-   npm install
-   npm run dev
-   ```
+Purpose: organization tenant records, members, storage configuration, usage, audit, and local hosting metadata.
 
-4. **Access Application**
-   - Frontend: http://localhost:5173
-   - API Gateway: http://localhost:5000
-   - User Service Docs: http://localhost:5001/swagger
-   - Meeting Service Docs: http://localhost:5002/swagger
-   - Notification Service Docs: http://localhost:5003/swagger
+Important files/folders:
 
-## Database Schema
+| Path | Purpose |
+| --- | --- |
+| `Program.cs` | Startup, JWT validation, EF migrations, CORS |
+| `Controllers/OrganizationsController.cs` | Organization CRUD/config/usage/audit/member APIs |
+| `Data/OrganizationDbContext.cs` | EF Core context |
+| `Models/Organization.cs` | Organization and member entities |
+| `Models/DTOs.cs` | Request/response DTOs |
+| `OrganizationService.csproj` | Service project |
+| `appsettings.json` | Service configuration |
 
-### PostgreSQL Databases
+## Shared Libraries
 
-**meeting_users**
-- users table with authentication info
+### `src/Shared/Samvaad.Common`
 
-**meeting_meetings**
-- meetings table with meeting details
-- participants table with attendee tracking
+Purpose: shared RabbitMQ event contracts and event bus infrastructure.
 
-## API Endpoints
+Important files/folders:
 
-### User Service
-- POST /api/auth/register
-- POST /api/auth/login
-- GET /api/users/profile
-- PUT /api/users/profile
-- GET /api/users/{id}
+| Path | Purpose |
+| --- | --- |
+| `Events/ConversationEvents.cs` | Conversation, document, and task integration events |
+| `Events/MeetingEvents.cs` | Meeting invite, call, and recording integration events |
+| `Events/LicenseEvents.cs` | License request integration event |
+| `Messaging/IEventBus.cs` | Shared event bus abstraction |
+| `Messaging/IEventHandler.cs` | Shared typed event handler abstraction |
+| `Messaging/RabbitEventAttribute.cs` | Attribute wrapper for routing keys and optional queue metadata |
+| `Messaging/RabbitMqEventBus.cs` | RabbitMQ publisher with confirms and routable-message validation |
+| `Messaging/RabbitMqConsumerHostedService.cs` | Durable consumer/queue setup with manual acknowledgements |
 
-### Meeting Service
-- POST /api/meetings
-- GET /api/meetings/{id}
-- GET /api/meetings/organizer/list
-- PUT /api/meetings/{id}
-- DELETE /api/meetings/{id}
-- POST /api/meetings/{id}/participants/join
-- GET /api/meetings/{id}/participants
+## Frontend Apps
 
-### Notification Service
-- WebSocket: ws://localhost:5000/hubs/notifications
+### `src/Frontend/meeting-app`
+
+Purpose: main Samvaad collaboration app.
+
+Important files/folders:
+
+| Path | Purpose |
+| --- | --- |
+| `src/App.tsx` | Application routes |
+| `src/components/AppShell.tsx` | Main shell and navigation |
+| `src/components/PersonalScope.tsx` | Personal workspace route scope |
+| `src/components/OrganizationScope.tsx` | Organization workspace route scope |
+| `src/components/IncomingCallRinger.tsx` | Incoming call UI |
+| `src/components/ThemeProvider.tsx` | Theme selection |
+| `src/pages/Activity.tsx` | Activity/workspace overview |
+| `src/pages/Chat.tsx` | Chat, files, tasks, calls, message actions |
+| `src/pages/Calls.tsx` | Call history and actions |
+| `src/pages/CreateMeeting.tsx` | Meeting scheduling |
+| `src/pages/Dashboard.tsx` | Calendar dashboard |
+| `src/pages/MeetingRoom.tsx` | Meeting/call room |
+| `src/pages/Login.tsx` | Sign in |
+| `src/pages/Register.tsx` | Register |
+| `src/services/api.ts` | API client and workspace helpers |
+| `src/services/signalR.ts` | SignalR client |
+| `src/services/activityFeed.ts` | Activity aggregation |
+| `src/store/authStore.ts` | Multi-account auth store |
+| `src/setupTests.ts` | Vitest setup |
+| `e2e/` | Playwright functional tests |
+| `playwright.config.ts` | Playwright config |
+| `package.json` | Client dependencies and scripts |
+
+Scripts:
+
+- `npm run dev`
+- `npm run build`
+- `npm test`
+- `npm run test:functional`
+
+### `src/Frontend/organization-admin`
+
+Purpose: product-owner organization admin app.
+
+Important files/folders:
+
+| Path | Purpose |
+| --- | --- |
+| `src/main.tsx` | Admin app entry and UI |
+| `src/main.test.ts` | Admin tests |
+| `package.json` | Admin dependencies and scripts |
+| `vite.config.ts` | Vite config |
+
+Scripts:
+
+- `npm run dev`
+- `npm run build`
+- `npm test`
+
+## Tests
+
+```text
+tests/
+  Server/
+    Infrastructure.Tests/
+    MeetingService.Tests/
+    NotificationService.Tests/
+    OrganizationService.Tests/
+    UserService.Tests/
+  TEST_CASES.md
+```
+
+`run-all-tests.ps1` runs all server, client, functional, and infrastructure suites and writes reports to:
+
+```text
+artifacts/test-reports/{timestamp}/
+```
+
+## Generated Or Local-Only Folders
+
+These are created by local runs and are not source documentation:
+
+- `artifacts/`
+- `src/Frontend/meeting-app/test-results/`
+- service log files such as `.codex-*.log`
+- frontend `node_modules/`
+- service `bin/` and `obj/`
 
 ## Development Ports
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| Frontend | 5173 | React App |
-| API Gateway | 5000 | Request Router |
-| User Service | 5001 | Auth & Profile |
-| Meeting Service | 5002 | Meeting Management |
-| Notification Service | 5003 | Real-time Updates |
-| PostgreSQL | 5432 | Database |
-| Redis | 6379 | Cache |
-
-## Next Steps
-
-1. ✅ Review all documentation
-2. ✅ Follow QUICKSTART.md for local setup
-3. ✅ Test all endpoints
-4. ✅ Review ARCHITECTURE.md for design patterns
-5. ✅ Plan additional features
-6. ✅ Prepare for production deployment
-
----
-
-**Created**: April 30, 2026
-**Project Ready**: ✅ Yes
-**Deployment Ready**: ✅ Yes
-**Documentation Complete**: ✅ Yes
+| Component | Port |
+| --- | ---: |
+| API Gateway | 5000 |
+| User Service | 5001 |
+| Meeting Service | 5002 |
+| Notification Service | 5003 |
+| Organization Service | 5004 |
+| Samvaad app | 5173 |
+| Samvaad Admin | 5174 |
+| PostgreSQL | 5432 |
+| Redis | 6379 |
+| RabbitMQ AMQP | 5672 |
+| RabbitMQ UI | 15672 |
+| Mailpit SMTP | 1025 |
+| Mailpit UI | 8025 |

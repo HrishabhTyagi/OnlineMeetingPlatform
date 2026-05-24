@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MeetingService.Models;
 using MeetingService.Services;
+using Samvaad.Common.Events;
 
 namespace MeetingService.Controllers;
 
@@ -11,16 +12,16 @@ namespace MeetingService.Controllers;
 [Authorize]
 public class LicenseRequestsController : ControllerBase
 {
-    private readonly IEmailSender _emailSender;
+    private readonly IIntegrationEventOutbox _outbox;
     private readonly IOrganizationTenantContext _tenantContext;
     private readonly ILogger<LicenseRequestsController> _logger;
 
     public LicenseRequestsController(
-        IEmailSender emailSender,
+        IIntegrationEventOutbox outbox,
         IOrganizationTenantContext tenantContext,
         ILogger<LicenseRequestsController> logger)
     {
-        _emailSender = emailSender;
+        _outbox = outbox;
         _tenantContext = tenantContext;
         _logger = logger;
     }
@@ -72,7 +73,29 @@ public class LicenseRequestsController : ControllerBase
 
         try
         {
-            await _emailSender.SendLicenseRequestAsync(licenseRequest);
+            await _outbox.EnqueueAsync(new LicenseRequestSubmittedEvent(
+                Guid.NewGuid(),
+                DateTime.UtcNow,
+                licenseRequest.Reference,
+                licenseRequest.RequestedByUserId,
+                licenseRequest.RequestedAtUtc,
+                licenseRequest.OrganizationId,
+                licenseRequest.OrganizationSlug,
+                licenseRequest.CompanyName,
+                licenseRequest.CompanySamvaadEmail,
+                licenseRequest.PlanName,
+                licenseRequest.BillingCycle,
+                licenseRequest.SeatCount,
+                licenseRequest.EstimatedAmount,
+                licenseRequest.Currency,
+                licenseRequest.RequestedByName,
+                licenseRequest.RequestedByEmail,
+                licenseRequest.ContactName,
+                licenseRequest.ContactEmail,
+                licenseRequest.Phone,
+                licenseRequest.Notes,
+                licenseRequest.PaymentLast4));
+            await _outbox.SaveChangesAsync();
             return Ok(new LicensePurchaseResponse
             {
                 Reference = reference,

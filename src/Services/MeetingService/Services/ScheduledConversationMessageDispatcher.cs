@@ -1,20 +1,18 @@
 using MeetingService.Data;
 using MeetingService.Models;
 using Microsoft.EntityFrameworkCore;
-using System.Net.Http.Json;
+using Samvaad.Common.Events;
 
 namespace MeetingService.Services;
 
 public class ScheduledConversationMessageDispatcher : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ScheduledConversationMessageDispatcher> _logger;
 
-    public ScheduledConversationMessageDispatcher(IServiceScopeFactory scopeFactory, IHttpClientFactory httpClientFactory, ILogger<ScheduledConversationMessageDispatcher> logger)
+    public ScheduledConversationMessageDispatcher(IServiceScopeFactory scopeFactory, ILogger<ScheduledConversationMessageDispatcher> logger)
     {
         _scopeFactory = scopeFactory;
-        _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
 
@@ -50,6 +48,7 @@ public class ScheduledConversationMessageDispatcher : BackgroundService
     {
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<MeetingDbContext>();
+        var outbox = scope.ServiceProvider.GetRequiredService<IIntegrationEventOutbox>();
         var now = DateTime.UtcNow;
 
         var dueMessages = await context.ScheduledConversationMessages
@@ -62,8 +61,6 @@ public class ScheduledConversationMessageDispatcher : BackgroundService
         {
             return;
         }
-
-        var notifications = new List<ScheduledConversationMessageNotification>();
 
         foreach (var scheduledMessage in dueMessages)
         {
@@ -101,43 +98,27 @@ public class ScheduledConversationMessageDispatcher : BackgroundService
                 context.Conversations.Update(conversation);
             }
 
-            notifications.Add(new ScheduledConversationMessageNotification(
+            await outbox.EnqueueAsync(new ConversationMessageCreatedEvent(
+                Guid.NewGuid(),
+                DateTime.UtcNow,
+                conversation?.OrganizationId,
                 scheduledMessage.ConversationId.ToString(),
                 message.Id.ToString(),
                 scheduledMessage.SenderId.ToString(),
                 scheduledMessage.SenderName,
                 scheduledMessage.Message,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
                 now,
-                memberIds.Where(id => id != scheduledMessage.SenderId).Select(id => id.ToString()).ToList()));
+                memberIds.Where(id => id != scheduledMessage.SenderId).Select(id => id.ToString()).ToList()), stoppingToken);
         }
 
         await context.SaveChangesAsync(stoppingToken);
-
-        if (notifications.Count == 0)
-        {
-            return;
-        }
-
-        var client = _httpClientFactory.CreateClient("NotificationService");
-        foreach (var notification in notifications)
-        {
-            try
-            {
-                await client.PostAsJsonAsync("/api/internal/notifications/conversation-message", notification, stoppingToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Scheduled message was saved but live notification failed. Message: {MessageId}", notification.MessageId);
-            }
-        }
     }
-
-    private record ScheduledConversationMessageNotification(
-        string ConversationId,
-        string MessageId,
-        string SenderId,
-        string SenderName,
-        string Message,
-        DateTime Timestamp,
-        List<string> RecipientUserIds);
 }

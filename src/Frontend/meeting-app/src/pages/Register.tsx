@@ -52,6 +52,7 @@ export default function Register() {
           lastName: data.lastName,
           profilePictureUrl: data.profilePictureUrl,
           status: data.status || 'Available',
+          mfaEnabled: data.mfaEnabled,
           isEmailVerified: false,
           createdAt: new Date().toISOString(),
         },

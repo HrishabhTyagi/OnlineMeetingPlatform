@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using MeetingService.Data;
 using MeetingService.Models;
 using MeetingService.Services;
+using Samvaad.Common.Caching;
 
 namespace MeetingService.Controllers;
 
@@ -14,17 +15,30 @@ namespace MeetingService.Controllers;
 [Authorize]
 public class MeetingsController : ControllerBase
 {
+    private static readonly TimeSpan MeetingListTtl = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan MeetingDetailTtl = TimeSpan.FromSeconds(30);
+
     private readonly MeetingDbContext _context;
     private readonly IMeetingService _meetingService;
     private readonly IOrganizationStorageService _storageService;
+    private readonly IAppCache _cache;
     private readonly ILogger<MeetingsController> _logger;
+    private readonly IConfiguration _configuration;
 
-    public MeetingsController(MeetingDbContext context, IMeetingService meetingService, IOrganizationStorageService storageService, ILogger<MeetingsController> logger)
+    public MeetingsController(
+        MeetingDbContext context,
+        IMeetingService meetingService,
+        IOrganizationStorageService storageService,
+        IAppCache cache,
+        ILogger<MeetingsController> logger,
+        IConfiguration configuration)
     {
         _context = context;
         _meetingService = meetingService;
         _storageService = storageService;
+        _cache = cache;
         _logger = logger;
+        _configuration = configuration;
     }
 
     [HttpPost]
@@ -34,6 +48,7 @@ public class MeetingsController : ControllerBase
         {
             var organizerId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? Guid.Empty.ToString());
             var meeting = await _meetingService.CreateMeetingAsync(organizerId, request);
+            await BumpMeetingCacheAsync();
             return CreatedAtAction(nameof(GetMeetingById), new { id = meeting.Id }, MapToDto(meeting));
         }
         catch (InvalidOperationException ex)
@@ -53,11 +68,20 @@ public class MeetingsController : ControllerBase
     {
         try
         {
-            var meeting = await _meetingService.GetMeetingByIdAsync(id);
-            if (meeting == null)
+            var version = await GetMeetingCacheVersionAsync();
+            var dto = await _cache.GetOrCreateAsync<MeetingDto?>(
+                $"meetings:{TenantCacheKey()}:detail:{id:N}:v{version}",
+                async _ =>
+                {
+                    var meeting = await _meetingService.GetMeetingByIdAsync(id);
+                    return meeting == null ? null : MapToDto(meeting);
+                },
+                MeetingDetailTtl);
+
+            if (dto == null)
                 return NotFound();
 
-            return Ok(MapToDto(meeting));
+            return Ok(dto);
         }
         catch (Exception ex)
         {
@@ -73,8 +97,17 @@ public class MeetingsController : ControllerBase
         {
             var currentUserId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? Guid.Empty.ToString());
             var currentUserEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-            var meetings = await _meetingService.GetMeetingsForUserAsync(currentUserId, currentUserEmail);
-            return Ok(meetings.Select(MapToDto).ToList());
+            var version = await GetMeetingCacheVersionAsync();
+            var emailKey = string.IsNullOrWhiteSpace(currentUserEmail) ? "no-email" : CacheKey.Hash(currentUserEmail);
+            var cacheKey = $"meetings:{TenantCacheKey()}:user:{currentUserId:N}:{emailKey}:v{version}";
+            var meetings = await _cache.GetOrCreateAsync(
+                cacheKey,
+                async _ => (await _meetingService.GetMeetingsForUserAsync(currentUserId, currentUserEmail))
+                    .Select(MapToDto)
+                    .ToList(),
+                MeetingListTtl);
+
+            return Ok(meetings);
         }
         catch (Exception ex)
         {
@@ -148,13 +181,18 @@ public class MeetingsController : ControllerBase
     }
 
     [HttpGet("upcoming")]
-    [AllowAnonymous]
     public async Task<ActionResult<List<MeetingDto>>> GetUpcomingMeetings()
     {
         try
         {
-            var meetings = await _meetingService.GetUpcomingMeetingsAsync();
-            return Ok(meetings.Select(MapToDto).ToList());
+            var version = await GetMeetingCacheVersionAsync();
+            var meetings = await _cache.GetOrCreateAsync(
+                $"meetings:{TenantCacheKey()}:upcoming:v{version}",
+                async _ => (await _meetingService.GetUpcomingMeetingsAsync())
+                    .Select(MapToDto)
+                    .ToList(),
+                MeetingListTtl);
+            return Ok(meetings);
         }
         catch (Exception ex)
         {
@@ -163,12 +201,95 @@ public class MeetingsController : ControllerBase
         }
     }
 
+    [HttpGet("calls/recent")]
+    public async Task<ActionResult<List<MeetingCallLogDto>>> GetRecentCallLogs([FromQuery] string? status)
+    {
+        try
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var callLogs = await _meetingService.GetRecentMeetingCallLogsAsync(currentUserId, status);
+            return Ok(callLogs.Select(call => MapCallLogToDto(call, currentUserId)).ToList());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching recent call logs");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPut("calls/{callLogId:guid}/seen")]
+    public async Task<ActionResult<MeetingCallLogDto>> MarkCallSeen(Guid callLogId)
+    {
+        try
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var callLog = await _meetingService.MarkMeetingCallLogSeenAsync(callLogId, currentUserId);
+            return Ok(MapCallLogToDto(callLog, currentUserId));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(ex.Message);
+        }
+    }
+
+    [HttpDelete("calls/{callLogId:guid}")]
+    public async Task<IActionResult> HideCallLog(Guid callLogId)
+    {
+        try
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            await _meetingService.HideMeetingCallLogAsync(callLogId, currentUserId);
+            return NoContent();
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(ex.Message);
+        }
+    }
+
+    [HttpDelete("calls")]
+    public async Task<IActionResult> ClearCallLogs([FromQuery] string? status)
+    {
+        var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+        {
+            return Unauthorized();
+        }
+
+        await _meetingService.ClearMeetingCallLogsAsync(currentUserId, status);
+        return NoContent();
+    }
+
     [HttpPut("{id}")]
     public async Task<ActionResult<MeetingDto>> UpdateMeeting(Guid id, [FromBody] UpdateMeetingRequest request)
     {
         try
         {
             var meeting = await _meetingService.UpdateMeetingAsync(id, request);
+            await BumpMeetingCacheAsync();
             return Ok(MapToDto(meeting));
         }
         catch (InvalidOperationException ex)
@@ -190,6 +311,7 @@ public class MeetingsController : ControllerBase
             var organizerId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? Guid.Empty.ToString());
             var meeting = await _meetingService.EndMeetingAsync(id, organizerId);
             await _meetingService.LogAuditAsync(organizerId, GetCurrentActorName(), "Meeting ended", meeting.Title, meetingId: id);
+            await BumpMeetingCacheAsync();
             return Ok(MapToDto(meeting));
         }
         catch (UnauthorizedAccessException ex)
@@ -213,6 +335,7 @@ public class MeetingsController : ControllerBase
         try
         {
             await _meetingService.DeleteMeetingAsync(id);
+            await BumpMeetingCacheAsync();
             return NoContent();
         }
         catch (Exception ex)
@@ -248,6 +371,7 @@ public class MeetingsController : ControllerBase
             }
 
             var invites = await _meetingService.SendInvitesAsync(id, request.Emails);
+            await BumpMeetingCacheAsync();
             return Ok(invites.Select(MapInviteToDto).ToList());
         }
         catch (InvalidOperationException ex)
@@ -279,6 +403,7 @@ public class MeetingsController : ControllerBase
 
             var currentUserEmail = User.FindFirst(ClaimTypes.Email)?.Value;
             var invite = await _meetingService.UpdateInviteResponseAsync(id, inviteId, currentUserId, currentUserEmail, responseStatus, request.Reason);
+            await BumpMeetingCacheAsync();
             return Ok(MapInviteToDto(invite));
         }
         catch (UnauthorizedAccessException ex)
@@ -296,12 +421,98 @@ public class MeetingsController : ControllerBase
         }
     }
 
+    [HttpGet("{id}/calls")]
+    public async Task<ActionResult<List<MeetingCallLogDto>>> GetCallLogs(Guid id)
+    {
+        try
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var callLogs = await _meetingService.GetMeetingCallLogsAsync(id, currentUserId);
+            return Ok(callLogs.Select(call => MapCallLogToDto(call, currentUserId)).ToList());
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching meeting call logs");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPost("{id}/calls")]
+    public async Task<ActionResult<MeetingCallLogDto>> CreateCallLog(Guid id, [FromBody] CreateMeetingCallLogRequest request)
+    {
+        try
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var callLog = await _meetingService.CreateMeetingCallLogAsync(id, currentUserId, GetCurrentActorName(), request);
+            await _meetingService.LogAuditAsync(currentUserId, GetCurrentActorName(), "Outgoing call started", callLog.RecipientName, meetingId: id);
+            return Ok(MapCallLogToDto(callLog, currentUserId));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating meeting call log");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
+    [HttpPut("{id}/calls/{callLogId}")]
+    public async Task<ActionResult<MeetingCallLogDto>> UpdateCallLog(Guid id, Guid callLogId, [FromBody] UpdateMeetingCallLogRequest request)
+    {
+        try
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var callLog = await _meetingService.UpdateMeetingCallLogStatusAsync(id, callLogId, currentUserId, request);
+            await _meetingService.LogAuditAsync(currentUserId, GetCurrentActorName(), $"Outgoing call {callLog.Status}", callLog.RecipientName, meetingId: id);
+            return Ok(MapCallLogToDto(callLog, currentUserId));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating meeting call log");
+            return StatusCode(500, "An error occurred");
+        }
+    }
+
     [HttpPut("{id}/notes")]
     public async Task<ActionResult<MeetingDto>> UpdateNotes(Guid id, [FromBody] UpdateNotesRequest request)
     {
         try
         {
             var meeting = await _meetingService.UpdateNotesAsync(id, request.Notes);
+            await BumpMeetingCacheAsync();
             return Ok(MapToDto(meeting));
         }
         catch (Exception ex)
@@ -330,6 +541,7 @@ public class MeetingsController : ControllerBase
                 : fullName;
 
             var meeting = await _meetingService.UpdateWhiteboardAsync(id, currentUserId, actorName, request.WhiteboardData);
+            await BumpMeetingCacheAsync();
             return Ok(MapToDto(meeting));
         }
         catch (UnauthorizedAccessException ex)
@@ -437,6 +649,7 @@ public class MeetingsController : ControllerBase
             var storedFile = await _storageService.SaveAsync(OrganizationFileKind.Recording, id, recording, fileName);
             var updatedMeeting = await _meetingService.UpdateRecordingAsync(id, storedFile.PublicUrl);
             await _meetingService.LogAuditAsync(currentUserId, GetCurrentActorName(), "Recording stopped", storedFile.PublicUrl, meetingId: id);
+            await BumpMeetingCacheAsync();
             return Ok(MapToDto(updatedMeeting));
         }
         catch (Exception ex)
@@ -450,6 +663,26 @@ public class MeetingsController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> GetRecording(Guid id, string fileName)
     {
+        if (!_configuration.GetValue<bool>("Security:AllowPublicRecordings"))
+        {
+            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var currentUserEmail = User.FindFirst(ClaimTypes.Email)?.Value?.ToLowerInvariant();
+            var canViewRecording = await _context.Meetings.AnyAsync(meeting => meeting.Id == id && meeting.OrganizerId == currentUserId)
+                || await _context.Participants.AnyAsync(participant => participant.MeetingId == id && participant.UserId == currentUserId)
+                || (!string.IsNullOrWhiteSpace(currentUserEmail)
+                    && await _context.MeetingInvites.AnyAsync(invite => invite.MeetingId == id && invite.Email.ToLower() == currentUserEmail));
+
+            if (!canViewRecording)
+            {
+                return Forbid();
+            }
+        }
+
         var filePath = await _storageService.GetPhysicalPathAsync(OrganizationFileKind.Recording, id, fileName);
         if (filePath == null)
         {
@@ -514,6 +747,40 @@ public class MeetingsController : ControllerBase
         };
     }
 
+    private static MeetingCallLogDto MapCallLogToDto(MeetingCallLog callLog, Guid? currentUserId = null)
+    {
+        var isCaller = currentUserId.HasValue && callLog.CallerUserId == currentUserId.Value;
+        var isRecipient = currentUserId.HasValue && callLog.RecipientUserId == currentUserId.Value;
+
+        return new MeetingCallLogDto
+        {
+            Id = callLog.Id,
+            MeetingId = callLog.MeetingId,
+            MeetingTitle = callLog.Meeting?.Title ?? string.Empty,
+            MeetingStartTime = callLog.Meeting?.StartTime,
+            MeetingEndTime = callLog.Meeting?.EndTime,
+            ConversationId = callLog.ConversationId,
+            CallerUserId = callLog.CallerUserId,
+            CallerName = callLog.CallerName,
+            RecipientUserId = callLog.RecipientUserId,
+            RecipientEmail = callLog.RecipientEmail,
+            RecipientName = callLog.RecipientName,
+            CallType = callLog.CallType,
+            JoinUrl = callLog.JoinUrl,
+            Status = callLog.Status.ToString(),
+            StatusReason = callLog.StatusReason,
+            CancellationMessage = callLog.CancellationMessage,
+            CancellationMessageId = callLog.CancellationMessageId,
+            IsSeen = isCaller
+                ? callLog.CallerSeenAt.HasValue
+                : isRecipient
+                    ? callLog.RecipientSeenAt.HasValue
+                    : true,
+            CreatedAt = callLog.CreatedAt,
+            StatusChangedAt = callLog.StatusChangedAt
+        };
+    }
+
     private static List<string> SplitAttendeeEmails(string? attendeeEmails)
     {
         if (string.IsNullOrWhiteSpace(attendeeEmails))
@@ -549,5 +816,31 @@ public class MeetingsController : ControllerBase
         return string.IsNullOrWhiteSpace(fullName)
             ? User.FindFirst(ClaimTypes.Email)?.Value ?? "User"
             : fullName;
+    }
+
+    private async Task<long> GetMeetingCacheVersionAsync()
+    {
+        return await _cache.GetOrCreateAsync(MeetingVersionKey(), _ => Task.FromResult(1L), TimeSpan.FromDays(30));
+    }
+
+    private Task BumpMeetingCacheAsync()
+    {
+        return _cache.IncrementAsync(MeetingVersionKey(), TimeSpan.FromDays(30));
+    }
+
+    private string MeetingVersionKey()
+    {
+        return $"meetings:{TenantCacheKey()}:version";
+    }
+
+    private string TenantCacheKey()
+    {
+        var organizationId = Request.Headers["X-Organization-Id"].FirstOrDefault();
+        if (Guid.TryParse(organizationId, out var parsedOrganizationId))
+        {
+            return CacheKey.Tenant(parsedOrganizationId);
+        }
+
+        return CacheKey.Tenant(null, Request.Headers["X-Organization-Slug"].FirstOrDefault());
     }
 }

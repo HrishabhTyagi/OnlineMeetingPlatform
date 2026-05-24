@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using MeetingService.Data;
 using MeetingService.Models;
+using Samvaad.Common.Events;
+using Samvaad.Common.Messaging;
 
 namespace MeetingService.Services;
 
@@ -23,6 +25,13 @@ public interface IMeetingService
     Task<Participant?> UpdateParticipantReactionAsync(Guid participantId, string? reaction);
     Task<MeetingChatMessage> AddChatMessageAsync(Guid meetingId, CreateChatMessageRequest request);
     Task<List<MeetingChatMessage>> GetChatMessagesAsync(Guid meetingId, Guid? currentUserId = null);
+    Task<List<MeetingCallLog>> GetMeetingCallLogsAsync(Guid meetingId, Guid currentUserId);
+    Task<List<MeetingCallLog>> GetRecentMeetingCallLogsAsync(Guid currentUserId, string? status = null);
+    Task<MeetingCallLog> CreateMeetingCallLogAsync(Guid meetingId, Guid callerUserId, string callerName, CreateMeetingCallLogRequest request);
+    Task<MeetingCallLog> UpdateMeetingCallLogStatusAsync(Guid meetingId, Guid callLogId, Guid actorUserId, UpdateMeetingCallLogRequest request);
+    Task<MeetingCallLog> MarkMeetingCallLogSeenAsync(Guid callLogId, Guid currentUserId);
+    Task HideMeetingCallLogAsync(Guid callLogId, Guid currentUserId);
+    Task ClearMeetingCallLogsAsync(Guid currentUserId, string? status = null);
     Task<LobbyRequest> RequestLobbyAccessAsync(Guid meetingId, Guid userId, JoinMeetingRequest request);
     Task<List<LobbyRequest>> GetLobbyRequestsAsync(Guid meetingId);
     Task<LobbyRequest> DecideLobbyRequestAsync(Guid requestId, bool admit);
@@ -60,20 +69,20 @@ public interface IMeetingService
 public class MeetingServiceImpl : IMeetingService
 {
     private readonly MeetingDbContext _context;
-    private readonly IEmailSender _emailSender;
+    private readonly IIntegrationEventOutbox _outbox;
     private readonly IOrganizationTenantContext _tenantContext;
     private readonly IExternalCalendarSyncService _externalCalendarSyncService;
     private readonly ILogger<MeetingServiceImpl> _logger;
 
     public MeetingServiceImpl(
         MeetingDbContext context,
-        IEmailSender emailSender,
+        IIntegrationEventOutbox outbox,
         IOrganizationTenantContext tenantContext,
         IExternalCalendarSyncService externalCalendarSyncService,
         ILogger<MeetingServiceImpl> logger)
     {
         _context = context;
-        _emailSender = emailSender;
+        _outbox = outbox;
         _tenantContext = tenantContext;
         _externalCalendarSyncService = externalCalendarSyncService;
         _logger = logger;
@@ -115,9 +124,10 @@ public class MeetingServiceImpl : IMeetingService
 
         _context.Meetings.Add(meeting);
         var inviteEmails = SplitAttendeeEmails(meeting.AttendeeEmails);
+        var inviteEntities = new List<MeetingInvite>();
         foreach (var email in inviteEmails)
         {
-            _context.MeetingInvites.Add(new MeetingInvite
+            var invite = new MeetingInvite
             {
                 Id = Guid.NewGuid(),
                 MeetingId = meeting.Id,
@@ -125,7 +135,9 @@ public class MeetingServiceImpl : IMeetingService
                 Role = ParticipantRole.Attendee,
                 IsRequired = true,
                 CreatedAt = DateTime.UtcNow
-            });
+            };
+            inviteEntities.Add(invite);
+            _context.MeetingInvites.Add(invite);
 
             _context.MeetingReminders.Add(new MeetingReminder
             {
@@ -136,9 +148,9 @@ public class MeetingServiceImpl : IMeetingService
             });
         }
 
+        await QueueInviteEmailsAsync(meeting, inviteEntities);
         await _context.SaveChangesAsync();
         await _externalCalendarSyncService.SyncMeetingAsync(meeting, organizerId);
-        await SendInviteEmailsAsync(meeting, inviteEmails);
         _logger.LogInformation("Meeting created: {MeetingId}", meeting.Id);
         return meeting;
     }
@@ -351,8 +363,8 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task<bool> LeaveMeetingAsync(Guid meetingId, Guid participantId)
     {
-        var participant = await _context.Participants
-            .FirstOrDefaultAsync(p => p.Id == participantId && p.MeetingId == meetingId && (!_tenantContext.OrganizationId.HasValue || p.Meeting.OrganizationId == _tenantContext.OrganizationId.Value));
+        var participant = await ParticipantsForTenant()
+            .FirstOrDefaultAsync(p => p.Id == participantId && p.MeetingId == meetingId);
         if (participant == null)
             return false;
 
@@ -366,16 +378,15 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task<List<Participant>> GetMeetingParticipantsAsync(Guid meetingId)
     {
-        return await _context.Participants
+        return await ParticipantsForTenant()
             .Where(p => p.MeetingId == meetingId && p.LeftAt == null)
-            .Where(p => !_tenantContext.OrganizationId.HasValue || p.Meeting.OrganizationId == _tenantContext.OrganizationId.Value)
             .ToListAsync();
     }
 
     public async Task<bool> UpdateParticipantStatusAsync(Guid participantId, bool audioEnabled, bool videoEnabled, bool screenSharing)
     {
-        var participant = await _context.Participants
-            .FirstOrDefaultAsync(p => p.Id == participantId && (!_tenantContext.OrganizationId.HasValue || p.Meeting.OrganizationId == _tenantContext.OrganizationId.Value));
+        var participant = await ParticipantsForTenant()
+            .FirstOrDefaultAsync(p => p.Id == participantId);
         if (participant == null)
             return false;
 
@@ -401,8 +412,8 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task<bool> UpdateParticipantRoleAsync(Guid participantId, ParticipantRole role)
     {
-        var participant = await _context.Participants
-            .FirstOrDefaultAsync(p => p.Id == participantId && (!_tenantContext.OrganizationId.HasValue || p.Meeting.OrganizationId == _tenantContext.OrganizationId.Value));
+        var participant = await ParticipantsForTenant()
+            .FirstOrDefaultAsync(p => p.Id == participantId);
         if (participant == null)
             return false;
 
@@ -414,8 +425,8 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task<Participant?> UpdateParticipantHandAsync(Guid participantId, bool isHandRaised)
     {
-        var participant = await _context.Participants
-            .FirstOrDefaultAsync(p => p.Id == participantId && (!_tenantContext.OrganizationId.HasValue || p.Meeting.OrganizationId == _tenantContext.OrganizationId.Value));
+        var participant = await ParticipantsForTenant()
+            .FirstOrDefaultAsync(p => p.Id == participantId);
         if (participant == null)
             return null;
 
@@ -427,8 +438,8 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task<Participant?> UpdateParticipantReactionAsync(Guid participantId, string? reaction)
     {
-        var participant = await _context.Participants
-            .FirstOrDefaultAsync(p => p.Id == participantId && (!_tenantContext.OrganizationId.HasValue || p.Meeting.OrganizationId == _tenantContext.OrganizationId.Value));
+        var participant = await ParticipantsForTenant()
+            .FirstOrDefaultAsync(p => p.Id == participantId);
         if (participant == null)
             return null;
 
@@ -466,9 +477,8 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task<List<MeetingChatMessage>> GetChatMessagesAsync(Guid meetingId, Guid? currentUserId = null)
     {
-        return await _context.MeetingChatMessages
+        return await MeetingChatMessagesForTenant()
             .Where(message => message.MeetingId == meetingId && !message.IsDeleted)
-            .Where(message => !_tenantContext.OrganizationId.HasValue || message.Meeting.OrganizationId == _tenantContext.OrganizationId.Value)
             .Where(message =>
                 message.Scope == ChatScope.Everyone ||
                 currentUserId == null ||
@@ -476,6 +486,262 @@ public class MeetingServiceImpl : IMeetingService
                 message.RecipientUserId == currentUserId)
             .OrderBy(message => message.SentAt)
             .ToListAsync();
+    }
+
+    public async Task<List<MeetingCallLog>> GetMeetingCallLogsAsync(Guid meetingId, Guid currentUserId)
+    {
+        var meetingExists = await MeetingsForTenant().AnyAsync(meeting => meeting.Id == meetingId);
+        if (!meetingExists)
+        {
+            throw new InvalidOperationException("Meeting not found");
+        }
+
+        return await MeetingCallLogsForTenant()
+            .Where(call => call.MeetingId == meetingId)
+            .Where(call => call.CallerUserId == currentUserId || call.RecipientUserId == currentUserId)
+            .OrderByDescending(call => call.CreatedAt)
+            .ToListAsync();
+    }
+
+    public async Task<List<MeetingCallLog>> GetRecentMeetingCallLogsAsync(Guid currentUserId, string? status = null)
+    {
+        var query = MeetingCallLogsForTenant()
+            .Include(call => call.Meeting)
+            .Where(call =>
+                (call.CallerUserId == currentUserId && call.CallerHiddenAt == null) ||
+                (call.RecipientUserId == currentUserId && call.RecipientHiddenAt == null));
+
+        if (!string.IsNullOrWhiteSpace(status) && !string.Equals(status, "All", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.Equals(status, "Missed", StringComparison.OrdinalIgnoreCase))
+            {
+                query = query.Where(call => call.Status == MeetingCallStatus.NoResponse && call.RecipientUserId == currentUserId);
+            }
+            else if (Enum.TryParse<MeetingCallStatus>(status, true, out var parsedStatus))
+            {
+                query = query.Where(call => call.Status == parsedStatus);
+            }
+        }
+
+        return await query
+            .OrderByDescending(call => call.CreatedAt)
+            .Take(100)
+            .ToListAsync();
+    }
+
+    public async Task<MeetingCallLog> CreateMeetingCallLogAsync(Guid meetingId, Guid callerUserId, string callerName, CreateMeetingCallLogRequest request)
+    {
+        var meeting = await MeetingsForTenant()
+            .Include(item => item.Participants)
+            .FirstOrDefaultAsync(item => item.Id == meetingId);
+        if (meeting == null)
+        {
+            throw new InvalidOperationException("Meeting not found");
+        }
+
+        if (meeting.Status == MeetingStatus.Cancelled || meeting.Status == MeetingStatus.Completed)
+        {
+            throw new InvalidOperationException("Cannot call people in a closed meeting");
+        }
+
+        if (request.RecipientUserId == Guid.Empty || request.RecipientUserId == callerUserId)
+        {
+            throw new InvalidOperationException("Select another available user to call");
+        }
+
+        var callerIsInMeeting = meeting.OrganizerId == callerUserId
+            || meeting.Participants.Any(participant => participant.UserId == callerUserId && participant.LeftAt == null);
+        if (!callerIsInMeeting)
+        {
+            throw new UnauthorizedAccessException("Join the meeting before calling someone");
+        }
+
+        var recipientAlreadyJoined = meeting.Participants.Any(participant => participant.UserId == request.RecipientUserId && participant.LeftAt == null);
+        if (recipientAlreadyJoined)
+        {
+            throw new InvalidOperationException("This user is already in the meeting");
+        }
+
+        var recipientEmail = request.RecipientEmail?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(recipientEmail))
+        {
+            throw new InvalidOperationException("Recipient email is required");
+        }
+
+        var call = new MeetingCallLog
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = meeting.OrganizationId,
+            MeetingId = meetingId,
+            ConversationId = string.IsNullOrWhiteSpace(request.ConversationId) ? null : request.ConversationId.Trim(),
+            CallerUserId = callerUserId,
+            CallerName = string.IsNullOrWhiteSpace(callerName) ? "Caller" : callerName.Trim(),
+            RecipientUserId = request.RecipientUserId,
+            RecipientEmail = recipientEmail,
+            RecipientName = string.IsNullOrWhiteSpace(request.RecipientName) ? recipientEmail : request.RecipientName.Trim(),
+            CallType = string.Equals(request.CallType, "audio", StringComparison.OrdinalIgnoreCase) ? "audio" : "video",
+            JoinUrl = request.JoinUrl,
+            Status = MeetingCallStatus.Ringing,
+            CallerSeenAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _context.MeetingCallLogs.Add(call);
+        await _outbox.EnqueueAsync(new IncomingMeetingCallRequestedEvent(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            call.OrganizationId,
+            call.ConversationId ?? string.Empty,
+            call.MeetingId.ToString(),
+            call.Id.ToString(),
+            call.CallerUserId.ToString(),
+            call.CallerName,
+            call.CallType,
+            call.JoinUrl ?? string.Empty,
+            new List<string> { call.RecipientUserId.ToString() }));
+        await _context.SaveChangesAsync();
+        return call;
+    }
+
+    public async Task<MeetingCallLog> UpdateMeetingCallLogStatusAsync(Guid meetingId, Guid callLogId, Guid actorUserId, UpdateMeetingCallLogRequest request)
+    {
+        var call = await MeetingCallLogsForTenant()
+            .Include(item => item.Meeting)
+            .FirstOrDefaultAsync(item => item.Id == callLogId && item.MeetingId == meetingId);
+        if (call == null)
+        {
+            throw new InvalidOperationException("Call log not found");
+        }
+
+        if (!Enum.TryParse<MeetingCallStatus>(request.Status, true, out var status))
+        {
+            throw new InvalidOperationException("Call status must be Ringing, Accepted, Declined, Cancelled, NoResponse, or Failed");
+        }
+
+        var actorIsCaller = call.CallerUserId == actorUserId;
+        var actorIsRecipient = call.RecipientUserId == actorUserId;
+        if (!actorIsCaller && !actorIsRecipient)
+        {
+            throw new UnauthorizedAccessException("You cannot update this call");
+        }
+
+        if (status == MeetingCallStatus.Cancelled && !actorIsCaller)
+        {
+            throw new UnauthorizedAccessException("Only the caller can cancel an outgoing call");
+        }
+
+        if ((status == MeetingCallStatus.Accepted || status == MeetingCallStatus.Declined) && !actorIsRecipient)
+        {
+            throw new UnauthorizedAccessException("Only the recipient can answer this call");
+        }
+
+        if (status == MeetingCallStatus.NoResponse && !actorIsCaller && !actorIsRecipient)
+        {
+            throw new UnauthorizedAccessException("Only call participants can mark no response");
+        }
+
+        if (call.Status != MeetingCallStatus.Ringing && status != MeetingCallStatus.Failed)
+        {
+            return call;
+        }
+
+        call.Status = status;
+        call.StatusReason = string.IsNullOrWhiteSpace(request.Reason) ? null : request.Reason.Trim();
+        call.CancellationMessage = string.IsNullOrWhiteSpace(request.CancellationMessage) ? call.CancellationMessage : request.CancellationMessage.Trim();
+        call.CancellationMessageId = request.CancellationMessageId ?? call.CancellationMessageId;
+        call.StatusChangedAt = DateTime.UtcNow;
+        _context.MeetingCallLogs.Update(call);
+        await _outbox.EnqueueAsync(new MeetingCallStatusChangedEvent(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            call.OrganizationId,
+            call.ConversationId ?? string.Empty,
+            call.MeetingId.ToString(),
+            call.Id.ToString(),
+            call.CallerUserId.ToString(),
+            call.CallerName,
+            call.RecipientUserId.ToString(),
+            call.RecipientName,
+            call.Status.ToString(),
+            call.StatusReason,
+            call.CancellationMessage));
+        await _context.SaveChangesAsync();
+        return call;
+    }
+
+    public async Task<MeetingCallLog> MarkMeetingCallLogSeenAsync(Guid callLogId, Guid currentUserId)
+    {
+        var call = await MeetingCallLogsForTenant()
+            .Include(item => item.Meeting)
+            .FirstOrDefaultAsync(item => item.Id == callLogId);
+        if (call == null)
+        {
+            throw new InvalidOperationException("Call log not found");
+        }
+
+        if (call.CallerUserId == currentUserId)
+        {
+            call.CallerSeenAt = DateTime.UtcNow;
+        }
+        else if (call.RecipientUserId == currentUserId)
+        {
+            call.RecipientSeenAt = DateTime.UtcNow;
+        }
+        else
+        {
+            throw new UnauthorizedAccessException("You cannot update this call");
+        }
+
+        _context.MeetingCallLogs.Update(call);
+        await _context.SaveChangesAsync();
+        return call;
+    }
+
+    public async Task HideMeetingCallLogAsync(Guid callLogId, Guid currentUserId)
+    {
+        var call = await MeetingCallLogsForTenant()
+            .FirstOrDefaultAsync(item => item.Id == callLogId);
+        if (call == null)
+        {
+            throw new InvalidOperationException("Call log not found");
+        }
+
+        if (call.CallerUserId == currentUserId)
+        {
+            call.CallerHiddenAt = DateTime.UtcNow;
+        }
+        else if (call.RecipientUserId == currentUserId)
+        {
+            call.RecipientHiddenAt = DateTime.UtcNow;
+        }
+        else
+        {
+            throw new UnauthorizedAccessException("You cannot update this call");
+        }
+
+        _context.MeetingCallLogs.Update(call);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task ClearMeetingCallLogsAsync(Guid currentUserId, string? status = null)
+    {
+        var calls = await GetRecentMeetingCallLogsAsync(currentUserId, status);
+        var now = DateTime.UtcNow;
+        foreach (var call in calls)
+        {
+            if (call.CallerUserId == currentUserId)
+            {
+                call.CallerHiddenAt = now;
+            }
+
+            if (call.RecipientUserId == currentUserId)
+            {
+                call.RecipientHiddenAt = now;
+            }
+        }
+
+        _context.MeetingCallLogs.UpdateRange(calls);
+        await _context.SaveChangesAsync();
     }
 
     public async Task<LobbyRequest> RequestLobbyAccessAsync(Guid meetingId, Guid userId, JoinMeetingRequest request)
@@ -510,17 +776,16 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task<List<LobbyRequest>> GetLobbyRequestsAsync(Guid meetingId)
     {
-        return await _context.LobbyRequests
+        return await LobbyRequestsForTenant()
             .Where(lobby => lobby.MeetingId == meetingId)
-            .Where(lobby => !_tenantContext.OrganizationId.HasValue || lobby.Meeting.OrganizationId == _tenantContext.OrganizationId.Value)
             .OrderByDescending(lobby => lobby.RequestedAt)
             .ToListAsync();
     }
 
     public async Task<LobbyRequest> DecideLobbyRequestAsync(Guid requestId, bool admit)
     {
-        var lobbyRequest = await _context.LobbyRequests
-            .FirstOrDefaultAsync(lobby => lobby.Id == requestId && (!_tenantContext.OrganizationId.HasValue || lobby.Meeting.OrganizationId == _tenantContext.OrganizationId.Value));
+        var lobbyRequest = await LobbyRequestsForTenant()
+            .FirstOrDefaultAsync(lobby => lobby.Id == requestId);
         if (lobbyRequest == null)
             throw new InvalidOperationException("Lobby request not found");
 
@@ -578,15 +843,27 @@ public class MeetingServiceImpl : IMeetingService
         meeting.RecordingUrl = recordingUrl;
         meeting.UpdatedAt = DateTime.UtcNow;
         _context.Meetings.Update(meeting);
+        var recipientUserIds = await _context.Participants
+            .Where(participant => participant.MeetingId == meetingId)
+            .Select(participant => participant.UserId.ToString())
+            .ToListAsync();
+        recipientUserIds.Add(meeting.OrganizerId.ToString());
+        await _outbox.EnqueueAsync(new MeetingRecordingReadyEvent(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            meeting.OrganizationId,
+            meeting.Id,
+            meeting.Title,
+            recordingUrl,
+            recipientUserIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList()));
         await _context.SaveChangesAsync();
         return meeting;
     }
 
     public async Task<List<MeetingInvite>> GetInvitesAsync(Guid meetingId)
     {
-        return await _context.MeetingInvites
+        return await MeetingInvitesForTenant()
             .Where(invite => invite.MeetingId == meetingId)
-            .Where(invite => !_tenantContext.OrganizationId.HasValue || invite.Meeting.OrganizationId == _tenantContext.OrganizationId.Value)
             .OrderBy(invite => invite.Email)
             .ToListAsync();
     }
@@ -632,8 +909,12 @@ public class MeetingServiceImpl : IMeetingService
         meeting.UpdatedAt = DateTime.UtcNow;
         _context.Meetings.Update(meeting);
 
+        var invitesToEmail = existingInvites
+            .Where(invite => normalizedEmails.Contains(invite.Email, StringComparer.OrdinalIgnoreCase))
+            .Concat(newInvites)
+            .ToList();
+        await QueueInviteEmailsAsync(meeting, invitesToEmail);
         await _context.SaveChangesAsync();
-        await SendInviteEmailsAsync(meeting, normalizedEmails);
 
         return existingInvites.Concat(newInvites).OrderBy(invite => invite.Email).ToList();
     }
@@ -650,7 +931,7 @@ public class MeetingServiceImpl : IMeetingService
             .Include(item => item.Meeting)
             .FirstOrDefaultAsync(item => item.Id == inviteId && item.MeetingId == meetingId);
 
-        if (invite == null || (_tenantContext.OrganizationId.HasValue && invite.Meeting.OrganizationId != _tenantContext.OrganizationId.Value))
+        if (invite == null || !MatchesTenant(invite.Meeting.OrganizationId))
         {
             throw new InvalidOperationException("Invite not found");
         }
@@ -732,11 +1013,14 @@ public class MeetingServiceImpl : IMeetingService
                 var memberIds = members.Select(member => member.UserId).OrderBy(id => id).ToList();
                 var firstMemberId = memberIds[0];
                 var secondMemberId = memberIds[1];
+                var organizationId = _tenantContext.OrganizationId;
                 var existing = await _context.Conversations
                     .Include(conversation => conversation.Members)
                     .Include(conversation => conversation.Invites)
                     .Include(conversation => conversation.Messages.Where(message => !message.IsDeleted))
-                    .Where(conversation => !_tenantContext.OrganizationId.HasValue || conversation.OrganizationId == _tenantContext.OrganizationId.Value)
+                    .Where(conversation => organizationId.HasValue
+                        ? conversation.OrganizationId == organizationId.Value
+                        : conversation.OrganizationId == null)
                     .Where(conversation => conversation.Type == ConversationType.Direct)
                     .Where(conversation => conversation.Members.Count == 2)
                     .Where(conversation => conversation.Members.Any(member => member.UserId == firstMemberId))
@@ -782,20 +1066,26 @@ public class MeetingServiceImpl : IMeetingService
         }
 
         _context.Conversations.Add(conversation);
-        await _context.SaveChangesAsync();
 
         foreach (var email in inviteEmails)
         {
             try
             {
-                await _emailSender.SendConversationInviteAsync(conversation, email, creator.UserName);
+                await _outbox.EnqueueAsync(new ConversationInviteEmailRequestedEvent(
+                    Guid.NewGuid(),
+                    DateTime.UtcNow,
+                    conversation.OrganizationId,
+                    conversation.Id,
+                    email,
+                    creator.UserName));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send chat invite email. Recipient: {Email}, Conversation: {ConversationId}", email, conversation.Id);
+                _logger.LogError(ex, "Failed to queue chat invite email. Recipient: {Email}, Conversation: {ConversationId}", email, conversation.Id);
             }
         }
 
+        await _context.SaveChangesAsync();
         return conversation;
     }
 
@@ -940,6 +1230,7 @@ public class MeetingServiceImpl : IMeetingService
         var conversation = await ConversationsForTenant().FirstAsync(item => item.Id == conversationId);
         conversation.UpdatedAt = message.SentAt;
         _context.Conversations.Update(conversation);
+        await PublishConversationMessageCreatedAsync(message);
         await _context.SaveChangesAsync();
         return message;
     }
@@ -965,6 +1256,7 @@ public class MeetingServiceImpl : IMeetingService
 
         message.IsPinned = !message.IsPinned;
         _context.ConversationMessages.Update(message);
+        await PublishConversationMessageUpdatedAsync(message);
         await _context.SaveChangesAsync();
         return message;
     }
@@ -1048,6 +1340,7 @@ public class MeetingServiceImpl : IMeetingService
         conversation.UpdatedAt = message.EditedAt;
         _context.Conversations.Update(conversation);
 
+        await PublishConversationMessageUpdatedAsync(message);
         await _context.SaveChangesAsync();
         return message;
     }
@@ -1076,16 +1369,21 @@ public class MeetingServiceImpl : IMeetingService
             throw new InvalidOperationException("Message not found");
         }
 
-        var existingReaction = await _context.ConversationMessageReactions
-            .FirstOrDefaultAsync(reaction => reaction.ConversationMessageId == messageId && reaction.UserId == userId && reaction.Emoji == emoji);
+        var reactions = await _context.ConversationMessageReactions
+            .Where(reaction => reaction.ConversationMessageId == messageId)
+            .OrderBy(reaction => reaction.CreatedAt)
+            .ToListAsync();
+        var existingReaction = reactions
+            .FirstOrDefault(reaction => reaction.UserId == userId && reaction.Emoji == emoji);
 
         if (existingReaction != null)
         {
             _context.ConversationMessageReactions.Remove(existingReaction);
+            reactions.Remove(existingReaction);
         }
         else
         {
-            _context.ConversationMessageReactions.Add(new ConversationMessageReaction
+            var reaction = new ConversationMessageReaction
             {
                 Id = Guid.NewGuid(),
                 ConversationMessageId = messageId,
@@ -1093,15 +1391,14 @@ public class MeetingServiceImpl : IMeetingService
                 UserName = userName,
                 Emoji = emoji,
                 CreatedAt = DateTime.UtcNow
-            });
+            };
+            _context.ConversationMessageReactions.Add(reaction);
+            reactions.Add(reaction);
         }
 
+        await PublishConversationReactionUpdatedAsync(conversationId, messageId, reactions);
         await _context.SaveChangesAsync();
-
-        return await _context.ConversationMessageReactions
-            .Where(reaction => reaction.ConversationMessageId == messageId)
-            .OrderBy(reaction => reaction.CreatedAt)
-            .ToListAsync();
+        return reactions;
     }
 
     public async Task<List<ScheduledConversationMessage>> GetScheduledConversationMessagesAsync(Guid conversationId, Guid userId)
@@ -1164,13 +1461,12 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task CancelScheduledConversationMessageAsync(Guid conversationId, Guid scheduledMessageId, Guid userId)
     {
-        var scheduledMessage = await _context.ScheduledConversationMessages
+        var scheduledMessage = await ScheduledConversationMessagesForTenant()
             .FirstOrDefaultAsync(message =>
                 message.Id == scheduledMessageId &&
                 message.ConversationId == conversationId &&
                 message.SenderId == userId &&
-                message.Status == "Pending" &&
-                (!_tenantContext.OrganizationId.HasValue || message.Conversation.OrganizationId == _tenantContext.OrganizationId.Value));
+                message.Status == "Pending");
 
         if (scheduledMessage == null)
         {
@@ -1290,6 +1586,7 @@ public class MeetingServiceImpl : IMeetingService
         task.Activities.Add(CreateTaskActivity(task.Id, userId, userName, "Created", sourceMessage == null ? null : $"From message by {sourceMessage.SenderName}"));
         _context.ConversationTasks.Add(task);
         await AddAuditLogAsync(userId, userName, "Task created", task.Title, conversationId: conversationId);
+        await PublishConversationTaskAssignedAsync(task, userName);
         await _context.SaveChangesAsync();
 
         return await LoadConversationTaskAsync(conversationId, task.Id);
@@ -1360,10 +1657,14 @@ public class MeetingServiceImpl : IMeetingService
         }
 
         task.UpdatedAt = DateTime.UtcNow;
-        task.Activities.Add(CreateTaskActivity(task.Id, userId, userName, "Updated", string.Join(", ", changes)));
-        _context.ConversationTasks.Update(task);
+        _context.ConversationTaskActivities.Add(CreateTaskActivity(task.Id, userId, userName, "Updated", string.Join(", ", changes)));
         await AddAuditLogAsync(userId, userName, "Task updated", $"{task.Title}: {string.Join(", ", changes)}", conversationId: conversationId);
+        if (changes.Any(change => change.StartsWith("assignee", StringComparison.OrdinalIgnoreCase)))
+        {
+            await PublishConversationTaskAssignedAsync(task, userName);
+        }
         await _context.SaveChangesAsync();
+
         return await LoadConversationTaskAsync(conversationId, task.Id);
     }
 
@@ -1387,9 +1688,8 @@ public class MeetingServiceImpl : IMeetingService
         };
 
         task.UpdatedAt = DateTime.UtcNow;
-        task.Notes.Add(note);
-        task.Activities.Add(CreateTaskActivity(task.Id, userId, userName, "Note added", noteText.Length <= 160 ? noteText : $"{noteText[..157]}..."));
-        _context.ConversationTasks.Update(task);
+        _context.ConversationTaskNotes.Add(note);
+        _context.ConversationTaskActivities.Add(CreateTaskActivity(task.Id, userId, userName, "Note added", noteText.Length <= 160 ? noteText : $"{noteText[..157]}..."));
         await AddAuditLogAsync(userId, userName, "Task note added", task.Title, conversationId: conversationId);
         await _context.SaveChangesAsync();
         return note;
@@ -1400,8 +1700,7 @@ public class MeetingServiceImpl : IMeetingService
         var task = await LoadConversationTaskForUpdateAsync(conversationId, taskId, userId);
         task.IsDeleted = true;
         task.UpdatedAt = DateTime.UtcNow;
-        task.Activities.Add(CreateTaskActivity(task.Id, userId, userName, "Deleted", null));
-        _context.ConversationTasks.Update(task);
+        _context.ConversationTaskActivities.Add(CreateTaskActivity(task.Id, userId, userName, "Deleted", null));
         await AddAuditLogAsync(userId, userName, "Task deleted", task.Title, conversationId: conversationId);
         await _context.SaveChangesAsync();
     }
@@ -1429,11 +1728,6 @@ public class MeetingServiceImpl : IMeetingService
         }
 
         var shares = new List<ConversationDocumentShare>();
-        foreach (var email in recipients)
-        {
-            await _emailSender.SendDocumentShareAsync(message.Conversation, message, email, userName, request.Message);
-        }
-
         var share = new ConversationDocumentShare
         {
             Id = Guid.NewGuid(),
@@ -1448,6 +1742,18 @@ public class MeetingServiceImpl : IMeetingService
         _context.ConversationDocumentShares.Add(share);
         shares.Add(share);
         await AddAuditLogAsync(userId, userName, "Document shared via email", message.AttachmentFileName, conversationId: conversationId);
+        foreach (var email in recipients)
+        {
+            await _outbox.EnqueueAsync(new DocumentShareEmailRequestedEvent(
+                Guid.NewGuid(),
+                DateTime.UtcNow,
+                message.Conversation.OrganizationId,
+                conversationId,
+                messageId,
+                email,
+                userName,
+                request.Message));
+        }
         await _context.SaveChangesAsync();
 
         return shares;
@@ -1558,6 +1864,124 @@ public class MeetingServiceImpl : IMeetingService
     {
         await AddAuditLogAsync(actorId, actorName, action, details, meetingId, conversationId);
         await _context.SaveChangesAsync();
+    }
+
+    private async Task PublishConversationMessageCreatedAsync(ConversationMessage message)
+    {
+        var organizationId = await _context.Conversations
+            .Where(conversation => conversation.Id == message.ConversationId)
+            .Select(conversation => conversation.OrganizationId)
+            .FirstOrDefaultAsync();
+        var recipientUserIds = await GetConversationRecipientUserIdsAsync(message.ConversationId, message.SenderId);
+
+        await _outbox.EnqueueAsync(new ConversationMessageCreatedEvent(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            organizationId,
+            message.ConversationId.ToString(),
+            message.Id.ToString(),
+            message.SenderId.ToString(),
+            message.SenderName,
+            message.Message,
+            message.AttachmentFileName,
+            message.AttachmentUrl,
+            message.AttachmentContentType,
+            message.AttachmentSizeBytes,
+            message.ReplyToMessageId?.ToString(),
+            message.ReplyToSenderName,
+            message.ReplyToPreview,
+            message.IsImportant,
+            message.SentAt,
+            recipientUserIds));
+    }
+
+    private async Task PublishConversationMessageUpdatedAsync(ConversationMessage message)
+    {
+        var organizationId = await _context.Conversations
+            .Where(conversation => conversation.Id == message.ConversationId)
+            .Select(conversation => conversation.OrganizationId)
+            .FirstOrDefaultAsync();
+        var recipientUserIds = await GetConversationRecipientUserIdsAsync(message.ConversationId, message.SenderId);
+
+        await _outbox.EnqueueAsync(new ConversationMessageUpdatedEvent(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            organizationId,
+            message.ConversationId.ToString(),
+            message.Id.ToString(),
+            message.SenderId.ToString(),
+            message.SenderName,
+            message.Message,
+            message.EditedAt ?? DateTime.UtcNow,
+            message.IsImportant,
+            recipientUserIds));
+    }
+
+    private async Task PublishConversationReactionUpdatedAsync(Guid conversationId, Guid messageId, List<ConversationMessageReaction> reactions)
+    {
+        var message = await _context.ConversationMessages
+            .FirstOrDefaultAsync(item => item.Id == messageId && item.ConversationId == conversationId);
+        if (message == null)
+        {
+            return;
+        }
+
+        var organizationId = await _context.Conversations
+            .Where(conversation => conversation.Id == conversationId)
+            .Select(conversation => conversation.OrganizationId)
+            .FirstOrDefaultAsync();
+        var recipientUserIds = await GetConversationRecipientUserIdsAsync(conversationId, message.SenderId);
+        recipientUserIds.Add(message.SenderId.ToString());
+
+        await _outbox.EnqueueAsync(new ConversationMessageReactionUpdatedEvent(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            organizationId,
+            conversationId.ToString(),
+            messageId.ToString(),
+            reactions.Select(reaction => new ConversationReactionEventItem(
+                reaction.Id.ToString(),
+                reaction.ConversationMessageId.ToString(),
+                reaction.UserId.ToString(),
+                reaction.UserName,
+                reaction.Emoji,
+                reaction.CreatedAt)).ToList(),
+            recipientUserIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList()));
+    }
+
+    private async Task PublishConversationTaskAssignedAsync(ConversationTask task, string assignedByName)
+    {
+        if (!task.AssigneeId.HasValue && string.IsNullOrWhiteSpace(task.AssigneeEmail))
+        {
+            return;
+        }
+
+        var organizationId = await _context.Conversations
+            .Where(conversation => conversation.Id == task.ConversationId)
+            .Select(conversation => conversation.OrganizationId)
+            .FirstOrDefaultAsync();
+
+        await _outbox.EnqueueAsync(new ConversationTaskAssignedEvent(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            organizationId,
+            task.ConversationId,
+            task.Id,
+            task.Title,
+            task.AssigneeId?.ToString(),
+            task.AssigneeEmail,
+            task.AssigneeName,
+            assignedByName,
+            task.DueDate));
+    }
+
+    private async Task<List<string>> GetConversationRecipientUserIdsAsync(Guid conversationId, Guid senderId)
+    {
+        return await _context.ConversationMembers
+            .Where(member => member.ConversationId == conversationId && member.UserId != senderId)
+            .Select(member => member.UserId.ToString())
+            .Distinct()
+            .ToListAsync();
     }
 
     private async Task<ConversationTask> LoadConversationTaskForUpdateAsync(Guid conversationId, Guid taskId, Guid userId)
@@ -1711,9 +2135,8 @@ public class MeetingServiceImpl : IMeetingService
         }
 
         var normalizedEmail = userEmail.Trim().ToLower();
-        var pendingInvites = await _context.ConversationInvites
+        var pendingInvites = await ConversationInvitesForTenant()
             .Where(invite => !invite.HasAccepted && invite.Email.ToLower() == normalizedEmail)
-            .Where(invite => !_tenantContext.OrganizationId.HasValue || invite.Conversation.OrganizationId == _tenantContext.OrganizationId.Value)
             .ToListAsync();
 
         if (pendingInvites.Count == 0)
@@ -1750,32 +2173,105 @@ public class MeetingServiceImpl : IMeetingService
 
     private IQueryable<Meeting> MeetingsForTenant()
     {
+        var organizationId = _tenantContext.OrganizationId;
         var query = _context.Meetings.AsQueryable();
-        return _tenantContext.OrganizationId.HasValue
-            ? query.Where(meeting => meeting.OrganizationId == _tenantContext.OrganizationId.Value)
-            : query;
+        return organizationId.HasValue
+            ? query.Where(meeting => meeting.OrganizationId == organizationId.Value)
+            : query.Where(meeting => meeting.OrganizationId == null);
     }
 
     private IQueryable<Conversation> ConversationsForTenant()
     {
+        var organizationId = _tenantContext.OrganizationId;
         var query = _context.Conversations.AsQueryable();
-        return _tenantContext.OrganizationId.HasValue
-            ? query.Where(conversation => conversation.OrganizationId == _tenantContext.OrganizationId.Value)
-            : query;
+        return organizationId.HasValue
+            ? query.Where(conversation => conversation.OrganizationId == organizationId.Value)
+            : query.Where(conversation => conversation.OrganizationId == null);
     }
 
     private IQueryable<ConversationMember> ConversationMembersForTenant()
     {
+        var organizationId = _tenantContext.OrganizationId;
         var query = _context.ConversationMembers.AsQueryable();
+        return organizationId.HasValue
+            ? query.Where(member => member.Conversation.OrganizationId == organizationId.Value)
+            : query.Where(member => member.Conversation.OrganizationId == null);
+    }
+
+    private IQueryable<Participant> ParticipantsForTenant()
+    {
+        var organizationId = _tenantContext.OrganizationId;
+        var query = _context.Participants.AsQueryable();
+        return organizationId.HasValue
+            ? query.Where(participant => participant.Meeting.OrganizationId == organizationId.Value)
+            : query.Where(participant => participant.Meeting.OrganizationId == null);
+    }
+
+    private IQueryable<MeetingChatMessage> MeetingChatMessagesForTenant()
+    {
+        var organizationId = _tenantContext.OrganizationId;
+        var query = _context.MeetingChatMessages.AsQueryable();
+        return organizationId.HasValue
+            ? query.Where(message => message.Meeting.OrganizationId == organizationId.Value)
+            : query.Where(message => message.Meeting.OrganizationId == null);
+    }
+
+    private IQueryable<MeetingCallLog> MeetingCallLogsForTenant()
+    {
+        var organizationId = _tenantContext.OrganizationId;
+        var query = _context.MeetingCallLogs.AsQueryable();
+        return organizationId.HasValue
+            ? query.Where(call => call.OrganizationId == organizationId.Value)
+            : query.Where(call => call.OrganizationId == null);
+    }
+
+    private IQueryable<LobbyRequest> LobbyRequestsForTenant()
+    {
+        var organizationId = _tenantContext.OrganizationId;
+        var query = _context.LobbyRequests.AsQueryable();
+        return organizationId.HasValue
+            ? query.Where(lobby => lobby.Meeting.OrganizationId == organizationId.Value)
+            : query.Where(lobby => lobby.Meeting.OrganizationId == null);
+    }
+
+    private IQueryable<MeetingInvite> MeetingInvitesForTenant()
+    {
+        var organizationId = _tenantContext.OrganizationId;
+        var query = _context.MeetingInvites.AsQueryable();
+        return organizationId.HasValue
+            ? query.Where(invite => invite.Meeting.OrganizationId == organizationId.Value)
+            : query.Where(invite => invite.Meeting.OrganizationId == null);
+    }
+
+    private IQueryable<ScheduledConversationMessage> ScheduledConversationMessagesForTenant()
+    {
+        var organizationId = _tenantContext.OrganizationId;
+        var query = _context.ScheduledConversationMessages.AsQueryable();
+        return organizationId.HasValue
+            ? query.Where(message => message.Conversation.OrganizationId == organizationId.Value)
+            : query.Where(message => message.Conversation.OrganizationId == null);
+    }
+
+    private IQueryable<ConversationInvite> ConversationInvitesForTenant()
+    {
+        var organizationId = _tenantContext.OrganizationId;
+        var query = _context.ConversationInvites.AsQueryable();
+        return organizationId.HasValue
+            ? query.Where(invite => invite.Conversation.OrganizationId == organizationId.Value)
+            : query.Where(invite => invite.Conversation.OrganizationId == null);
+    }
+
+    private bool MatchesTenant(Guid? organizationId)
+    {
         return _tenantContext.OrganizationId.HasValue
-            ? query.Where(member => member.Conversation.OrganizationId == _tenantContext.OrganizationId.Value)
-            : query;
+            ? organizationId == _tenantContext.OrganizationId.Value
+            : organizationId == null;
     }
 
     private string BuildMeetingLink(Guid meetingId)
     {
         return string.IsNullOrWhiteSpace(_tenantContext.OrganizationSlug)
-            ? $"http://localhost:5173/meeting/{meetingId}"
+            ? $"http://localhost:5173/personal/meeting/{meetingId}"
             : $"http://localhost:5173/org/{Uri.EscapeDataString(_tenantContext.OrganizationSlug)}/meeting/{meetingId}";
     }
 
@@ -1796,26 +2292,23 @@ public class MeetingServiceImpl : IMeetingService
         return emails.Count == 0 ? null : string.Join(";", emails);
     }
 
-    private async Task SendInviteEmailsAsync(Meeting meeting, IEnumerable<string> emails)
+    private async Task QueueInviteEmailsAsync(Meeting meeting, IEnumerable<MeetingInvite> invites)
     {
-        foreach (var email in NormalizeEmailList(emails))
+        foreach (var invite in invites)
         {
             try
             {
-                var invite = await _context.MeetingInvites
-                    .FirstOrDefaultAsync(item => item.MeetingId == meeting.Id && item.Email.ToLower() == email.ToLowerInvariant());
-
-                if (invite == null)
-                {
-                    _logger.LogWarning("Meeting invite email skipped because invite row was not found. Recipient: {Email}, Meeting: {MeetingId}", email, meeting.Id);
-                    continue;
-                }
-
-                await _emailSender.SendMeetingInviteAsync(meeting, invite);
+                await _outbox.EnqueueAsync(new MeetingInviteEmailRequestedEvent(
+                    Guid.NewGuid(),
+                    DateTime.UtcNow,
+                    meeting.OrganizationId,
+                    meeting.Id,
+                    invite.Id,
+                    invite.Email));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send meeting invite email. Recipient: {Email}, Meeting: {MeetingId}", email, meeting.Id);
+                _logger.LogError(ex, "Failed to queue meeting invite email. Recipient: {Email}, Meeting: {MeetingId}", invite.Email, meeting.Id);
             }
         }
     }

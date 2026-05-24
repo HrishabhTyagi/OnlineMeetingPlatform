@@ -237,7 +237,7 @@ function Start-LocalService {
     }
 
     try {
-        Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$ServicePath'; $StartCommand" -WindowStyle Normal
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$env:ASPNETCORE_ENVIRONMENT='Development'; Set-Location '$ServicePath'; $StartCommand" -WindowStyle Normal
 
         if (Wait-ForPort -Port $Port -TimeoutSeconds 45) {
             Write-Host "$ServiceName started at http://localhost:$Port" -ForegroundColor Green
@@ -360,6 +360,7 @@ Write-Host "  Organization Service: http://localhost:$organizationServicePort" -
 Write-Host "  Frontend UI:          http://localhost:$frontendPort" -ForegroundColor Green
 Write-Host "  Organization Admin:   http://localhost:$organizationAdminPort" -ForegroundColor Green
 Write-Host "  Test Email Inbox:     http://localhost:8025" -ForegroundColor Green
+Write-Host "  RabbitMQ Management:  http://localhost:15672" -ForegroundColor Green
 Write-Host ""
 
 Write-Host "Access Application:" -ForegroundColor Cyan
@@ -367,6 +368,7 @@ Write-Host "  Web UI:               http://localhost:$frontendPort" -ForegroundC
 Write-Host "  Organization Admin:   http://localhost:$organizationAdminPort" -ForegroundColor Green
 Write-Host "  Swagger API Docs:     http://localhost:$gatewayPort/swagger/index.html" -ForegroundColor Green
 Write-Host "  Test Email Inbox:     http://localhost:8025" -ForegroundColor Green
+Write-Host "  RabbitMQ Management:  http://localhost:15672" -ForegroundColor Green
 Write-Host ""
 
 Write-Host "Troubleshooting:" -ForegroundColor Cyan
