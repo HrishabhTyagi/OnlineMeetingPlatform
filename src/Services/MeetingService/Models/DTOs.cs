@@ -23,6 +23,7 @@ public class CreateMeetingRequest
     public string? RecurrenceRule { get; set; }
     public int MaxParticipants { get; set; } = 100;
     public bool IsRecorded { get; set; }
+    public bool AllowOrganizerOverlap { get; set; }
 }
 
 public class UpdateMeetingRequest

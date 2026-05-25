@@ -270,6 +270,7 @@ export default function Meet() {
         recurrenceRule: '',
         maxParticipants: 100,
         isRecorded: false,
+        allowOrganizerOverlap: true,
       });
 
       addMeeting(response.data);

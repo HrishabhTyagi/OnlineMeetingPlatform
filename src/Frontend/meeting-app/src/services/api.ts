@@ -163,7 +163,9 @@ export function openUrlInNewTab(url: string) {
     return;
   }
 
-  window.open(url, '_blank', 'noopener,noreferrer');
+  const targetUrl = new URL(url, window.location.origin);
+  const isSameOrigin = targetUrl.origin === window.location.origin;
+  window.open(targetUrl.toString(), '_blank', isSameOrigin ? undefined : 'noopener,noreferrer');
 }
 
 export function openMeetingJoinInNewTab(meetingId: string, meetingLink?: string | null, query = '') {

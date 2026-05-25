@@ -43,6 +43,7 @@ coverage/
 src/Services/MeetingService/Recordings/
 src/Services/MeetingService/ChatAttachments/
 src/Services/UserService/UserAvatars/
+src/Services/UserService/DataProtectionKeys/
 
 ## Misc
 .cache/

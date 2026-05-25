@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent 
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import AppShell from '../components/AppShell';
 import { ProfileStatusMenu, UserAvatar, UserStatusBadge, UserStatus } from '../components/UserStatus';
-import { conversationAPI, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openMeetingJoinInNewTab, openUrlInNewTab, resolveApiAssetUrl, userAPI } from '../services/api';
+import { conversationAPI, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openMeetingJoinInNewTab, openUrlInNewTab, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinConversation,
@@ -14,6 +14,7 @@ import {
   onConversationMessageUpdated,
   onIncomingCallResponse,
   onUserStatusChanged,
+  sendIncomingCall,
   startSignalR,
 } from '../services/signalR';
 import { useAuthStore } from '../store/authStore';
@@ -802,6 +803,7 @@ export default function Chat() {
   const [documentPreview, setDocumentPreview] = useState<ConversationMessage | null>(null);
   const [documentPreviewUrl, setDocumentPreviewUrl] = useState('');
   const [documentPreviewError, setDocumentPreviewError] = useState('');
+  const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState<Record<string, string>>({});
   const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResult[]>([]);
   const [searchingGlobally, setSearchingGlobally] = useState(false);
   const pendingFilePreviews = useMemo(
@@ -845,6 +847,42 @@ export default function Chat() {
       }
     };
   }, [documentPreview]);
+
+  useEffect(() => {
+    const imageMessages = messages.filter(isImageAttachment);
+    if (imageMessages.length === 0) {
+      setAttachmentPreviewUrls({});
+      return;
+    }
+
+    let cancelled = false;
+    const objectUrls: string[] = [];
+
+    setAttachmentPreviewUrls({});
+
+    Promise.all(imageMessages.map(async (message) => {
+      try {
+        const response = await conversationAPI.previewAttachment(message.conversationId, message.id);
+        const objectUrl = URL.createObjectURL(new Blob([response.data], { type: message.attachmentContentType || 'image/*' }));
+        objectUrls.push(objectUrl);
+        return [message.id, objectUrl] as const;
+      } catch {
+        return null;
+      }
+    })).then((entries) => {
+      if (cancelled) {
+        objectUrls.forEach((objectUrl) => URL.revokeObjectURL(objectUrl));
+        return;
+      }
+
+      setAttachmentPreviewUrls(Object.fromEntries(entries.filter(Boolean) as Array<readonly [string, string]>));
+    });
+
+    return () => {
+      cancelled = true;
+      objectUrls.forEach((objectUrl) => URL.revokeObjectURL(objectUrl));
+    };
+  }, [messages]);
 
   const displayName = useMemo(() => {
     if (!user) {
@@ -2169,6 +2207,7 @@ export default function Chat() {
         recurrenceRule: '',
         maxParticipants: Math.max(2, attendeeEmails.length + 1),
         isRecorded: false,
+        allowOrganizerOverlap: true,
       });
 
       const meetingId = response.data.id;
@@ -2193,6 +2232,16 @@ export default function Chat() {
             joinUrl: callUrl,
           });
           callLogId = callLogResponse.data.id;
+          await sendIncomingCall(
+            selectedConversation.id,
+            meetingId,
+            user.id,
+            displayName,
+            mode,
+            callUrl,
+            [recipient.userId],
+            callLogId,
+          );
           window.setTimeout(() => {
             meetingAPI.updateCallLog(meetingId, callLogId, {
               status: 'NoResponse',
@@ -2964,7 +3013,11 @@ export default function Chat() {
                   <p className="text-sm text-slate-500">No photos shared in this chat yet.</p>
                 ) : selectedPhotos.map((message) => (
                   <button key={message.id} onClick={() => downloadAttachment(message)} className="overflow-hidden rounded-md border border-slate-200 bg-slate-50 text-left">
-                    <img src={resolveApiAssetUrl(message.attachmentUrl)} alt={message.attachmentFileName || 'Shared photo'} className="h-44 w-full object-cover" />
+                    {attachmentPreviewUrls[message.id] ? (
+                      <img src={attachmentPreviewUrls[message.id]} alt={message.attachmentFileName || 'Shared photo'} className="h-44 w-full object-cover" />
+                    ) : (
+                      <div className="flex h-44 w-full items-center justify-center bg-slate-100 text-xs font-semibold text-slate-500">Loading preview</div>
+                    )}
                     <span className="block truncate px-3 py-2 text-xs text-slate-600">{message.attachmentFileName || 'Photo'}</span>
                   </button>
                 ))}
@@ -3541,7 +3594,11 @@ export default function Chat() {
                           {message.attachmentUrl && (
                             <div className={`mt-3 min-w-[220px] overflow-hidden rounded-md border ${isMine ? 'border-white/20 bg-white/10' : 'border-slate-200 bg-white'}`}>
                               {isImageAttachment(message) && (
-                                <img src={resolveApiAssetUrl(message.attachmentUrl)} alt={message.attachmentFileName || 'Attachment'} className="max-h-64 w-full object-cover" />
+                                attachmentPreviewUrls[message.id] ? (
+                                  <img src={attachmentPreviewUrls[message.id]} alt={message.attachmentFileName || 'Attachment'} className="max-h-64 w-full object-cover" />
+                                ) : (
+                                  <div className={`flex h-40 w-full items-center justify-center text-xs font-semibold ${isMine ? 'bg-white/10 text-teal-50' : 'bg-slate-100 text-slate-500'}`}>Loading preview</div>
+                                )
                               )}
                               <div className="px-3 py-2">
                                 <p className="break-words text-sm font-semibold">{message.attachmentFileName || 'Attachment'}</p>

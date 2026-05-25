@@ -37,6 +37,8 @@ interface CancelledCallNotice {
 const RING_TIMEOUT_MS = 30_000;
 const CANCELLED_NOTICE_TIMEOUT_MS = 8_000;
 const MAX_MISSED_CALLS = 5;
+const HANDLED_CALLS_KEY_PREFIX = 'handledIncomingCalls:';
+const HANDLED_CALL_TTL_MS = 10 * 60 * 1000;
 
 function normalizeIncomingCall(data: any): IncomingCall {
   return {
@@ -84,6 +86,38 @@ function resolveJoinUrl(joinUrl: string, meetingId: string, callType: 'audio' | 
   } catch {
     return getMeetingJoinUrl(meetingId, undefined, fallbackQuery);
   }
+}
+
+function handledCallsKey(userId: string) {
+  return `${HANDLED_CALLS_KEY_PREFIX}${userId}`;
+}
+
+function incomingCallKey(call: IncomingCall) {
+  return `${call.meetingId}:${call.callerUserId}:${call.callLogId || ''}`;
+}
+
+function readHandledCalls(userId: string) {
+  try {
+    const now = Date.now();
+    const items = JSON.parse(localStorage.getItem(handledCallsKey(userId)) || '[]') as Array<{ key: string; handledAt: number }>;
+    return items.filter((item) => item.key && now - item.handledAt < HANDLED_CALL_TTL_MS);
+  } catch {
+    return [];
+  }
+}
+
+function isHandledCall(userId: string, call: IncomingCall) {
+  const key = incomingCallKey(call);
+  return readHandledCalls(userId).some((item) => item.key === key);
+}
+
+function markHandledCall(userId: string, call: IncomingCall) {
+  const key = incomingCallKey(call);
+  const items = readHandledCalls(userId).filter((item) => item.key !== key);
+  localStorage.setItem(handledCallsKey(userId), JSON.stringify([
+    { key, handledAt: Date.now() },
+    ...items,
+  ].slice(0, 20)));
 }
 
 function formatMissedAt(value: string) {
@@ -144,6 +178,8 @@ export default function IncomingCallRinger() {
       return;
     }
 
+    markHandledCall(user.id, call);
+
     if (call.callLogId) {
       await meetingAPI.updateCallLog(call.meetingId, call.callLogId, {
         status,
@@ -183,7 +219,7 @@ export default function IncomingCallRinger() {
         await joinUserNotifications(user.id);
         onIncomingCall((data) => {
           const call = normalizeIncomingCall(data);
-          if (!call.meetingId || call.callerUserId === user.id) {
+          if (!call.meetingId || call.callerUserId === user.id || isHandledCall(user.id, call)) {
             return;
           }
 

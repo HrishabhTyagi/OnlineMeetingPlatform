@@ -28,6 +28,8 @@ import {
   onParticipantMediaStatusChanged,
   onUserStatusChanged,
   onWhiteboardUpdated,
+  sendIncomingCall,
+  sendIncomingCallCancelled,
   onWebRtcAnswer,
   onWebRtcIceCandidate,
   onWebRtcOffer,
@@ -2748,6 +2750,16 @@ export default function MeetingRoom() {
         joinUrl,
       });
       const callLogId = callLogResponse.data.id as string;
+      await sendIncomingCall(
+        `meeting-${id}`,
+        id,
+        user.id,
+        displayName,
+        'video',
+        joinUrl,
+        [candidate.id],
+        callLogId,
+      );
       outgoingCall = {
         callLogId,
         userId: candidate.id,
@@ -2865,6 +2877,15 @@ export default function MeetingRoom() {
       }));
 
       const cancellationMessageId = await sendCallCancellationChatMessage(call);
+      await sendIncomingCallCancelled(
+        `meeting-${id}`,
+        id,
+        user.id,
+        displayName,
+        call.userId,
+        CALL_CANCEL_MESSAGE,
+        'Cancelled',
+      ).catch(() => undefined);
       if (call.callLogId) {
         await meetingAPI.updateCallLog(id, call.callLogId, {
           status: 'Cancelled',
@@ -2880,6 +2901,15 @@ export default function MeetingRoom() {
       );
     } catch (err: any) {
       const cancellationMessageId = await sendCallCancellationChatMessage(call);
+      await sendIncomingCallCancelled(
+        `meeting-${id}`,
+        id,
+        user.id,
+        displayName,
+        call.userId,
+        CALL_CANCEL_MESSAGE,
+        'Cancelled',
+      ).catch(() => undefined);
       if (call.callLogId) {
         await meetingAPI.updateCallLog(id, call.callLogId, {
           status: 'Cancelled',

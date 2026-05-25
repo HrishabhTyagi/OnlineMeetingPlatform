@@ -91,7 +91,10 @@ public class MeetingServiceImpl : IMeetingService
     public async Task<Meeting> CreateMeetingAsync(Guid organizerId, CreateMeetingRequest request)
     {
         var durationMinutes = ResolveDurationMinutes(request.StartTime, request.EndTime, request.DurationMinutes);
-        await EnsureOrganizerHasNoOverlapAsync(organizerId, request.StartTime, request.StartTime.AddMinutes(durationMinutes));
+        if (!request.AllowOrganizerOverlap)
+        {
+            await EnsureOrganizerHasNoOverlapAsync(organizerId, request.StartTime, request.StartTime.AddMinutes(durationMinutes));
+        }
         var meetingId = Guid.NewGuid();
         var meeting = new Meeting
         {
