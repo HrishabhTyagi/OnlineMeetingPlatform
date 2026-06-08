@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ProfileStatusMenu, UserAvatar, UserStatus, statusLabel } from '../components/UserStatus';
-import { conversationAPI, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, userAPI } from '../services/api';
+import { conversationAPI, getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openProtectedApiAsset, userAPI } from '../services/api';
 import {
   initializeSignalR,
   joinMeetingGroup,
@@ -3459,16 +3459,15 @@ export default function MeetingRoom() {
               <p>Lobby {meeting.lobbyEnabled ? 'enabled' : 'disabled'}</p>
               <p>{meeting.allowRecording ? 'Recording allowed' : 'Recording unavailable'} - {meeting.allowTranscription ? 'Transcription allowed' : 'Transcription unavailable'}</p>
               {meeting.recordingUrl && (
-                <a
-                  href={resolveRecordingUrl(meeting.recordingUrl)}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  onClick={() => openProtectedApiAsset(meeting.recordingUrl).catch(() => setRecordingStatus('Recording could not be opened'))}
                   title="Open recording"
                   aria-label="Open recording"
                   className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-emerald-400/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
                 >
                   <RecordIcon />
-                </a>
+                </button>
               )}
               {meeting.meetingLink && (
                 <div className="flex flex-wrap items-center gap-2">

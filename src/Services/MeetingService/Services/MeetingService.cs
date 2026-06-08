@@ -13,9 +13,9 @@ public interface IMeetingService
     Task<List<Meeting>> GetMeetingsByOrganizerAsync(Guid organizerId);
     Task<List<Meeting>> GetMeetingsForUserAsync(Guid userId, string? userEmail);
     Task<List<Meeting>> GetUpcomingMeetingsAsync();
-    Task<Meeting> UpdateMeetingAsync(Guid id, UpdateMeetingRequest request);
+    Task<Meeting> UpdateMeetingAsync(Guid id, Guid organizerId, UpdateMeetingRequest request);
     Task<Meeting> EndMeetingAsync(Guid id, Guid organizerId);
-    Task DeleteMeetingAsync(Guid id);
+    Task DeleteMeetingAsync(Guid id, Guid organizerId);
     Task<Participant> JoinMeetingAsync(Guid meetingId, Guid userId, JoinMeetingRequest request);
     Task<bool> LeaveMeetingAsync(Guid meetingId, Guid participantId);
     Task<List<Participant>> GetMeetingParticipantsAsync(Guid meetingId);
@@ -198,11 +198,14 @@ public class MeetingServiceImpl : IMeetingService
             .ToListAsync();
     }
 
-    public async Task<Meeting> UpdateMeetingAsync(Guid id, UpdateMeetingRequest request)
+    public async Task<Meeting> UpdateMeetingAsync(Guid id, Guid organizerId, UpdateMeetingRequest request)
     {
         var meeting = await MeetingsForTenant().FirstOrDefaultAsync(m => m.Id == id);
         if (meeting == null)
             throw new InvalidOperationException("Meeting not found");
+
+        if (meeting.OrganizerId != organizerId)
+            throw new UnauthorizedAccessException("Only the organizer can update this meeting");
 
         var durationMinutes = ResolveDurationMinutes(request.StartTime, request.EndTime, request.DurationMinutes);
         await EnsureOrganizerHasNoOverlapAsync(meeting.OrganizerId, request.StartTime, request.StartTime.AddMinutes(durationMinutes), id);
@@ -262,11 +265,14 @@ public class MeetingServiceImpl : IMeetingService
         return meeting;
     }
 
-    public async Task DeleteMeetingAsync(Guid id)
+    public async Task DeleteMeetingAsync(Guid id, Guid organizerId)
     {
         var meeting = await MeetingsForTenant().FirstOrDefaultAsync(m => m.Id == id);
         if (meeting == null)
             throw new InvalidOperationException("Meeting not found");
+
+        if (meeting.OrganizerId != organizerId)
+            throw new UnauthorizedAccessException("Only the organizer can delete this meeting");
 
         meeting.IsActive = false;
         _context.Meetings.Update(meeting);
@@ -454,10 +460,25 @@ public class MeetingServiceImpl : IMeetingService
 
     public async Task<MeetingChatMessage> AddChatMessageAsync(Guid meetingId, CreateChatMessageRequest request)
     {
-        var meetingExists = await MeetingsForTenant().AnyAsync(meeting => meeting.Id == meetingId);
-        if (!meetingExists)
+        var meeting = await MeetingsForTenant()
+            .Include(item => item.Participants)
+            .FirstOrDefaultAsync(item => item.Id == meetingId);
+        if (meeting == null)
         {
             throw new InvalidOperationException("Meeting not found");
+        }
+
+        var canSend = meeting.OrganizerId == request.SenderId
+            || meeting.Participants.Any(participant => participant.UserId == request.SenderId && participant.LeftAt == null);
+        if (!canSend)
+        {
+            throw new UnauthorizedAccessException("Join the meeting before sending chat messages");
+        }
+
+        var messageText = (request.Message ?? string.Empty).TrimEnd();
+        if (string.IsNullOrWhiteSpace(messageText) && string.IsNullOrWhiteSpace(request.AttachmentUrl))
+        {
+            throw new InvalidOperationException("Message or attachment is required");
         }
 
         var message = new MeetingChatMessage
@@ -469,7 +490,11 @@ public class MeetingServiceImpl : IMeetingService
             RecipientUserId = request.RecipientUserId,
             RecipientName = request.RecipientName,
             Scope = request.RecipientUserId.HasValue ? ChatScope.Direct : ChatScope.Everyone,
-            Message = request.Message.TrimEnd(),
+            Message = messageText,
+            AttachmentFileName = request.AttachmentFileName,
+            AttachmentUrl = request.AttachmentUrl,
+            AttachmentContentType = request.AttachmentContentType,
+            AttachmentSizeBytes = request.AttachmentSizeBytes,
             SentAt = DateTime.UtcNow
         };
 

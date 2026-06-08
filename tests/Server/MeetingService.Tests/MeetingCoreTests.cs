@@ -45,6 +45,32 @@ public class MeetingCoreTests
     }
 
     [Fact]
+    public async Task Update_and_delete_meeting_require_the_organizer()
+    {
+        await using var db = MeetingTestFactory.CreateDbContext();
+        var service = MeetingTestFactory.CreateService(db);
+        var organizerId = Guid.NewGuid();
+        var attendeeId = Guid.NewGuid();
+        var meeting = await service.CreateMeetingAsync(
+            organizerId,
+            MeetingTestFactory.CreateMeetingRequest(DateTime.UtcNow.AddHours(2), 30));
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            service.UpdateMeetingAsync(meeting.Id, attendeeId, MeetingTestFactory.CreateUpdateMeetingRequest(DateTime.UtcNow.AddHours(3), 30)));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            service.DeleteMeetingAsync(meeting.Id, attendeeId));
+
+        var updated = await service.UpdateMeetingAsync(
+            meeting.Id,
+            organizerId,
+            MeetingTestFactory.CreateUpdateMeetingRequest(DateTime.UtcNow.AddHours(3), 30));
+        Assert.Equal(organizerId, updated.OrganizerId);
+
+        await service.DeleteMeetingAsync(meeting.Id, organizerId);
+        Assert.False((await db.Meetings.FindAsync(meeting.Id))!.IsActive);
+    }
+
+    [Fact]
     public async Task Personal_and_organization_workspaces_are_isolated()
     {
         await using var db = MeetingTestFactory.CreateDbContext();

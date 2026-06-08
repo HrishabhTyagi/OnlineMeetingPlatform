@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import AppShell from '../components/AppShell';
 import CalendarSyncPanel from '../components/CalendarSyncPanel';
 import { ProfileStatusMenu, UserAvatar, UserStatus, UserStatusBadge } from '../components/UserStatus';
-import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openMeetingJoinInNewTab, userAPI } from '../services/api';
+import { getMeetingJoinUrl, getOrganizationScopedPath, meetingAPI, openMeetingJoinInNewTab, openProtectedApiAsset, userAPI } from '../services/api';
 import { initializeSignalR, joinUserNotifications, notifyUserStatusChanged, onMeetingInvite, startSignalR } from '../services/signalR';
 import { useAuthStore } from '../store/authStore';
 import { Meeting, useMeetingStore } from '../store/meetingStore';
@@ -168,16 +168,6 @@ function toEditMeetingForm(meeting: Meeting): EditMeetingForm {
 
 function getJoinLink(meeting: Meeting) {
   return getMeetingJoinUrl(meeting.id, meeting.meetingLink);
-}
-
-function getRecordingLink(meeting: Meeting) {
-  if (!meeting.recordingUrl) {
-    return '';
-  }
-
-  return meeting.recordingUrl.startsWith('http')
-    ? meeting.recordingUrl
-    : `http://localhost:5000${meeting.recordingUrl}`;
 }
 
 function getMeetingEndDate(meeting: Meeting) {
@@ -1128,14 +1118,13 @@ function MeetingDetailsModal({
               </div>
 
               {meeting.recordingUrl && (
-                <a
-                  href={getRecordingLink(meeting)}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  onClick={() => openProtectedApiAsset(meeting.recordingUrl).catch(() => undefined)}
                   className="inline-flex rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
                 >
                   Open recording
-                </a>
+                </button>
               )}
 
               <div>
@@ -1967,14 +1956,13 @@ export default function Dashboard() {
                     <p className="font-semibold text-slate-950">{meeting.title}</p>
                     <p className="mt-1 text-sm text-slate-600">{formatDate(meeting.startTime)} at {formatTime(meeting.startTime)}</p>
                     <div className="mt-4 flex flex-wrap gap-2">
-                      <a
-                        href={getRecordingLink(meeting)}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => openProtectedApiAsset(meeting.recordingUrl).catch(() => undefined)}
                         className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
                       >
                         Open recording
-                      </a>
+                      </button>
                       <button
                         onClick={() => openMeetingDetails(meeting)}
                         className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"

@@ -190,6 +190,28 @@ internal static class MeetingTestFactory
         };
     }
 
+    public static UpdateMeetingRequest CreateUpdateMeetingRequest(
+        DateTime? start = null,
+        int durationMinutes = 60,
+        IEnumerable<string>? attendees = null)
+    {
+        return new UpdateMeetingRequest
+        {
+            Title = "Updated sprint planning",
+            Description = "Updated sprint scope",
+            StartTime = start ?? DateTime.UtcNow.AddHours(3),
+            DurationMinutes = durationMinutes,
+            AttendeeEmails = attendees?.ToList() ?? new List<string>(),
+            IsOnlineMeeting = true,
+            LobbyEnabled = true,
+            AllowChat = true,
+            AllowReactions = true,
+            AllowScreenShare = true,
+            AllowAttendeeUnmute = true,
+            MaxParticipants = 10
+        };
+    }
+
     public static ConversationMemberDto Member(Guid userId, string email, string name) => new()
     {
         UserId = userId,

@@ -6,7 +6,8 @@ namespace MeetingService.Services;
 public enum OrganizationFileKind
 {
     Recording,
-    ChatAttachment
+    ChatAttachment,
+    MeetingChatAttachment
 }
 
 public enum OrganizationStorageProvider
@@ -164,9 +165,12 @@ public class OrganizationStorageService : IOrganizationStorageService
             return $"{baseUrl}/{GetPublicFolderName(kind)}/{ownerId}/{Uri.EscapeDataString(fileName)}";
         }
 
-        return kind == OrganizationFileKind.Recording
-            ? $"/api/meetings/{ownerId}/recordings/{Uri.EscapeDataString(fileName)}"
-            : $"/api/conversations/{ownerId}/attachments/{Uri.EscapeDataString(fileName)}";
+        return kind switch
+        {
+            OrganizationFileKind.Recording => $"/api/meetings/{ownerId}/recordings/{Uri.EscapeDataString(fileName)}",
+            OrganizationFileKind.MeetingChatAttachment => $"/api/meetings/{ownerId}/chat/attachments/{Uri.EscapeDataString(fileName)}",
+            _ => $"/api/conversations/{ownerId}/attachments/{Uri.EscapeDataString(fileName)}"
+        };
     }
 
     private static OrganizationStorageProvider ParseProvider(string? value)
@@ -178,11 +182,21 @@ public class OrganizationStorageService : IOrganizationStorageService
 
     private static string GetPhysicalFolderName(OrganizationFileKind kind)
     {
-        return kind == OrganizationFileKind.Recording ? "Recordings" : "ChatAttachments";
+        return kind switch
+        {
+            OrganizationFileKind.Recording => "Recordings",
+            OrganizationFileKind.MeetingChatAttachment => "MeetingChatAttachments",
+            _ => "ChatAttachments"
+        };
     }
 
     private static string GetPublicFolderName(OrganizationFileKind kind)
     {
-        return kind == OrganizationFileKind.Recording ? "recordings" : "chat-attachments";
+        return kind switch
+        {
+            OrganizationFileKind.Recording => "recordings",
+            OrganizationFileKind.MeetingChatAttachment => "meeting-chat-attachments",
+            _ => "chat-attachments"
+        };
     }
 }

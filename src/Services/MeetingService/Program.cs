@@ -61,6 +61,8 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IOrganizationTenantContext, OrganizationTenantContext>();
+builder.Services.AddScoped<IOrganizationTenantAccessValidator, OrganizationTenantAccessValidator>();
+builder.Services.AddScoped<IMeetingAuthorizationService, MeetingAuthorizationService>();
 builder.Services.AddScoped<IMeetingService, MeetingServiceImpl>();
 builder.Services.AddScoped<ITeamSpaceService, TeamSpaceService>();
 builder.Services.AddScoped<IOrganizationStorageService, OrganizationStorageService>();
@@ -90,7 +92,7 @@ builder.Services.Configure<CalendarSyncOptions>(builder.Configuration.GetSection
 builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 builder.Services.AddRabbitMqEventBus(builder.Configuration, typeof(Program).Assembly);
 
-var allowedOrigins = GetAllowedOrigins(builder.Configuration, builder.Environment, "http://localhost:5173", "http://localhost:5174", "http://localhost:3000");
+var allowedOrigins = GetAllowedOrigins(builder.Configuration, builder.Environment, "http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "http://localhost:8091");
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
@@ -118,6 +120,7 @@ else
 UseSecurityHeaders(app);
 app.UseCors("AllowFrontend");
 app.UseAuthentication();
+app.UseMiddleware<OrganizationTenantAccessMiddleware>();
 app.UseAuthorization();
 app.MapControllers();
 

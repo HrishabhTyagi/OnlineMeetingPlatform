@@ -141,6 +141,51 @@ public class OrganizationControllerTests
     }
 
     [Fact]
+    public async Task Feature_toggles_return_catalog_and_store_tenant_values()
+    {
+        await using var db = CreateDbContext();
+        var controller = CreateController(db);
+        var created = await controller.CreateOrganization(new CreateOrganizationRequest { Name = "Feature Org" });
+        var organization = Assert.IsType<OrganizationSettingsDto>(Assert.IsType<CreatedAtActionResult>(created.Result).Value);
+
+        var catalogResult = await controller.GetFeatureToggles(organization.Id);
+        var catalog = Assert.IsType<List<OrganizationFeatureToggleDto>>(Assert.IsType<OkObjectResult>(catalogResult.Result).Value);
+        Assert.Contains(catalog, item => item.Key == "recording" && item.IsEnabled);
+
+        var updateResult = await controller.UpdateFeatureToggles(organization.Id, new UpdateOrganizationFeatureTogglesRequest
+        {
+            Features = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["recording"] = false,
+                ["whiteboard"] = false,
+                ["chat"] = true
+            }
+        });
+
+        var updated = Assert.IsType<List<OrganizationFeatureToggleDto>>(Assert.IsType<OkObjectResult>(updateResult.Result).Value);
+        Assert.False(updated.Single(item => item.Key == "recording").IsEnabled);
+        Assert.False(updated.Single(item => item.Key == "whiteboard").IsEnabled);
+        Assert.True(updated.Single(item => item.Key == "chat").IsEnabled);
+        Assert.Contains(await db.OrganizationAuditEvents.ToListAsync(), item => item.Action == "FeatureTogglesUpdated");
+    }
+
+    [Fact]
+    public async Task Feature_toggles_reject_unknown_feature_keys()
+    {
+        await using var db = CreateDbContext();
+        var controller = CreateController(db);
+        var created = await controller.CreateOrganization(new CreateOrganizationRequest { Name = "Feature Org" });
+        var organization = Assert.IsType<OrganizationSettingsDto>(Assert.IsType<CreatedAtActionResult>(created.Result).Value);
+
+        var result = await controller.UpdateFeatureToggles(organization.Id, new UpdateOrganizationFeatureTogglesRequest
+        {
+            Features = new Dictionary<string, bool> { ["unknownFeature"] = true }
+        });
+
+        Assert.IsType<BadRequestObjectResult>(result.Result);
+    }
+
+    [Fact]
     public async Task GetMyOrganizations_returns_only_current_user_memberships()
     {
         await using var db = CreateDbContext();
@@ -162,6 +207,31 @@ public class OrganizationControllerTests
 
         Assert.Single(organizations);
         Assert.Equal(ownedOrganization.Id, organizations[0].Id);
+    }
+
+    [Fact]
+    public async Task Internal_membership_validation_rejects_non_members_and_returns_role_for_members()
+    {
+        await using var db = CreateDbContext();
+        var ownerId = Guid.NewGuid();
+        var controller = CreateController(db, ownerId, "owner@samvaad.test");
+        var created = await controller.CreateOrganization(new CreateOrganizationRequest { Name = "Secure Org" });
+        var organization = Assert.IsType<OrganizationSettingsDto>(Assert.IsType<CreatedAtActionResult>(created.Result).Value);
+
+        controller.ControllerContext.HttpContext.Request.Headers["X-Organization-Id"] = organization.Id.ToString();
+        controller.ControllerContext.HttpContext.Request.Headers["X-User-Id"] = ownerId.ToString();
+        controller.ControllerContext.HttpContext.Request.Headers["X-User-Email"] = "owner@samvaad.test";
+
+        var allowed = await controller.ValidateCurrentMembershipInternal();
+        var allowedDto = Assert.IsType<OrganizationMembershipValidationDto>(Assert.IsType<OkObjectResult>(allowed.Result).Value);
+        Assert.True(allowedDto.IsMember);
+        Assert.Equal("Owner", allowedDto.Role);
+
+        controller.ControllerContext.HttpContext.Request.Headers["X-User-Id"] = Guid.NewGuid().ToString();
+        controller.ControllerContext.HttpContext.Request.Headers["X-User-Email"] = "outsider@samvaad.test";
+
+        var forbidden = await controller.ValidateCurrentMembershipInternal();
+        Assert.IsType<ForbidResult>(forbidden.Result);
     }
 
     private sealed class TestWebHostEnvironment : IWebHostEnvironment

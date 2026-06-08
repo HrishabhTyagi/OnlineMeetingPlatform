@@ -42,7 +42,7 @@ export function resolveApiAssetUrl(url?: string | null) {
   return `${API_ORIGIN}${url.startsWith('/') ? url : `/${url}`}`;
 }
 
-function getStoredAuthToken() {
+export function getStoredAuthToken() {
   try {
     const activeAccountId = sessionStorage.getItem(ACTIVE_ACCOUNT_ID_KEY);
     const accounts = JSON.parse(sessionStorage.getItem(ACCOUNTS_KEY) || localStorage.getItem(ACCOUNTS_KEY) || '[]');
@@ -58,6 +58,27 @@ function getStoredAuthToken() {
   }
 
   return sessionStorage.getItem('authToken') || localStorage.getItem('authToken');
+}
+
+export async function openProtectedApiAsset(url?: string | null) {
+  const assetUrl = resolveApiAssetUrl(url);
+  if (!assetUrl) {
+    return;
+  }
+
+  const token = getStoredAuthToken();
+  const response = await fetch(assetUrl, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+
+  if (!response.ok) {
+    throw new Error(await response.text() || 'Unable to open protected file');
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  window.open(objectUrl, '_blank', 'noopener,noreferrer');
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
 export function getActiveOrganization(): ActiveOrganization | null {

@@ -160,6 +160,10 @@ public class MeetingChatMessage
     public string? RecipientName { get; set; }
     public ChatScope Scope { get; set; } = ChatScope.Everyone;
     public string Message { get; set; } = string.Empty;
+    public string? AttachmentFileName { get; set; }
+    public string? AttachmentUrl { get; set; }
+    public string? AttachmentContentType { get; set; }
+    public long? AttachmentSizeBytes { get; set; }
     public DateTime SentAt { get; set; } = DateTime.UtcNow;
     public bool IsDeleted { get; set; } = false;
 

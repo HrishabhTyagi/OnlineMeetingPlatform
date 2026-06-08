@@ -307,6 +307,10 @@ public class CreateChatMessageRequest
     public Guid? RecipientUserId { get; set; }
     public string? RecipientName { get; set; }
     public string Message { get; set; } = string.Empty;
+    public string? AttachmentFileName { get; set; }
+    public string? AttachmentUrl { get; set; }
+    public string? AttachmentContentType { get; set; }
+    public long? AttachmentSizeBytes { get; set; }
 }
 
 public class ChatMessageDto
@@ -319,6 +323,10 @@ public class ChatMessageDto
     public string? RecipientName { get; set; }
     public string Scope { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
+    public string? AttachmentFileName { get; set; }
+    public string? AttachmentUrl { get; set; }
+    public string? AttachmentContentType { get; set; }
+    public long? AttachmentSizeBytes { get; set; }
     public DateTime SentAt { get; set; }
 }
 

@@ -153,6 +153,11 @@ public class ConversationsController : ControllerBase
     [HttpPost("{conversationId}/messages")]
     public async Task<ActionResult<ConversationMessageDto>> SendMessage(Guid conversationId, [FromBody] SendConversationMessageRequest request)
     {
+        if (!TryGetCurrentUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
         if (string.IsNullOrWhiteSpace(request.Message))
         {
             return BadRequest("Message is required");
@@ -160,6 +165,8 @@ public class ConversationsController : ControllerBase
 
         try
         {
+            request.SenderId = userId;
+            request.SenderName = GetCurrentUserName();
             var message = await _meetingService.AddConversationMessageAsync(conversationId, request);
             return Ok(MapMessageToDto(message));
         }

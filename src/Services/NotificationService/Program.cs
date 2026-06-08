@@ -29,6 +29,7 @@ if (!string.IsNullOrWhiteSpace(notificationConnection))
 {
     builder.Services.AddDbContext<NotificationDbContext>(options => options.UseNpgsql(notificationConnection));
     builder.Services.AddScoped<INotificationEventCheckpointStore, EfNotificationEventCheckpointStore>();
+    builder.Services.AddHttpClient<INotificationPushSender, ExpoNotificationPushSender>();
 }
 else
 {
@@ -38,6 +39,7 @@ else
     }
 
     builder.Services.AddSingleton<INotificationEventCheckpointStore, InMemoryNotificationEventCheckpointStore>();
+    builder.Services.AddSingleton<INotificationPushSender, NoopNotificationPushSender>();
 }
 
 builder.Services.AddRabbitMqEventBus(builder.Configuration, typeof(Program).Assembly);
@@ -81,7 +83,7 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
-var allowedOrigins = GetAllowedOrigins(builder.Configuration, builder.Environment, "http://localhost:5173", "http://localhost:5174", "http://localhost:3000");
+var allowedOrigins = GetAllowedOrigins(builder.Configuration, builder.Environment, "http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "http://localhost:8091");
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>

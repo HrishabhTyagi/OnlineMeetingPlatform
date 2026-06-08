@@ -16,6 +16,21 @@ public class OrganizationsController : ControllerBase
 {
     private static readonly TimeSpan OrganizationSettingsTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan OrganizationUsageTtl = TimeSpan.FromSeconds(60);
+    private static readonly IReadOnlyList<FeatureDefinition> FeatureCatalog = new List<FeatureDefinition>
+    {
+        new("meetings", "Meetings", "Create, schedule, join, and manage online meetings.", "Meetings", true),
+        new("directCalls", "Direct calls", "Call another available user directly from chat or meetings.", "Meetings", true),
+        new("screenSharing", "Screen sharing", "Allow users to present their screen during meetings.", "Meetings", true),
+        new("recording", "Meeting recording", "Record meetings and store recordings using tenant storage settings.", "Meetings", true),
+        new("whiteboard", "Whiteboard", "Use the shared meeting whiteboard during and after meetings.", "Meetings", true),
+        new("chat", "Chat", "Enable direct and group conversations.", "Messaging", true),
+        new("fileSharing", "File sharing", "Allow document, image, and screenshot sharing in chats.", "Messaging", true),
+        new("tasks", "Tasks", "Create and manage tasks from chat messages.", "Productivity", true),
+        new("calendarSync", "Calendar sync", "Connect external calendar providers such as Google or Outlook.", "Productivity", true),
+        new("externalGuests", "External guests", "Allow invites and access for users outside the primary domain.", "Access", true),
+        new("mobilePush", "Mobile push notifications", "Send mobile push notifications for calls, chats, tasks, and recordings.", "Notifications", true),
+        new("licenseRequests", "License requests", "Show the purchase/license request flow for end users.", "Commerce", true)
+    };
 
     private readonly OrganizationDbContext _context;
     private readonly IAppCache _cache;
@@ -267,6 +282,80 @@ public class OrganizationsController : ControllerBase
             .ToListAsync();
 
         return Ok(events.Select(MapAuditEventToDto).ToList());
+    }
+
+    [HttpGet("{id:guid}/features")]
+    [Authorize]
+    public async Task<ActionResult<List<OrganizationFeatureToggleDto>>> GetFeatureToggles(Guid id)
+    {
+        var settings = await _context.OrganizationSettings.FirstOrDefaultAsync(item => item.Id == id);
+        if (settings == null)
+        {
+            return NotFound("Organization not found");
+        }
+
+        return Ok(await BuildFeatureToggleDtosAsync(settings.Id));
+    }
+
+    [HttpPut("{id:guid}/features")]
+    [Authorize]
+    public async Task<ActionResult<List<OrganizationFeatureToggleDto>>> UpdateFeatureToggles(
+        Guid id,
+        [FromBody] UpdateOrganizationFeatureTogglesRequest request)
+    {
+        var settings = await _context.OrganizationSettings.FirstOrDefaultAsync(item => item.Id == id);
+        if (settings == null)
+        {
+            return NotFound("Organization not found");
+        }
+
+        var knownKeys = FeatureCatalog.Select(feature => feature.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unsupportedKeys = request.Features.Keys.Where(key => !knownKeys.Contains(key)).ToList();
+        if (unsupportedKeys.Count > 0)
+        {
+            return BadRequest($"Unsupported feature toggle: {unsupportedKeys[0]}");
+        }
+
+        var existing = await _context.OrganizationFeatureToggles
+            .Where(item => item.OrganizationId == id)
+            .ToDictionaryAsync(item => item.FeatureKey, StringComparer.OrdinalIgnoreCase);
+
+        var changed = new List<string>();
+        foreach (var feature in FeatureCatalog)
+        {
+            if (!request.Features.TryGetValue(feature.Key, out var enabled))
+            {
+                continue;
+            }
+
+            if (!existing.TryGetValue(feature.Key, out var toggle))
+            {
+                toggle = new OrganizationFeatureToggle
+                {
+                    Id = Guid.NewGuid(),
+                    OrganizationId = id,
+                    FeatureKey = feature.Key
+                };
+                _context.OrganizationFeatureToggles.Add(toggle);
+            }
+
+            if (toggle.IsEnabled != enabled)
+            {
+                changed.Add($"{feature.Name}: {(enabled ? "enabled" : "disabled")}");
+            }
+
+            toggle.IsEnabled = enabled;
+            toggle.UpdatedAt = DateTime.UtcNow;
+        }
+
+        if (changed.Count > 0)
+        {
+            AddAuditEvent(settings, "FeatureTogglesUpdated", "FeatureToggle", settings.Id.ToString(), $"Updated features: {string.Join(", ", changed)}.");
+        }
+
+        await _context.SaveChangesAsync();
+        await BumpOrganizationCacheAsync();
+        return Ok(await BuildFeatureToggleDtosAsync(id));
     }
 
     [HttpPut("current")]
@@ -525,6 +614,66 @@ public class OrganizationsController : ControllerBase
         return Ok(dto);
     }
 
+    [HttpGet("current/features/internal")]
+    [AllowAnonymous]
+    public async Task<ActionResult<List<OrganizationFeatureToggleDto>>> GetCurrentFeatureTogglesInternal()
+    {
+        if (!IsAuthorizedInternalRequest())
+        {
+            return Unauthorized();
+        }
+
+        var settings = await GetOrCreateSettingsAsync();
+        return Ok(await BuildFeatureToggleDtosAsync(settings.Id));
+    }
+
+    [HttpGet("current/membership/internal")]
+    [AllowAnonymous]
+    public async Task<ActionResult<OrganizationMembershipValidationDto>> ValidateCurrentMembershipInternal()
+    {
+        if (!IsAuthorizedInternalRequest())
+        {
+            return Unauthorized();
+        }
+
+        var settings = await FindByTenantHeadersAsync();
+        if (settings == null)
+        {
+            return NotFound("Organization not found");
+        }
+
+        var userIdHeader = Request.Headers["X-User-Id"].FirstOrDefault();
+        var emailHeader = Request.Headers["X-User-Email"].FirstOrDefault()?.Trim().ToLowerInvariant();
+        var hasUserId = Guid.TryParse(userIdHeader, out var userId);
+        if (!hasUserId && string.IsNullOrWhiteSpace(emailHeader))
+        {
+            return BadRequest("User identity is required");
+        }
+
+        var member = await _context.OrganizationMembers
+            .FirstOrDefaultAsync(item =>
+                item.OrganizationId == settings.Id &&
+                ((hasUserId && item.UserId == userId) ||
+                 (!string.IsNullOrWhiteSpace(emailHeader) && item.Email.ToLower() == emailHeader)));
+
+        if (member == null)
+        {
+            return Forbid();
+        }
+
+        await EnsureSlugAsync(settings);
+        return Ok(new OrganizationMembershipValidationDto
+        {
+            IsMember = true,
+            OrganizationId = settings.Id,
+            OrganizationName = settings.Name,
+            OrganizationSlug = settings.Slug ?? NormalizeSlug(settings.Name),
+            UserId = member.UserId,
+            Email = member.Email,
+            Role = member.Role.ToString()
+        });
+    }
+
     private bool IsAuthorizedInternalRequest()
     {
         var expected = _configuration["InternalService:ApiKey"];
@@ -757,6 +906,32 @@ public class OrganizationsController : ControllerBase
         };
     }
 
+    private async Task<List<OrganizationFeatureToggleDto>> BuildFeatureToggleDtosAsync(Guid organizationId)
+    {
+        var toggles = await _context.OrganizationFeatureToggles
+            .Where(item => item.OrganizationId == organizationId)
+            .ToDictionaryAsync(item => item.FeatureKey, StringComparer.OrdinalIgnoreCase);
+
+        return FeatureCatalog
+            .Select(feature =>
+            {
+                toggles.TryGetValue(feature.Key, out var toggle);
+                return new OrganizationFeatureToggleDto
+                {
+                    Key = feature.Key,
+                    Name = feature.Name,
+                    Description = feature.Description,
+                    Category = feature.Category,
+                    DefaultEnabled = feature.DefaultEnabled,
+                    IsEnabled = toggle?.IsEnabled ?? feature.DefaultEnabled,
+                    UpdatedAt = toggle?.UpdatedAt
+                };
+            })
+            .OrderBy(item => item.Category)
+            .ThenBy(item => item.Name)
+            .ToList();
+    }
+
     private static int EstimateActiveStorageGb(OrganizationSettings settings)
     {
         var recordingBudgetGb = Math.Max(1, (int)Math.Round((settings.MaxRecordingMegabytes * 20m) / 1024m));
@@ -831,4 +1006,6 @@ public class OrganizationsController : ControllerBase
 
         return CacheKey.Tenant(null, Request.Headers["X-Organization-Slug"].FirstOrDefault());
     }
+
+    private sealed record FeatureDefinition(string Key, string Name, string Description, string Category, bool DefaultEnabled);
 }

@@ -10,11 +10,13 @@ public sealed class ConversationMessageCreatedNotificationHandler : IEventHandle
 {
     private readonly IHubContext<NotificationHub> _hubContext;
     private readonly INotificationEventCheckpointStore _checkpointStore;
+    private readonly INotificationPushSender _pushSender;
 
-    public ConversationMessageCreatedNotificationHandler(IHubContext<NotificationHub> hubContext, INotificationEventCheckpointStore checkpointStore)
+    public ConversationMessageCreatedNotificationHandler(IHubContext<NotificationHub> hubContext, INotificationEventCheckpointStore checkpointStore, INotificationPushSender? pushSender = null)
     {
         _hubContext = hubContext;
         _checkpointStore = checkpointStore;
+        _pushSender = pushSender ?? new NoopNotificationPushSender();
     }
 
     public async Task HandleAsync(ConversationMessageCreatedEvent message, CancellationToken cancellationToken)
@@ -44,6 +46,12 @@ public sealed class ConversationMessageCreatedNotificationHandler : IEventHandle
         {
             await _hubContext.Clients.Group($"user_{recipientUserId}").SendAsync("ConversationMessageReceived", payload, ct);
         }
+        await _pushSender.SendToUsersAsync(DistinctIds(message.RecipientUserIds), message.SenderName, message.Message, new Dictionary<string, string>
+        {
+            ["type"] = "chat",
+            ["conversationId"] = message.ConversationId,
+            ["messageId"] = message.MessageId
+        }, ct);
         }, cancellationToken);
     }
 
@@ -125,11 +133,13 @@ public sealed class IncomingMeetingCallNotificationHandler : IEventHandler<Incom
 {
     private readonly IHubContext<NotificationHub> _hubContext;
     private readonly INotificationEventCheckpointStore _checkpointStore;
+    private readonly INotificationPushSender _pushSender;
 
-    public IncomingMeetingCallNotificationHandler(IHubContext<NotificationHub> hubContext, INotificationEventCheckpointStore checkpointStore)
+    public IncomingMeetingCallNotificationHandler(IHubContext<NotificationHub> hubContext, INotificationEventCheckpointStore checkpointStore, INotificationPushSender? pushSender = null)
     {
         _hubContext = hubContext;
         _checkpointStore = checkpointStore;
+        _pushSender = pushSender ?? new NoopNotificationPushSender();
     }
 
     public async Task HandleAsync(IncomingMeetingCallRequestedEvent message, CancellationToken cancellationToken)
@@ -152,6 +162,13 @@ public sealed class IncomingMeetingCallNotificationHandler : IEventHandler<Incom
         {
             await _hubContext.Clients.Group($"user_{recipientUserId}").SendAsync("IncomingCall", payload, ct);
         }
+        await _pushSender.SendToUsersAsync(message.RecipientUserIds, $"{message.CallerName} is calling", $"{payload.CallType} call", new Dictionary<string, string>
+        {
+            ["type"] = "call",
+            ["meetingId"] = message.MeetingId,
+            ["conversationId"] = message.ConversationId ?? string.Empty,
+            ["callLogId"] = message.CallLogId ?? string.Empty
+        }, ct);
         }, cancellationToken);
     }
 }
@@ -216,11 +233,13 @@ public sealed class ConversationTaskAssignedNotificationHandler : IEventHandler<
 {
     private readonly IHubContext<NotificationHub> _hubContext;
     private readonly INotificationEventCheckpointStore _checkpointStore;
+    private readonly INotificationPushSender _pushSender;
 
-    public ConversationTaskAssignedNotificationHandler(IHubContext<NotificationHub> hubContext, INotificationEventCheckpointStore checkpointStore)
+    public ConversationTaskAssignedNotificationHandler(IHubContext<NotificationHub> hubContext, INotificationEventCheckpointStore checkpointStore, INotificationPushSender? pushSender = null)
     {
         _hubContext = hubContext;
         _checkpointStore = checkpointStore;
+        _pushSender = pushSender ?? new NoopNotificationPushSender();
     }
 
     public async Task HandleAsync(ConversationTaskAssignedEvent message, CancellationToken cancellationToken)
@@ -244,6 +263,12 @@ public sealed class ConversationTaskAssignedNotificationHandler : IEventHandler<
 
         await _hubContext.Clients.Group($"user_{message.AssigneeUserId}").SendAsync("TaskAssigned", payload, ct);
         await _hubContext.Clients.Group($"user_{message.AssigneeUserId}").SendAsync("ReceiveNotification", $"Task assigned: {message.Title}", ct);
+        await _pushSender.SendToUsersAsync(new[] { message.AssigneeUserId }, "Task assigned", message.Title, new Dictionary<string, string>
+        {
+            ["type"] = "tasks",
+            ["conversationId"] = message.ConversationId.ToString(),
+            ["taskId"] = message.TaskId.ToString()
+        }, ct);
         }, cancellationToken);
     }
 }
@@ -252,11 +277,13 @@ public sealed class MeetingRecordingReadyNotificationHandler : IEventHandler<Mee
 {
     private readonly IHubContext<NotificationHub> _hubContext;
     private readonly INotificationEventCheckpointStore _checkpointStore;
+    private readonly INotificationPushSender _pushSender;
 
-    public MeetingRecordingReadyNotificationHandler(IHubContext<NotificationHub> hubContext, INotificationEventCheckpointStore checkpointStore)
+    public MeetingRecordingReadyNotificationHandler(IHubContext<NotificationHub> hubContext, INotificationEventCheckpointStore checkpointStore, INotificationPushSender? pushSender = null)
     {
         _hubContext = hubContext;
         _checkpointStore = checkpointStore;
+        _pushSender = pushSender ?? new NoopNotificationPushSender();
     }
 
     public async Task HandleAsync(MeetingRecordingReadyEvent message, CancellationToken cancellationToken)
@@ -276,6 +303,12 @@ public sealed class MeetingRecordingReadyNotificationHandler : IEventHandler<Mee
             await _hubContext.Clients.Group($"user_{recipientUserId}").SendAsync("MeetingRecordingReady", payload, ct);
             await _hubContext.Clients.Group($"user_{recipientUserId}").SendAsync("ReceiveNotification", $"Recording is ready: {message.MeetingTitle}", ct);
         }
+        await _pushSender.SendToUsersAsync(message.RecipientUserIds, "Recording is ready", message.MeetingTitle, new Dictionary<string, string>
+        {
+            ["type"] = "recording",
+            ["meetingId"] = message.MeetingId.ToString(),
+            ["recordingUrl"] = message.RecordingUrl
+        }, ct);
         }, cancellationToken);
     }
 }

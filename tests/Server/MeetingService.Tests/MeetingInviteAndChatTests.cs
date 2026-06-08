@@ -172,6 +172,70 @@ public class MeetingInviteAndChatTests
     }
 
     [Fact]
+    public async Task Meeting_chat_requires_organizer_or_joined_participant()
+    {
+        await using var db = MeetingTestFactory.CreateDbContext();
+        var service = MeetingTestFactory.CreateService(db);
+        var organizerId = Guid.NewGuid();
+        var outsiderId = Guid.NewGuid();
+        var meeting = await service.CreateMeetingAsync(
+            organizerId,
+            MeetingTestFactory.CreateMeetingRequest(DateTime.UtcNow.AddMinutes(-5), 60));
+
+        await service.AddChatMessageAsync(meeting.Id, new CreateChatMessageRequest
+        {
+            SenderId = organizerId,
+            SenderName = "Organizer",
+            Message = "Organizer can post"
+        });
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            service.AddChatMessageAsync(meeting.Id, new CreateChatMessageRequest
+            {
+                SenderId = outsiderId,
+                SenderName = "Outsider",
+                Message = "Outsider should not post"
+            }));
+    }
+
+    [Fact]
+    public async Task Meeting_chat_allows_attachment_messages_for_joined_participants()
+    {
+        await using var db = MeetingTestFactory.CreateDbContext();
+        var service = MeetingTestFactory.CreateService(db);
+        var organizerId = Guid.NewGuid();
+        var attendeeId = Guid.NewGuid();
+        var meeting = await service.CreateMeetingAsync(
+            organizerId,
+            MeetingTestFactory.CreateMeetingRequest(DateTime.UtcNow.AddMinutes(-5), 60));
+
+        await service.JoinMeetingAsync(meeting.Id, attendeeId, new JoinMeetingRequest
+        {
+            UserEmail = "alex@samvaad.test",
+            UserName = "Alex"
+        });
+
+        var message = await service.AddChatMessageAsync(meeting.Id, new CreateChatMessageRequest
+        {
+            SenderId = attendeeId,
+            SenderName = "Alex",
+            Message = "",
+            AttachmentFileName = "screenshot.png",
+            AttachmentUrl = $"/api/meetings/{meeting.Id}/chat/attachments/screenshot.png",
+            AttachmentContentType = "image/png",
+            AttachmentSizeBytes = 2048
+        });
+
+        Assert.Equal("screenshot.png", message.AttachmentFileName);
+        Assert.Equal("image/png", message.AttachmentContentType);
+
+        var attendeeMessages = await service.GetChatMessagesAsync(meeting.Id, attendeeId);
+        var stored = Assert.Single(attendeeMessages);
+        Assert.Equal(message.AttachmentUrl, stored.AttachmentUrl);
+        Assert.Equal(2048, stored.AttachmentSizeBytes);
+    }
+
+    [Fact]
     public async Task Lobby_recording_and_end_meeting_lifecycle_updates_state()
     {
         await using var db = MeetingTestFactory.CreateDbContext();

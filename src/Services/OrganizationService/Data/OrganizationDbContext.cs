@@ -12,6 +12,7 @@ public class OrganizationDbContext : DbContext
     public DbSet<OrganizationSettings> OrganizationSettings { get; set; } = null!;
     public DbSet<OrganizationMember> OrganizationMembers { get; set; } = null!;
     public DbSet<OrganizationAuditEvent> OrganizationAuditEvents { get; set; } = null!;
+    public DbSet<OrganizationFeatureToggle> OrganizationFeatureToggles { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -64,6 +65,18 @@ public class OrganizationDbContext : DbContext
             entity.Property(e => e.Summary).IsRequired().HasColumnType("text");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.HasIndex(e => new { e.OrganizationId, e.CreatedAt });
+        });
+
+        modelBuilder.Entity<OrganizationFeatureToggle>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.FeatureKey).IsRequired().HasMaxLength(120);
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.OrganizationId, e.FeatureKey }).IsUnique();
+            entity.HasOne(e => e.Organization)
+                .WithMany()
+                .HasForeignKey(e => e.OrganizationId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

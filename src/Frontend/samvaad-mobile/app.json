@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Samvaad",
+    "slug": "samvaad-mobile",
+    "scheme": "samvaad",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.samvaad.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Samvaad uses the camera for video meetings and avatar capture.",
+        "NSMicrophoneUsageDescription": "Samvaad uses the microphone for calls and meetings.",
+        "NSPhotoLibraryUsageDescription": "Samvaad lets you share images and screenshots in chat."
+      }
+    },
+    "android": {
+      "package": "com.samvaad.mobile",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE",
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "plugins": [
+      "expo-notifications",
+      "expo-document-picker",
+      "expo-image-picker"
+    ]
+  }
+}

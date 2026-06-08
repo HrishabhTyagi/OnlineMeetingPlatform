@@ -15,12 +15,18 @@ public class ParticipantsController : ControllerBase
     private static readonly TimeSpan ParticipantListTtl = TimeSpan.FromSeconds(10);
 
     private readonly IMeetingService _meetingService;
+    private readonly IMeetingAuthorizationService _authorizationService;
     private readonly IAppCache _cache;
     private readonly ILogger<ParticipantsController> _logger;
 
-    public ParticipantsController(IMeetingService meetingService, IAppCache cache, ILogger<ParticipantsController> logger)
+    public ParticipantsController(
+        IMeetingService meetingService,
+        IMeetingAuthorizationService authorizationService,
+        IAppCache cache,
+        ILogger<ParticipantsController> logger)
     {
         _meetingService = meetingService;
+        _authorizationService = authorizationService;
         _cache = cache;
         _logger = logger;
     }
@@ -56,6 +62,22 @@ public class ParticipantsController : ControllerBase
     {
         try
         {
+            if (!TryGetCurrentUserId(out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var authorization = await AuthorizeParticipantMutationAsync(meetingId, participantId, currentUserId, allowOrganizer: true);
+            if (authorization == ParticipantAuthorization.NotFound)
+            {
+                return NotFound();
+            }
+
+            if (authorization == ParticipantAuthorization.Forbidden)
+            {
+                return Forbid();
+            }
+
             var success = await _meetingService.LeaveMeetingAsync(meetingId, participantId);
             if (!success)
                 return NotFound();
@@ -98,6 +120,22 @@ public class ParticipantsController : ControllerBase
     {
         try
         {
+            if (!TryGetCurrentUserId(out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var authorization = await AuthorizeParticipantMutationAsync(meetingId, participantId, currentUserId, allowOrganizer: true);
+            if (authorization == ParticipantAuthorization.NotFound)
+            {
+                return NotFound();
+            }
+
+            if (authorization == ParticipantAuthorization.Forbidden)
+            {
+                return Forbid();
+            }
+
             var success = await _meetingService.UpdateParticipantStatusAsync(participantId, request.AudioEnabled, request.VideoEnabled, request.ScreenSharing);
             if (!success)
                 return NotFound();
@@ -113,10 +151,20 @@ public class ParticipantsController : ControllerBase
     }
 
     [HttpPut("{participantId}/role")]
-    public async Task<IActionResult> UpdateParticipantRole(Guid participantId, [FromBody] UpdateParticipantRoleRequest request)
+    public async Task<IActionResult> UpdateParticipantRole(Guid meetingId, Guid participantId, [FromBody] UpdateParticipantRoleRequest request)
     {
         try
         {
+            if (!TryGetCurrentUserId(out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            if (!await _authorizationService.IsOrganizerAsync(meetingId, currentUserId))
+            {
+                return Forbid();
+            }
+
             if (!Enum.TryParse<ParticipantRole>(request.Role, true, out var role))
             {
                 return BadRequest("Invalid participant role");
@@ -137,10 +185,26 @@ public class ParticipantsController : ControllerBase
     }
 
     [HttpPut("{participantId}/hand")]
-    public async Task<ActionResult<ParticipantDto>> UpdateParticipantHand(Guid participantId, [FromBody] UpdateParticipantHandRequest request)
+    public async Task<ActionResult<ParticipantDto>> UpdateParticipantHand(Guid meetingId, Guid participantId, [FromBody] UpdateParticipantHandRequest request)
     {
         try
         {
+            if (!TryGetCurrentUserId(out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var authorization = await AuthorizeParticipantMutationAsync(meetingId, participantId, currentUserId, allowOrganizer: true);
+            if (authorization == ParticipantAuthorization.NotFound)
+            {
+                return NotFound();
+            }
+
+            if (authorization == ParticipantAuthorization.Forbidden)
+            {
+                return Forbid();
+            }
+
             var participant = await _meetingService.UpdateParticipantHandAsync(participantId, request.IsHandRaised);
             if (participant == null)
                 return NotFound();
@@ -156,10 +220,26 @@ public class ParticipantsController : ControllerBase
     }
 
     [HttpPut("{participantId}/reaction")]
-    public async Task<ActionResult<ParticipantDto>> UpdateParticipantReaction(Guid participantId, [FromBody] UpdateParticipantReactionRequest request)
+    public async Task<ActionResult<ParticipantDto>> UpdateParticipantReaction(Guid meetingId, Guid participantId, [FromBody] UpdateParticipantReactionRequest request)
     {
         try
         {
+            if (!TryGetCurrentUserId(out var currentUserId))
+            {
+                return Unauthorized();
+            }
+
+            var authorization = await AuthorizeParticipantMutationAsync(meetingId, participantId, currentUserId, allowOrganizer: false);
+            if (authorization == ParticipantAuthorization.NotFound)
+            {
+                return NotFound();
+            }
+
+            if (authorization == ParticipantAuthorization.Forbidden)
+            {
+                return Forbid();
+            }
+
             var participant = await _meetingService.UpdateParticipantReactionAsync(participantId, request.Reaction);
             if (participant == null)
                 return NotFound();
@@ -172,6 +252,40 @@ public class ParticipantsController : ControllerBase
             _logger.LogError(ex, "Error updating participant reaction");
             return StatusCode(500, "An error occurred");
         }
+    }
+
+    private async Task<ParticipantAuthorization> AuthorizeParticipantMutationAsync(
+        Guid meetingId,
+        Guid participantId,
+        Guid currentUserId,
+        bool allowOrganizer)
+    {
+        var participant = (await _meetingService.GetMeetingParticipantsAsync(meetingId))
+            .FirstOrDefault(item => item.Id == participantId);
+        if (participant == null)
+        {
+            return ParticipantAuthorization.NotFound;
+        }
+
+        if (await _authorizationService.CanManageParticipantAsync(meetingId, participantId, currentUserId, allowOrganizer))
+        {
+            return ParticipantAuthorization.Allowed;
+        }
+
+        return ParticipantAuthorization.Forbidden;
+    }
+
+    private bool TryGetCurrentUserId(out Guid userId)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return Guid.TryParse(userIdClaim, out userId);
+    }
+
+    private enum ParticipantAuthorization
+    {
+        Allowed,
+        Forbidden,
+        NotFound
     }
 
     private ParticipantDto MapToDto(Participant participant)

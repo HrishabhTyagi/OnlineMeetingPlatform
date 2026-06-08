@@ -20,25 +20,25 @@ public class MeetingsController : ControllerBase
 
     private readonly MeetingDbContext _context;
     private readonly IMeetingService _meetingService;
+    private readonly IMeetingAuthorizationService _authorizationService;
     private readonly IOrganizationStorageService _storageService;
     private readonly IAppCache _cache;
     private readonly ILogger<MeetingsController> _logger;
-    private readonly IConfiguration _configuration;
 
     public MeetingsController(
         MeetingDbContext context,
         IMeetingService meetingService,
+        IMeetingAuthorizationService authorizationService,
         IOrganizationStorageService storageService,
         IAppCache cache,
-        ILogger<MeetingsController> logger,
-        IConfiguration configuration)
+        ILogger<MeetingsController> logger)
     {
         _context = context;
         _meetingService = meetingService;
+        _authorizationService = authorizationService;
         _storageService = storageService;
         _cache = cache;
         _logger = logger;
-        _configuration = configuration;
     }
 
     [HttpPost]
@@ -288,9 +288,18 @@ public class MeetingsController : ControllerBase
     {
         try
         {
-            var meeting = await _meetingService.UpdateMeetingAsync(id, request);
+            if (!TryGetCurrentUserId(out var organizerId))
+            {
+                return Unauthorized();
+            }
+
+            var meeting = await _meetingService.UpdateMeetingAsync(id, organizerId, request);
             await BumpMeetingCacheAsync();
             return Ok(MapToDto(meeting));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
         }
         catch (InvalidOperationException ex)
         {
@@ -334,9 +343,22 @@ public class MeetingsController : ControllerBase
     {
         try
         {
-            await _meetingService.DeleteMeetingAsync(id);
+            if (!TryGetCurrentUserId(out var organizerId))
+            {
+                return Unauthorized();
+            }
+
+            await _meetingService.DeleteMeetingAsync(id, organizerId);
             await BumpMeetingCacheAsync();
             return NoContent();
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(ex.Message);
         }
         catch (Exception ex)
         {
@@ -628,7 +650,7 @@ public class MeetingsController : ControllerBase
                 return NotFound("Meeting not found");
             }
 
-            if (meeting.OrganizerId != currentUserId)
+            if (!await _authorizationService.CanUploadRecordingAsync(id, currentUserId))
             {
                 return Forbid();
             }
@@ -660,27 +682,18 @@ public class MeetingsController : ControllerBase
     }
 
     [HttpGet("{id}/recordings/{fileName}")]
-    [AllowAnonymous]
     public async Task<IActionResult> GetRecording(Guid id, string fileName)
     {
-        if (!_configuration.GetValue<bool>("Security:AllowPublicRecordings"))
+        var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(currentUserIdText, out var currentUserId))
         {
-            var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (!Guid.TryParse(currentUserIdText, out var currentUserId))
-            {
-                return Unauthorized();
-            }
+            return Unauthorized();
+        }
 
-            var currentUserEmail = User.FindFirst(ClaimTypes.Email)?.Value?.ToLowerInvariant();
-            var canViewRecording = await _context.Meetings.AnyAsync(meeting => meeting.Id == id && meeting.OrganizerId == currentUserId)
-                || await _context.Participants.AnyAsync(participant => participant.MeetingId == id && participant.UserId == currentUserId)
-                || (!string.IsNullOrWhiteSpace(currentUserEmail)
-                    && await _context.MeetingInvites.AnyAsync(invite => invite.MeetingId == id && invite.Email.ToLower() == currentUserEmail));
-
-            if (!canViewRecording)
-            {
-                return Forbid();
-            }
+        var currentUserEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+        if (!await _authorizationService.CanViewRecordingAsync(id, currentUserId, currentUserEmail))
+        {
+            return Forbid();
         }
 
         var filePath = await _storageService.GetPhysicalPathAsync(OrganizationFileKind.Recording, id, fileName);
@@ -816,6 +829,12 @@ public class MeetingsController : ControllerBase
         return string.IsNullOrWhiteSpace(fullName)
             ? User.FindFirst(ClaimTypes.Email)?.Value ?? "User"
             : fullName;
+    }
+
+    private bool TryGetCurrentUserId(out Guid userId)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return Guid.TryParse(userIdClaim, out userId);
     }
 
     private async Task<long> GetMeetingCacheVersionAsync()

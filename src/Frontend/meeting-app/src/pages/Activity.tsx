@@ -8,8 +8,8 @@ import {
   getOrganizationScopedPath,
   meetingAPI,
   openMeetingJoinInNewTab,
+  openProtectedApiAsset,
   organizationAPI,
-  resolveApiAssetUrl,
   type ActiveOrganization,
 } from '../services/api';
 import {
@@ -320,7 +320,7 @@ export default function Activity() {
           detail: 'Meeting recording is available.',
           time: meeting.startTime,
           actionLabel: 'Open recording',
-          action: () => window.open(resolveApiAssetUrl(meeting.recordingUrl), '_blank', 'noopener,noreferrer'),
+          action: () => openProtectedApiAsset(meeting.recordingUrl).catch(() => undefined),
         });
       });
 

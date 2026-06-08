@@ -83,6 +83,16 @@ interface OrganizationAuditEvent {
   createdAt: string;
 }
 
+interface OrganizationFeatureToggle {
+  key: string;
+  name: string;
+  description: string;
+  category: string;
+  defaultEnabled: boolean;
+  isEnabled: boolean;
+  updatedAt?: string;
+}
+
 interface UserSearchResult {
   id: string;
   email: string;
@@ -244,6 +254,18 @@ export function normalizeAuditEvent(data: any): OrganizationAuditEvent {
   };
 }
 
+export function normalizeFeatureToggle(data: any): OrganizationFeatureToggle {
+  return {
+    key: data.key,
+    name: data.name || data.key,
+    description: data.description || '',
+    category: data.category || 'General',
+    defaultEnabled: Boolean(data.defaultEnabled),
+    isEnabled: Boolean(data.isEnabled),
+    updatedAt: data.updatedAt,
+  };
+}
+
 export function estimateMonthlyStorage(form: OrganizationSettingsForm) {
   const recordingBudgetGb = Math.max(1, Math.round((form.maxRecordingMegabytes * 20) / 1024));
   const attachmentBudgetGb = Math.max(1, Math.round((form.maxAttachmentMegabytes * 500) / 1024));
@@ -376,6 +398,7 @@ function App() {
   const [organizationUsage, setOrganizationUsage] = useState<OrganizationUsage | null>(null);
   const [meetingUsage, setMeetingUsage] = useState<OrganizationMeetingUsage | null>(null);
   const [auditEvents, setAuditEvents] = useState<OrganizationAuditEvent[]>([]);
+  const [featureToggles, setFeatureToggles] = useState<OrganizationFeatureToggle[]>([]);
   const [createForm, setCreateForm] = useState({ name: '', slug: '', primaryDomain: '' });
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [userQuery, setUserQuery] = useState('');
@@ -388,6 +411,7 @@ function App() {
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [savingFeatures, setSavingFeatures] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [loadingInsights, setLoadingInsights] = useState(false);
@@ -416,6 +440,13 @@ function App() {
   const roleSummary = (organizationUsage?.roleCounts || [])
     .map((item) => `${item.role}: ${item.count}`)
     .join(' | ');
+  const enabledFeatureCount = featureToggles.filter((feature) => feature.isEnabled).length;
+  const featureGroups = useMemo(() => {
+    return featureToggles.reduce<Record<string, OrganizationFeatureToggle[]>>((groups, feature) => {
+      groups[feature.category] = [...(groups[feature.category] || []), feature];
+      return groups;
+    }, {});
+  }, [featureToggles]);
 
   const persistSession = (data: any) => {
     const user = {
@@ -428,8 +459,6 @@ function App() {
 
     sessionStorage.setItem('authToken', data.token);
     sessionStorage.setItem('authUser', JSON.stringify(user));
-    sessionStorage.removeItem('authToken');
-    sessionStorage.removeItem('authUser');
     localStorage.removeItem('authToken');
     localStorage.removeItem('authUser');
     setToken(data.token);
@@ -454,10 +483,11 @@ function App() {
     setLoadingInsights(true);
 
     try {
-      const [usageResponse, meetingUsageResponse, auditResponse] = await Promise.allSettled([
+      const [usageResponse, meetingUsageResponse, auditResponse, featureResponse] = await Promise.allSettled([
         api.get(`/organizations/${organizationId}/usage`),
         api.get(`/meetings/organizations/${organizationId}/usage`),
         api.get(`/organizations/${organizationId}/audit`, { params: { take: 25 } }),
+        api.get(`/organizations/${organizationId}/features`),
       ]);
 
       if (usageResponse.status === 'fulfilled') {
@@ -477,10 +507,17 @@ function App() {
       } else {
         setAuditEvents([]);
       }
+
+      if (featureResponse.status === 'fulfilled') {
+        setFeatureToggles(featureResponse.value.data.map(normalizeFeatureToggle));
+      } else {
+        setFeatureToggles([]);
+      }
     } catch (err: any) {
       setOrganizationUsage(null);
       setMeetingUsage(null);
       setAuditEvents([]);
+      setFeatureToggles([]);
       setError(getApiErrorMessage(err, 'Unable to load organization insights.'));
     } finally {
       setLoadingInsights(false);
@@ -701,6 +738,7 @@ function App() {
         setOrganizationUsage(null);
         setMeetingUsage(null);
         setAuditEvents([]);
+        setFeatureToggles([]);
         setForm(defaultForm);
       }
 
@@ -763,6 +801,7 @@ function App() {
     setOrganizationUsage(null);
     setMeetingUsage(null);
     setAuditEvents([]);
+    setFeatureToggles([]);
     setUserQuery('');
     setUserResults([]);
     setSelectedUserId('');
@@ -789,6 +828,41 @@ function App() {
       setError(getApiErrorMessage(err, 'Storage test failed'));
     } finally {
       setTesting(false);
+    }
+  };
+
+  const updateFeatureToggle = (featureKey: string, isEnabled: boolean) => {
+    setFeatureToggles((current) => current.map((feature) => (
+      feature.key === featureKey ? { ...feature, isEnabled } : feature
+    )));
+    setStatus('');
+    setError('');
+  };
+
+  const saveFeatureToggles = async () => {
+    if (!selectedOrganizationId) {
+      setError('Select an organization first.');
+      return;
+    }
+
+    setSavingFeatures(true);
+    setStatus('');
+    setError('');
+
+    try {
+      const response = await api.put(`/organizations/${selectedOrganizationId}/features`, {
+        features: featureToggles.reduce<Record<string, boolean>>((values, feature) => {
+          values[feature.key] = feature.isEnabled;
+          return values;
+        }, {}),
+      });
+      setFeatureToggles(response.data.map(normalizeFeatureToggle));
+      await loadOrganizationInsights(selectedOrganizationId);
+      setStatus('Feature toggles saved.');
+    } catch (err: any) {
+      setError(getApiErrorMessage(err, 'Unable to save feature toggles.'));
+    } finally {
+      setSavingFeatures(false);
     }
   };
 
@@ -1209,6 +1283,72 @@ function App() {
                         {formatDateTime(organizationUsage?.lastActivityAt || meetingUsage?.lastMessageAt || meetingUsage?.lastMeetingAt)}
                       </div>
                     </div>
+                  </div>
+
+                  <div className="rounded-md border border-slate-200 bg-white p-5 shadow-sm">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <h3 className="text-base font-semibold">Feature toggles</h3>
+                        <p className="mt-1 text-sm text-slate-500">
+                          Tenant-wise controls for Samvaad features. Every configured feature and current value is shown below.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+                          {enabledFeatureCount}/{featureToggles.length} enabled
+                        </span>
+                        <button
+                          type="button"
+                          onClick={saveFeatureToggles}
+                          disabled={savingFeatures || featureToggles.length === 0}
+                          className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                        >
+                          {savingFeatures ? 'Saving...' : 'Save features'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {featureToggles.length === 0 ? (
+                      <p className="mt-4 rounded-md border border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                        Feature catalog is not loaded yet.
+                      </p>
+                    ) : (
+                      <div className="mt-4 space-y-4">
+                        {Object.entries(featureGroups).map(([category, features]) => (
+                          <div key={category} className="rounded-md border border-slate-200">
+                            <div className="border-b border-slate-200 bg-slate-50 px-4 py-2">
+                              <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
+                            </div>
+                            <div className="divide-y divide-slate-100">
+                              {features.map((feature) => (
+                                <label key={feature.key} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                  <span className="min-w-0">
+                                    <span className="flex flex-wrap items-center gap-2">
+                                      <span className="text-sm font-semibold text-slate-950">{feature.name}</span>
+                                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                                        feature.isEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
+                                      }`}>
+                                        {feature.isEnabled ? 'Enabled' : 'Disabled'}
+                                      </span>
+                                    </span>
+                                    <span className="mt-1 block text-sm text-slate-500">{feature.description}</span>
+                                    <span className="mt-1 block text-xs text-slate-400">
+                                      Key: {feature.key} | Default: {feature.defaultEnabled ? 'Enabled' : 'Disabled'} | Updated: {formatDateTime(feature.updatedAt)}
+                                    </span>
+                                  </span>
+                                  <input
+                                    type="checkbox"
+                                    checked={feature.isEnabled}
+                                    onChange={(event) => updateFeatureToggle(feature.key, event.target.checked)}
+                                    className="h-5 w-5 shrink-0"
+                                  />
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="rounded-md border border-slate-200 bg-white p-5 shadow-sm">
