@@ -626,6 +626,25 @@ public class MeetingsController : ControllerBase
         return File(System.Text.Encoding.UTF8.GetBytes(meeting.WhiteboardData ?? "[]"), "application/json", $"{meeting.Title}-whiteboard.json");
     }
 
+    [HttpGet("{id}/intelligence")]
+    public async Task<ActionResult<MeetingIntelligenceDto>> GetIntelligence(Guid id)
+    {
+        var currentUserIdText = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(currentUserIdText, out var currentUserId))
+        {
+            return Unauthorized();
+        }
+
+        var currentUserEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+        if (!await _authorizationService.CanViewMeetingAsync(id, currentUserId, currentUserEmail))
+        {
+            return Forbid();
+        }
+
+        var intelligence = await _meetingService.GetMeetingIntelligenceAsync(id);
+        return intelligence == null ? NotFound() : Ok(MapIntelligenceToDto(intelligence));
+    }
+
     [HttpPost("{id}/recordings")]
     [RequestSizeLimit(750_000_000)]
     [RequestFormLimits(MultipartBodyLengthLimit = 750_000_000)]
@@ -757,6 +776,23 @@ public class MeetingsController : ControllerBase
             ResponseReason = invite.ResponseReason,
             RespondedAt = invite.RespondedAt,
             CreatedAt = invite.CreatedAt
+        };
+    }
+
+    internal static MeetingIntelligenceDto MapIntelligenceToDto(MeetingIntelligence intelligence)
+    {
+        return new MeetingIntelligenceDto
+        {
+            MeetingId = intelligence.MeetingId,
+            RecordingUrl = intelligence.RecordingUrl,
+            Status = intelligence.Status,
+            Transcript = intelligence.Transcript,
+            TranscriptSegmentsJson = intelligence.TranscriptSegmentsJson,
+            Summary = intelligence.Summary,
+            ActionItemsJson = intelligence.ActionItemsJson,
+            Error = intelligence.Error,
+            CreatedAtUtc = intelligence.CreatedAtUtc,
+            CompletedAtUtc = intelligence.CompletedAtUtc
         };
     }
 

@@ -312,3 +312,34 @@ public sealed class MeetingRecordingReadyNotificationHandler : IEventHandler<Mee
         }, cancellationToken);
     }
 }
+
+public sealed class MeetingIntelligenceReadyNotificationHandler : IEventHandler<MeetingIntelligenceReadyEvent>
+{
+    private readonly IHubContext<NotificationHub> _hubContext;
+    private readonly INotificationEventCheckpointStore _checkpointStore;
+
+    public MeetingIntelligenceReadyNotificationHandler(IHubContext<NotificationHub> hubContext, INotificationEventCheckpointStore checkpointStore)
+    {
+        _hubContext = hubContext;
+        _checkpointStore = checkpointStore;
+    }
+
+    public async Task HandleAsync(MeetingIntelligenceReadyEvent message, CancellationToken cancellationToken)
+    {
+        await _checkpointStore.ExecuteOnceAsync(message, nameof(MeetingIntelligenceReadyNotificationHandler), async ct =>
+        {
+            var payload = new
+            {
+                message.MeetingId,
+                message.MeetingTitle,
+                Timestamp = message.OccurredAtUtc
+            };
+
+            foreach (var recipientUserId in message.RecipientUserIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                await _hubContext.Clients.Group($"user_{recipientUserId}").SendAsync("MeetingIntelligenceReady", payload, ct);
+                await _hubContext.Clients.Group($"user_{recipientUserId}").SendAsync("ReceiveNotification", $"Meeting recap is ready: {message.MeetingTitle}", ct);
+            }
+        }, cancellationToken);
+    }
+}

@@ -150,6 +150,13 @@ export const onMeetingEnded = (callback: (data: any) => void) => {
   }
 };
 
+export const onMeetingIntelligenceReady = (callback: (data: any) => void) => {
+  if (connection) {
+    connection.off('MeetingIntelligenceReady');
+    connection.on('MeetingIntelligenceReady', callback);
+  }
+};
+
 export const onWhiteboardUpdated = (callback: (data: any) => void) => {
   if (connection) {
     connection.off('WhiteboardUpdated');

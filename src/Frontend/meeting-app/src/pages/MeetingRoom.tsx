@@ -20,6 +20,7 @@ import {
   onLobbyDecisionReceived,
   onLobbyRequestReceived,
   onMeetingEnded,
+  onMeetingIntelligenceReady,
   onMeetingChatMessage,
   onIncomingCallResponse,
   onParticipantEngagementChanged,
@@ -181,6 +182,21 @@ interface FloatingReaction {
   reaction: string;
 }
 
+interface MeetingIntelligence {
+  status: string;
+  transcript?: string;
+  summary?: string;
+  actionItemsJson?: string;
+  error?: string;
+}
+
+interface ActionItem {
+  title: string;
+  owner?: string | null;
+  dueDate?: string | null;
+  source?: string | null;
+}
+
 interface WhiteboardPoint {
   x: number;
   y: number;
@@ -202,6 +218,19 @@ type SidePanelTab = 'participants' | 'chat' | 'details' | 'whiteboard';
 
 const CALL_CANCEL_MESSAGE = 'Sorry, I called you by mistake.';
 const QUICK_REACTIONS = ['👍', '👏', '❤️', '😊', '😂', '🎉'];
+
+function parseActionItems(value?: string): ActionItem[] {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is ActionItem => typeof item?.title === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
 interface IconButtonProps {
   title: string;
@@ -644,6 +673,7 @@ export default function MeetingRoom() {
   const logout = useAuthStore((state) => state.logout);
   const token = useAuthStore((state) => state.token);
   const [meeting, setMeeting] = useState<Meeting | null>(null);
+  const [meetingIntelligence, setMeetingIntelligence] = useState<MeetingIntelligence | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [currentParticipant, setCurrentParticipant] = useState<Participant | null>(null);
   const [meetingInvites, setMeetingInvites] = useState<MeetingInvite[]>([]);
@@ -1011,7 +1041,7 @@ export default function MeetingRoom() {
 
     const loadMeeting = async () => {
       try {
-        const [meetingResponse, participantsResponse, chatResponse, invitesResponse, callLogsResponse, usersResponse, profileResponse] = await Promise.all([
+        const [meetingResponse, participantsResponse, chatResponse, invitesResponse, callLogsResponse, usersResponse, profileResponse, intelligenceResponse] = await Promise.all([
           meetingAPI.getMeeting(id),
           meetingAPI.getParticipants(id),
           meetingAPI.getChatMessages(id).catch(() => ({ data: [] })),
@@ -1019,8 +1049,10 @@ export default function MeetingRoom() {
           meetingAPI.getCallLogs(id).catch(() => ({ data: [] })),
           userAPI.searchUsers().catch(() => ({ data: [] })),
           userAPI.getProfile().catch(() => ({ data: user })),
+          meetingAPI.getIntelligence(id).catch(() => ({ data: null })),
         ]);
         setMeeting(meetingResponse.data);
+        setMeetingIntelligence(intelligenceResponse.data);
         setMeetingNotes(meetingResponse.data.notes || '');
         setWhiteboardItems(parseWhiteboardData(meetingResponse.data.whiteboardData));
         setParticipants(participantsResponse.data);
@@ -1821,6 +1853,18 @@ export default function MeetingRoom() {
           setWhiteboardRedoItems([]);
           setWhiteboardStatus(`Updated by ${data.userName || data.UserName || 'a participant'}`);
           window.setTimeout(() => setWhiteboardStatus(''), 1800);
+        });
+        onMeetingIntelligenceReady((data) => {
+          if (data.meetingId !== id) {
+            return;
+          }
+
+          meetingAPI.getIntelligence(id)
+            .then((response) => {
+              setMeetingIntelligence(response.data);
+              setActivity((items) => ['Meeting recap is ready', ...items].slice(0, 5));
+            })
+            .catch(() => undefined);
         });
         onMeetingEnded(() => {
           localStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -3469,6 +3513,34 @@ export default function MeetingRoom() {
                   <RecordIcon />
                 </button>
               )}
+              {meetingIntelligence?.status === 'Completed' && (
+                <div className="space-y-3 pt-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Meeting recap</h3>
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-slate-300">{meetingIntelligence.summary}</p>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Action items</h3>
+                    {parseActionItems(meetingIntelligence.actionItemsJson).length === 0 ? (
+                      <p className="mt-1 text-sm text-slate-400">No action items were identified.</p>
+                    ) : (
+                      <ul className="mt-2 space-y-2">
+                        {parseActionItems(meetingIntelligence.actionItemsJson).map((item, index) => (
+                          <li key={`${item.title}-${index}`} className="rounded-md bg-slate-800 px-3 py-2 text-sm text-slate-200">
+                            <p className="font-medium text-white">{item.title}</p>
+                            {(item.owner || item.dueDate) && <p className="mt-1 text-xs text-slate-400">{[item.owner, item.dueDate].filter(Boolean).join(' - ')}</p>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <details className="text-sm text-slate-300">
+                    <summary className="cursor-pointer font-semibold text-white">Transcript</summary>
+                    <p className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md bg-slate-950 p-3 text-xs leading-5">{meetingIntelligence.transcript}</p>
+                  </details>
+                </div>
+              )}
+              {meetingIntelligence?.status === 'Failed' && <p className="pt-2 text-sm text-red-200">Transcription failed: {meetingIntelligence.error || 'Unknown error'}</p>}
               {meeting.meetingLink && (
                 <div className="flex flex-wrap items-center gap-2">
                   <IconButton title={copyStatus === 'Copied' ? 'Link copied' : 'Copy join link'} onClick={copyJoinLink}>

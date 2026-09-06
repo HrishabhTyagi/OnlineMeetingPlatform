@@ -127,7 +127,25 @@ public class Meeting
     public ICollection<LobbyRequest> LobbyRequests { get; set; } = new List<LobbyRequest>();
     public ICollection<MeetingReminder> Reminders { get; set; } = new List<MeetingReminder>();
     public ICollection<MeetingCallLog> CallLogs { get; set; } = new List<MeetingCallLog>();
+    public MeetingIntelligence? Intelligence { get; set; }
     public TeamChannel? TeamChannel { get; set; }
+}
+
+public class MeetingIntelligence
+{
+    public Guid Id { get; set; }
+    public Guid MeetingId { get; set; }
+    public string RecordingUrl { get; set; } = string.Empty;
+    public string Status { get; set; } = "Pending";
+    public string? Transcript { get; set; }
+    public string? TranscriptSegmentsJson { get; set; }
+    public string? Summary { get; set; }
+    public string? ActionItemsJson { get; set; }
+    public string? Error { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? CompletedAtUtc { get; set; }
+
+    public Meeting Meeting { get; set; } = null!;
 }
 
 public class Participant

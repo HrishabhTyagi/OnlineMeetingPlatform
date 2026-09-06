@@ -365,6 +365,9 @@ export const meetingAPI = {
   updateNotes: (meetingId: string, data: any) =>
     apiClient.put(`/meetings/${meetingId}/notes`, data),
 
+  getIntelligence: (meetingId: string) =>
+    apiClient.get(`/meetings/${meetingId}/intelligence`),
+
   updateWhiteboard: (meetingId: string, data: any) =>
     apiClient.put(`/meetings/${meetingId}/whiteboard`, data),
 

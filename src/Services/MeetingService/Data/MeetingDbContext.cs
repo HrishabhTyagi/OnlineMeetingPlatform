@@ -10,6 +10,7 @@ public class MeetingDbContext : DbContext
     }
 
     public DbSet<Meeting> Meetings { get; set; } = null!;
+    public DbSet<MeetingIntelligence> MeetingIntelligence { get; set; } = null!;
     public DbSet<Participant> Participants { get; set; } = null!;
     public DbSet<MeetingChatMessage> MeetingChatMessages { get; set; } = null!;
     public DbSet<MeetingInvite> MeetingInvites { get; set; } = null!;
@@ -64,7 +65,22 @@ public class MeetingDbContext : DbContext
             entity.HasMany(e => e.LobbyRequests).WithOne(l => l.Meeting).HasForeignKey(l => l.MeetingId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.Reminders).WithOne(r => r.Meeting).HasForeignKey(r => r.MeetingId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(e => e.CallLogs).WithOne(call => call.Meeting).HasForeignKey(call => call.MeetingId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Intelligence).WithOne(item => item.Meeting).HasForeignKey<MeetingIntelligence>(item => item.MeetingId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(e => e.TeamChannel).WithMany(channel => channel.Meetings).HasForeignKey(e => e.TeamChannelId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<MeetingIntelligence>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.MeetingId).IsUnique();
+            entity.Property(e => e.RecordingUrl).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(32);
+            entity.Property(e => e.Transcript).HasColumnType("text");
+            entity.Property(e => e.TranscriptSegmentsJson).HasColumnType("text");
+            entity.Property(e => e.Summary).HasColumnType("text");
+            entity.Property(e => e.ActionItemsJson).HasColumnType("text");
+            entity.Property(e => e.Error).HasColumnType("text");
+            entity.Property(e => e.CreatedAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
 
         modelBuilder.Entity<Participant>(entity =>

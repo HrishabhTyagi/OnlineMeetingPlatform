@@ -142,6 +142,22 @@ Then open:
 
 If you prefer manual startup, see [QUICKSTART.md](QUICKSTART.md).
 
+## Local Meeting Intelligence
+
+Meeting recordings can be transcribed locally and turned into a recap and action items without a paid API. The `meeting-intelligence` worker uses FFmpeg, faster-whisper, and an Ollama model; it consumes the existing `meeting.recording.ready` RabbitMQ event after a recording is uploaded.
+
+Start the local dependencies and download the model once:
+
+```powershell
+docker compose up -d postgres redis rabbitmq mailpit ollama
+docker compose exec ollama ollama pull qwen2.5:3b
+docker compose up -d --build meeting-intelligence
+```
+
+Then start the ASP.NET services with `run-all-services.ps1`. For a meeting, enable both recording and transcription before recording. Once the recording has uploaded, the worker stores the timestamped transcript, generated recap, and action items. Participants receive a realtime notification and see the output in the meeting room's Details panel.
+
+The default worker setup is CPU-only and suitable for local development. Its configuration is in [docker-compose.yml](docker-compose.yml); use a smaller Ollama model or a CUDA-capable worker deployment if processing time becomes a concern. Docker Desktop must be running on Windows because the worker reaches the locally started Meeting Service through `host.docker.internal`.
+
 ## Testing
 
 Run everything with:

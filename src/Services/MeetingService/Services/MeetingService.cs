@@ -38,6 +38,8 @@ public interface IMeetingService
     Task<Meeting> UpdateNotesAsync(Guid meetingId, string? notes);
     Task<Meeting> UpdateWhiteboardAsync(Guid meetingId, Guid userId, string userName, string? whiteboardData);
     Task<Meeting> UpdateRecordingAsync(Guid meetingId, string recordingUrl);
+    Task<MeetingIntelligence?> GetMeetingIntelligenceAsync(Guid meetingId);
+    Task<MeetingIntelligence> CompleteMeetingIntelligenceAsync(Guid meetingId, CompleteMeetingIntelligenceRequest request);
     Task<List<MeetingInvite>> GetInvitesAsync(Guid meetingId);
     Task<List<MeetingInvite>> SendInvitesAsync(Guid meetingId, IEnumerable<string> emails);
     Task<MeetingInvite> UpdateInviteResponseAsync(Guid meetingId, Guid inviteId, Guid currentUserId, string? currentUserEmail, MeetingInviteResponseStatus status, string? reason);
@@ -883,9 +885,71 @@ public class MeetingServiceImpl : IMeetingService
             meeting.Id,
             meeting.Title,
             recordingUrl,
+            meeting.AllowTranscription,
             recipientUserIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList()));
         await _context.SaveChangesAsync();
         return meeting;
+    }
+
+    public async Task<MeetingIntelligence?> GetMeetingIntelligenceAsync(Guid meetingId)
+    {
+        return await _context.MeetingIntelligence
+            .Where(item => item.MeetingId == meetingId && item.Meeting.OrganizationId == _tenantContext.OrganizationId)
+            .FirstOrDefaultAsync();
+    }
+
+    public async Task<MeetingIntelligence> CompleteMeetingIntelligenceAsync(Guid meetingId, CompleteMeetingIntelligenceRequest request)
+    {
+        var meeting = await _context.Meetings
+            .Include(item => item.Participants)
+            .FirstOrDefaultAsync(item => item.Id == meetingId && item.OrganizationId == request.OrganizationId);
+        if (meeting == null)
+        {
+            throw new InvalidOperationException("Meeting not found");
+        }
+
+        var intelligence = await _context.MeetingIntelligence.FirstOrDefaultAsync(item => item.MeetingId == meetingId);
+        var wasAlreadyCompleted = intelligence?.CompletedAtUtc.HasValue == true
+            && string.Equals(intelligence.RecordingUrl, request.RecordingUrl, StringComparison.Ordinal);
+        if (intelligence == null)
+        {
+            intelligence = new MeetingIntelligence
+            {
+                Id = Guid.NewGuid(),
+                MeetingId = meetingId,
+                CreatedAtUtc = DateTime.UtcNow
+            };
+            _context.MeetingIntelligence.Add(intelligence);
+        }
+
+        intelligence.RecordingUrl = request.RecordingUrl;
+        intelligence.Status = request.Status;
+        intelligence.Transcript = request.Transcript;
+        intelligence.TranscriptSegmentsJson = request.TranscriptSegmentsJson;
+        intelligence.Summary = request.Summary;
+        intelligence.ActionItemsJson = request.ActionItemsJson;
+        intelligence.Error = request.Error;
+        intelligence.CompletedAtUtc = string.Equals(request.Status, "Completed", StringComparison.OrdinalIgnoreCase)
+            ? DateTime.UtcNow
+            : null;
+        meeting.Recap = request.Summary;
+        meeting.UpdatedAt = DateTime.UtcNow;
+
+        if (intelligence.CompletedAtUtc.HasValue && !wasAlreadyCompleted)
+        {
+            var recipientUserIds = meeting.Participants.Select(item => item.UserId.ToString()).ToList();
+            recipientUserIds.Add(meeting.OrganizerId.ToString());
+            await _outbox.EnqueueAsync(new MeetingIntelligenceReadyEvent(
+                Guid.NewGuid(),
+                intelligence.CompletedAtUtc.Value,
+                meeting.OrganizationId,
+                meeting.Id,
+                meeting.Title,
+                recipientUserIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList()));
+        }
+
+        await _context.SaveChangesAsync();
+        return intelligence;
     }
 
     public async Task<List<MeetingInvite>> GetInvitesAsync(Guid meetingId)

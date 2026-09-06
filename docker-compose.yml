@@ -69,12 +69,47 @@ services:
     networks:
       - meeting_network
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: meeting_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - meeting_network
+
+  meeting-intelligence:
+    build:
+      context: ./src/Services/MeetingIntelligenceService
+    container_name: meeting_intelligence
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: samvaad
+      RABBITMQ_PASSWORD: samvaad123
+      MEETING_SERVICE_URL: http://host.docker.internal:5002
+      INTERNAL_API_KEY: local-development-only-internal-service-key
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen2.5:3b
+      WHISPER_MODEL: base
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE_TYPE: int8
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - meeting_network
+
 volumes:
   postgres_data:
     driver: local
   redis_data:
     driver: local
   rabbitmq_data:
+    driver: local
+  ollama_data:
     driver: local
 
 networks:

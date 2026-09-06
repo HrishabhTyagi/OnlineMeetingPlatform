@@ -82,6 +82,32 @@ public class MeetingDto
     public DateTime CreatedAt { get; set; }
 }
 
+public class MeetingIntelligenceDto
+{
+    public Guid MeetingId { get; set; }
+    public string RecordingUrl { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string? Transcript { get; set; }
+    public string? TranscriptSegmentsJson { get; set; }
+    public string? Summary { get; set; }
+    public string? ActionItemsJson { get; set; }
+    public string? Error { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
+    public DateTime? CompletedAtUtc { get; set; }
+}
+
+public class CompleteMeetingIntelligenceRequest
+{
+    public Guid? OrganizationId { get; set; }
+    public string RecordingUrl { get; set; } = string.Empty;
+    public string Status { get; set; } = "Completed";
+    public string? Transcript { get; set; }
+    public string? TranscriptSegmentsJson { get; set; }
+    public string? Summary { get; set; }
+    public string? ActionItemsJson { get; set; }
+    public string? Error { get; set; }
+}
+
 public class OrganizationMeetingUsageDto
 {
     public Guid OrganizationId { get; set; }

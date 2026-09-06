@@ -49,4 +49,14 @@ public sealed record MeetingRecordingReadyEvent(
     Guid MeetingId,
     string MeetingTitle,
     string RecordingUrl,
+    bool TranscriptionRequested,
+    List<string> RecipientUserIds) : IEvent;
+
+[RabbitEvent("meeting.intelligence.ready")]
+public sealed record MeetingIntelligenceReadyEvent(
+    Guid EventId,
+    DateTime OccurredAtUtc,
+    Guid? OrganizationId,
+    Guid MeetingId,
+    string MeetingTitle,
     List<string> RecipientUserIds) : IEvent;
